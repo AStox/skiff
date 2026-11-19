@@ -1,0 +1,43 @@
+#!/usr/bin/env node
+'use strict'
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+
+const dataDir = process.env.SKIFF_DATA || path.join(os.homedir(), process.platform === 'darwin' ? 'Library/Application Support/Skiff' : '.config/Skiff')
+
+function fail(message) {
+  console.error(message)
+  process.exit(1)
+}
+
+async function main() {
+  const [method, json] = process.argv.slice(2)
+  if (!method) fail('usage: skiff <method> [json-params]\n       skiff events\n       skiff commands.list')
+  let api
+  let params = {}
+  try {
+    api = JSON.parse(fs.readFileSync(path.join(dataDir, 'api.json'), 'utf8'))
+  } catch {
+    fail(`Cannot read ${path.join(dataDir, 'api.json')}. Is Skiff running?`)
+  }
+  try {
+    if (json !== undefined) params = JSON.parse(json)
+  } catch {
+    fail('params must be JSON, for example \'{"url":"example.com"}\'')
+  }
+  const base = `http://127.0.0.1:${api.port}`
+  const headers = { Authorization: `Bearer ${api.token}` }
+  if (method === 'events') {
+    const res = await fetch(`${base}/events`, { headers })
+    if (!res.ok) fail(await res.text())
+    for await (const chunk of res.body) process.stdout.write(chunk)
+    return
+  }
+  const res = await fetch(`${base}/rpc`, { method: 'POST', headers, body: JSON.stringify({ method, params }) })
+  const out = await res.json()
+  if (!out.ok) fail(JSON.stringify(out.error))
+  console.log(JSON.stringify(out.result, null, 2))
+}
+
+main().catch((e) => fail(`Skiff is not reachable: ${e.cause?.message || e.message}`))

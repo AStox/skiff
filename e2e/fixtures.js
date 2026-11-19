@@ -1,0 +1,263 @@
+'use strict'
+const { test: base, expect, _electron } = require('@playwright/test')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const http = require('node:http')
+const { execFileSync } = require('node:child_process')
+const { writeArc } = require('./arc-fixture')
+
+const test = base.extend({
+  fixtureOptions: [{}, { option: true }],
+  skiff: async ({ fixtureOptions }, use, testInfo) => {
+    if (!['darwin', 'linux'].includes(process.platform)) throw new Error('Visual tests currently support macOS and Linux')
+    if (process.platform === 'darwin' && process.env.SKIFF_VISUAL_DESKTOP !== '1') throw new Error('Mac visual tests open desktop windows. Use a Linux virtual display, or explicitly set SKIFF_VISUAL_DESKTOP=1 only when the desktop is available for testing.')
+    if (process.platform === 'linux' && process.getuid?.() === 0) throw new Error('Run visual tests as an unprivileged user with DISPLAY (for example xvfb-run -a npm run test:visual). Never disable the Electron sandbox.')
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skiff-visual-'))
+    const home = path.join(root, 'home')
+    const data = path.join(root, 'data')
+    fs.mkdirSync(home)
+    fs.mkdirSync(data)
+    fs.mkdirSync(path.join(home, 'app-data'))
+    fs.writeFileSync(path.join(root, '.skiff-visual-fixture'), 'owned by this test')
+    const requests = []
+    const identities = new Map()
+    const cookied = []
+    // The built-in extension's release, when fixtureOptions.builtin is set: `skiff.release.version` is what the
+    // release page announces and the zip ships; null makes the release page answer 500.
+    const release = { version: '1.0' }
+    const releaseZip = () => {
+      const stage = fs.mkdtempSync(path.join(root, 'release-'))
+      const folder = path.join(stage, 'skiff-test')
+      fs.cpSync(path.join(__dirname, 'extension'), folder, { recursive: true })
+      const manifest = path.join(folder, 'manifest.json')
+      fs.writeFileSync(manifest, JSON.stringify({ ...JSON.parse(fs.readFileSync(manifest, 'utf8')), version: release.version }, null, 2))
+      execFileSync('zip', ['-qr', 'release.zip', 'skiff-test'], { cwd: stage })
+      const zip = fs.readFileSync(path.join(stage, 'release.zip'))
+      fs.rmSync(stage, { recursive: true, force: true })
+      return zip
+    }
+    const server = http.createServer((request, response) => {
+      requests.push(request.url)
+      identities.set(request.url, { userAgent: request.headers['user-agent'], clientHints: request.headers['sec-ch-ua'], platform: request.headers['sec-ch-ua-platform'] })
+      if (request.headers.cookie) cookied.push(request.url)
+      if (request.url === '/icon.png') {
+        response.setHeader('Content-Type', 'image/png')
+        response.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mO4ZpxDEmIY1TCqYfhqAAC2hXUQMWFT7AAAAABJRU5ErkJggg==', 'base64'))
+        return
+      }
+      const route = request.url.split('?')[0]
+      if (route === '/identity/redirect') {
+        response.writeHead(302, { Location: '/identity/target' })
+        return response.end()
+      }
+
+      if (route.startsWith('/ext/')) {
+        if (route === '/ext/release') {
+          if (release.version === null) { response.statusCode = 500; return response.end('no release') }
+          response.setHeader('Content-Type', 'application/json')
+          return response.end(JSON.stringify({ tag_name: release.version, assets: [{ name: 'skiff-test.chromium.zip', browser_download_url: `http://127.0.0.1:${server.address().port}/ext/release.zip` }] }))
+        }
+        if (route === '/ext/release.zip') {
+          response.setHeader('Content-Type', 'application/zip')
+          return response.end(releaseZip())
+        }
+        const script = (body) => { response.setHeader('Content-Type', 'text/javascript; charset=utf-8'); response.end(body) }
+        // Only the extension's blocking webRequest listener keeps these two scripts away from the page.
+        if (route === '/ext/blocked.js' || route === '/ext/redirect-me.js') return script("document.documentElement.dataset.unexpected = 'served'")
+        if (route === '/ext/ok.js') return script("document.documentElement.dataset.ok = 'ran'")
+        response.setHeader('Content-Type', 'text/html; charset=utf-8')
+        response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'")
+        if (route === '/ext/frame') return response.end('<!doctype html><p id="in-frame">frame</p>')
+        return response.end('<!doctype html><html lang="en"><head><title>Extension fixture</title></head><body><h1>Extension fixture</h1><div id="hide-me">hide me</div><iframe src="/ext/frame"></iframe><script src="/ext/ok.js"></script><script src="/ext/blocked.js" onerror="document.documentElement.dataset.blocked=\'error\'" onload="document.documentElement.dataset.blocked=\'loaded\'"></script><script src="/ext/redirect-me.js" onerror="document.documentElement.dataset.redirect=\'error\'"></script></body></html>')
+      }
+      // Agent pages count interval ticks and animation frames on the page, show their cookies and open a link in a new tab.
+      if (route.startsWith('/agent/')) {
+        if (route === '/agent/set-cookie') response.setHeader('Set-Cookie', 'agent-session=shared; Path=/')
+        response.setHeader('Content-Type', 'text/html; charset=utf-8')
+        response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'")
+        return response.end(`<!doctype html><html lang="en"><head><title>Agent ${route.slice(7)}</title><style>body{margin:0;background:#2f9e5b;color:#fff;font:24px system-ui}h1{margin:40px}</style></head><body><h1>Agent fixture ${route}</h1><p id="cookie"></p><p id="counters"></p><a href="/agent/opened" target="_blank">Open in new tab</a><script>window.ticks = 0; window.rafs = 0; setInterval(() => { ticks++; document.getElementById('counters').textContent = 'ticks ' + ticks + ' frames ' + rafs }, 50); (function frame() { rafs++; requestAnimationFrame(frame) })(); document.getElementById('cookie').textContent = 'cookie: ' + document.cookie</script></body></html>`)
+      }
+      response.setHeader('Content-Type', 'text/html; charset=utf-8')
+      response.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:")
+      response.end(`<!doctype html><html lang="en"><head><title>${request.url.startsWith('/second') ? 'Second fixture' : 'Fixture reading'}</title><link rel="icon" href="/icon.png"><style>body{font:18px system-ui;margin:36px;background:#fff;color:#172029}main{height:4000px;width:1600px}a{display:block;margin:24px 0}</style></head><body><h1>Local fixture page</h1><a href="/second">Continue reading</a><a href="/next${request.url}" target="_blank">Open in new tab</a><input aria-label="Page text" placeholder="Type here"><main>Scrollable fixture content</main></body></html>`)
+    })
+    let app
+    let child
+    let shell
+    let stopping = null
+    const close = async () => {
+      if (!app) return
+      const owned = app
+      const groupExists = () => {
+        return execFileSync('ps', ['-axo', 'pgid=,stat='], { encoding: 'utf8' }).trim().split('\n').some((line) => {
+          const [group, status] = line.trim().split(/\s+/)
+          return Number(group) === child.pid && !status.startsWith('Z')
+        })
+      }
+      let timer
+      try {
+        await Promise.race([owned.close(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Electron close timed out')), 10_000) })])
+      } catch {
+        try { process.kill(-child.pid, 'SIGKILL') } catch (error) {
+          if (error.code !== 'ESRCH') throw error
+        }
+      } finally { clearTimeout(timer) }
+      const deadline = Date.now() + 3000
+      while (groupExists() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25))
+      if (groupExists()) throw new Error(`Owned Electron process group ${child.pid} did not exit; preserving ${root}`)
+      app = null
+    }
+    const cleanup = () => stopping ||= (async () => {
+      let stopped = false
+      try { await close(); stopped = true } finally {
+        server.closeAllConnections()
+        if (server.listening) await new Promise((resolve) => server.close(resolve))
+        if (stopped) fs.rmSync(root, { recursive: true, force: true })
+      }
+    })()
+    const interrupt = () => { void cleanup().finally(() => process.exit(130)) }
+    const terminate = () => { void cleanup().finally(() => process.exit(143)) }
+    process.once('SIGINT', interrupt)
+    process.once('SIGTERM', terminate)
+    try {
+      await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
+      const port = server.address().port
+      const origin = `http://127.0.0.1:${port}`
+      writeArc(home, origin, fixtureOptions)
+      // Every webContents counts as a window here; with extensions loaded, a background page can come first.
+      const isShell = (page) => page.url().endsWith('/shell/index.html') && !page.isClosed()
+      const useShell = (page) => {
+        shell = page
+        shell.setDefaultTimeout(8000)
+        shell.setDefaultNavigationTimeout(15_000)
+      }
+      const launch = async () => {
+        const env = { ...process.env, HOME: home, USERPROFILE: home, SKIFF_DATA: data, SKIFF_VISUAL_ROOT: root,
+          SKIFF_VISUAL_PORT: String(port), SKIFF_VISUAL_CONSENT: String(fixtureOptions.consent || 0), SKIFF_VISUAL_THEME: fixtureOptions.theme || 'light',
+          SKIFF_VISUAL_EXTENSIONS: fixtureOptions.extensions ? '1' : '0',
+          // Built-ins are off unless a test asks for the fixture one, so no run contacts GitHub.
+          SKIFF_BUILTIN_EXTENSIONS: fixtureOptions.builtin ? JSON.stringify([{ name: 'Skiff test extension', release: `${origin}/ext/release` }]) : '[]',
+          LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8', TZ: 'UTC', XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache') }
+        delete env.ELECTRON_RUN_AS_NODE
+        app = await _electron.launch({ args: [path.join(__dirname, 'electron-entry.js'), '--force-device-scale-factor=1'], env, chromiumSandbox: true, timeout: 20_000 })
+        child = app.process()
+        await app.firstWindow({ timeout: 15_000 })
+        await expect.poll(() => app.windows().some(isShell), { timeout: 15_000 }).toBe(true)
+        useShell(app.windows().find(isShell))
+        await shell.emulateMedia({ colorScheme: fixtureOptions.theme || 'light' })
+        await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1280, 800))
+        await expect(shell.locator('#dots .dot').first()).toBeVisible()
+      }
+      await launch()
+      const driver = {
+        get app() { return app }, root,
+        // A switch between app and desk shells replaces the window, and with it the shell page.
+        get shell() {
+          const next = shell.isClosed() && app.windows().find(isShell)
+          if (next) useShell(next)
+          return shell
+        }, home, data, origin, requests, identities, cookied, release,
+        rpc: (method, params) => driver.shell.evaluate(({ method, params }) => window.skiff.call(method, params), { method, params }),
+        state: () => driver.rpc('state.get'),
+        audit: () => app.evaluate(() => global.__skiffVisualAudit),
+        restart: async () => { await close(); await launch() },
+        resize: (width, height) => app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(...size), [width, height]),
+        attached: () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].contentView.children.length),
+        page: async (path = '') => {
+          const at = (page) => page.url().startsWith(origin + path)
+          await expect.poll(() => app.context().pages().filter(at).length).toBeGreaterThan(0)
+          return app.context().pages().find(at)
+        },
+        // The command bar is its own transparent page over the window; it stays loaded after it closes.
+        bar: async () => {
+          const at = (page) => page.url().endsWith('/palette.html')
+          await expect.poll(() => app.context().pages().filter(at).length).toBeGreaterThan(0)
+          const bar = app.context().pages().find(at)
+          await bar.emulateMedia({ colorScheme: fixtureOptions.theme || 'light' })
+          return bar
+        },
+        // A desk shell replaces the app window, so the window is the one showing the shell.
+        barOpen: () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('/index.html')).contentView.children.some((view) => view.webContents?.getURL().endsWith('/palette.html'))),
+        // A conversation tab is the bundled chat page in its own view; it stays loaded while its tab is hidden.
+        chat: async (chatId) => {
+          const at = (page) => page.url().includes(`/chat/chat.html?id=${chatId}`)
+          await expect.poll(() => app.context().pages().filter(at).length).toBeGreaterThan(0)
+          const page = app.context().pages().find(at)
+          await page.emulateMedia({ colorScheme: fixtureOptions.theme || 'light' })
+          return page
+        },
+        // Clicking the menu item is what the accelerator does; synthetic key events never reach the native menu.
+        shortcut: (accelerator) => app.evaluate(({ Menu }, accelerator) => Menu.getApplicationMenu().items.flatMap((menu) => menu.submenu?.items || []).find((item) => item.accelerator === accelerator).click(), accelerator),
+        repairArc: (options = {}) => writeArc(home, origin, options)
+      }
+      await use(driver)
+      const audit = await driver.audit()
+      expect(audit.keychainAttempts, 'No test may attempt a real Keychain read').toEqual([])
+    } finally {
+      if (app && shell && testInfo.status !== testInfo.expectedStatus) {
+        await testInfo.attach('shell-failure', { body: await shell.screenshot().catch(() => Buffer.alloc(0)), contentType: 'image/png' }).catch(() => {})
+      }
+      try { await cleanup() } finally {
+        process.removeListener('SIGINT', interrupt)
+        process.removeListener('SIGTERM', terminate)
+      }
+    }
+  }
+})
+
+async function snapshot(locator, name, options = {}) {
+  // WebContentsView is a separate native surface, absent from shell screenshots.
+  // Page navigation, input and scrolling are asserted separately, never faked.
+  await expect(locator).toHaveScreenshot(name, options)
+}
+async function openImport(skiff) {
+  await skiff.shell.locator('#settings-toggle').click()
+  await skiff.shell.locator('#import-arc').click()
+  await expect(skiff.shell.locator('#arc-import')).toBeVisible()
+}
+async function next(skiff) { await skiff.shell.locator('#arc-next').click() }
+// The command bar is a separate page; typing must wait for its input to take focus.
+async function barReady(skiff) {
+  const bar = await skiff.bar()
+  await expect(bar.locator('#palette-input')).toBeFocused()
+  return bar
+}
+async function openInBar(skiff, url) {
+  const bar = await barReady(skiff)
+  await bar.keyboard.type(url)
+  await bar.keyboard.press('Enter')
+  await expect.poll(() => skiff.barOpen()).toBe(false)
+}
+async function wheel(skiff, dx, dy, selector = '#space-head') {
+  await skiff.shell.locator(selector).hover()
+  await skiff.shell.mouse.wheel(dx, dy)
+}
+// Real elapsed time is intentional: gesture idle/inertia gates use event timing.
+async function settleGesture(skiff) { await skiff.shell.waitForTimeout(700) }
+
+// Real pointer drags: press on the source and start moving, so drop areas that appear after dragstart can be targeted.
+async function dragStart(skiff, source) {
+  // hover waits until the row stops moving; state pushes rebuild and shift rows while a page loads.
+  await source.hover()
+  const box = await source.evaluate((el) => el.getBoundingClientRect().toJSON())
+  await skiff.shell.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await skiff.shell.mouse.down()
+  await skiff.shell.mouse.move(box.x + box.width / 2 + 4, box.y + box.height / 2 + 4, { steps: 2 })
+  await skiff.shell.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+}
+async function dragOver(skiff, target, position = {}) {
+  await expect(target).toBeVisible()
+  const box = await target.evaluate((el) => el.getBoundingClientRect().toJSON())
+  const point = { x: box.x + (position.x ?? box.width / 2), y: box.y + (position.y ?? box.height / 2) }
+  // One straight move: passing other rows on the way leaves the preview where it first appeared, as it does for a person.
+  await skiff.shell.mouse.move(point.x, point.y)
+  return point
+}
+async function dragTo(skiff, source, target, position) {
+  await dragStart(skiff, source)
+  await dragOver(skiff, target, position)
+  await skiff.shell.mouse.up()
+}
+
+module.exports = { test, expect, snapshot, openImport, next, wheel, settleGesture, dragStart, dragOver, dragTo, barReady, openInBar }

@@ -1,0 +1,12 @@
+{
+  "manifest_version": 2,
+  "name": "Skiff test extension",
+  "version": "1.0",
+  "description": "Exercises the extension APIs Skiff provides: blocking webRequest, content scripts, tab events, a popup and an options page.",
+  "permissions": ["webRequest", "webRequestBlocking", "tabs", "webNavigation", "storage", "<all_urls>"],
+  "background": { "page": "bg.html" },
+  "content_scripts": [{ "matches": ["http://*/*"], "js": ["cs.js"], "run_at": "document_start", "all_frames": true }],
+  "browser_action": { "default_popup": "popup.html", "default_title": "Skiff test" },
+  "options_page": "options.html",
+  "web_accessible_resources": ["stub.js"]
+}

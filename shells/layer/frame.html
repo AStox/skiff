@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en" class="frame">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:">
+<title>Window</title>
+<link rel="stylesheet" href="shell.css">
+</head>
+<body>
+<svg hidden>
+  <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+</svg>
+
+<div id="ring" aria-hidden="true"></div>
+<div id="lit" aria-hidden="true"></div>
+<div id="bar" aria-hidden="true"></div>
+<div class="rz" data-edge="n"></div><div class="rz" data-edge="s"></div><div class="rz" data-edge="e"></div><div class="rz" data-edge="w"></div>
+<div class="rz" data-edge="nw"></div><div class="rz" data-edge="ne"></div><div class="rz" data-edge="sw"></div><div class="rz" data-edge="se"></div>
+<span id="ear-measure" aria-hidden="true"></span>
+<div id="ear" role="group">
+  <span id="ear-fav"></span><span id="ear-title"></span>
+  <button id="ear-hide" class="ear-btn" type="button" title="Hide" aria-label="Hide"><svg class="icon" aria-hidden="true"><use href="#i-minus"/></svg></button>
+  <button id="ear-close" class="ear-btn" type="button" title="Close" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+</div>
+
+<script src="common.js"></script>
+<script src="frame.js"></script>
+</body>
+</html>

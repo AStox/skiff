@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en" class="overlay expose">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:">
+<title>Windows</title>
+<link rel="stylesheet" href="shell.css">
+<link rel="stylesheet" href="expose.css">
+</head>
+<body>
+<svg id="veil" aria-hidden="true"><mask id="holes"></mask><rect class="fill" width="100%" height="100%" mask="url(#holes)"/></svg>
+<div id="tray" aria-hidden="true" hidden></div>
+<div id="stage" role="group" aria-label="Windows"></div>
+<p id="empty" hidden><span>No windows in this space</span></p>
+<span id="ear-measure" aria-hidden="true"></span>
+
+<script src="common.js"></script>
+<script src="expose.js"></script>
+</body>
+</html>

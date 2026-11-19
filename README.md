@@ -1,0 +1,325 @@
+# Skiff
+
+A bare-bones Arc-like browser for macOS, built on Electron. Three layers:
+
+1. **Core** (`src/main.js`, `src/state.js`): owns all state and behavior behind one command registry.
+2. **Shell** (`shell/`): plain HTML, CSS and JS that draws the whole interface. It is copied to the data dir on first run and you can rewrite every file of it.
+3. **Local API**: the same registry over HTTP on 127.0.0.1, plus a small CLI. Anything the interface can do, an agent can do.
+
+Web pages get none of this: no preload, sandboxed, context isolated.
+
+## Run
+
+```sh
+npm install
+npm start              # the first run downloads the Electron binary
+npm test               # state logic, plain node --test
+npm run app            # packages a macOS app into dist/, run this on a Mac
+```
+
+## Electron security updates
+
+The Hetzner updater checks Electron's official stable release feed every 15 minutes and considers newer patch/minor releases on the installed major only. Prereleases and downgrades are ignored. A newer candidate is downloaded to a temporary location; `npm test` and the visual Electron suite run against an isolated copy of the source with a synthetic profile under Xvfb. A failed download or test leaves the installed runtime untouched.
+
+Promotion updates only the Electron runtime and its Electron lock entry in the Mac source checkout. It requires the tested source-content fingerprint to still match, and Skiff to be closed; it never quits or restarts the app or touches its profile. A successful install keeps the previous Electron runtime and reports that a normal restart is pending. Chromium security-fix lag is not inferred from version numbers; upstream metadata and the release note are recorded, but a version bump is not proof every Chromium fix is included.
+
+Check status on Hetzner with `node scripts/security-updater.js status`; the state file is `/var/lib/skiff-security-updater/status.json`. Pause/resume checks with `sudo systemctl disable --now skiff-security-updater.timer` / `sudo systemctl enable --now skiff-security-updater.timer`. Resume Skiff only through its ordinary launcher; the updater never launches it. The previous runtime path is in status as `previousRuntime`; restore it only while Skiff is closed, after preserving the current runtime.
+
+Data dir: `~/Library/Application Support/Skiff` on macOS, `~/.config/Skiff` elsewhere. Set `SKIFF_DATA` to use another one (the CLI honors it too).
+
+| File | What |
+| --- | --- |
+| `state.json` | spaces, tabs, archive, settings, window bounds |
+| `shell/` | the live shell; your copy always wins over the bundled one |
+| `favicons/` | site icons saved by the core; tabs name them by a path relative to the shell |
+| `api.json` | `{port, token}`, mode 0600, rewritten at each launch |
+| `passwords.enc` | saved passwords encrypted with the operating system key store, mode 0600 |
+
+## Interface
+
+The default shell combines Arc's sidebar address, favorite tiles, vertical tabs and bottom space strip with Offset-inspired Archivo typography and warm neutral surfaces. The space title is one compact line. Its rename button appears when you hover or focus the title row. The webpage keeps its generous inset, rounded frame. Archivo is bundled locally under the SIL Open Font License; the interface needs no font service.
+
+Cmd+T opens the command bar, a box floating over the live page, which stays visible and dimmed beneath it. Type and the top result fills in: `red` becomes `reddit.com` with the completed part selected, so Enter opens it in a new tab and Backspace removes the completion. Completions come from the hosts of open tabs, a built-in site table and the archive, in that order. Below the completion the bar lists open tabs from every space (Enter switches to one), sites from the table, up to three archived tabs (Enter reopens one), and a last row that opens the text as an address or searches it with the search engine chosen in Settings. Up and Down move the selection; Escape or a click outside closes the bar. Cmd+L, or clicking the sidebar address, opens the same bar with the current address selected; Enter then navigates the current tab instead of opening a new one.
+
+Tab on a completed site, such as `youtube.com`, `maps.google.com`, `github.com` or `wikipedia.org`, turns the bar into a search of that site: a `Search YouTube` chip appears, you type the words, Enter opens that site's results page. Typing the host and a space does the same. Backspace on the empty box returns to the host. The sites and their search URLs are the `SITES` table in `shell/common.js`; edit it to add your own.
+
+Favorites belong to a space. Each space shows only its own favorites, as tiles above the title. A tile shows the site icon and no text; the title is in its tooltip. A tab without an icon shows a globe in a tile and a letter in a row.
+
+Icons are files. The core saves the icon of each page you open under `favicons/` and keeps the path in `tab.favicon`. Imported tabs get the icon Arc already saved for them. At startup and after an import the core also fetches icons for tabs that still have none: one request for the page and one for its icon per site, from a separate in-memory session that sends no cookies. If the icon a page names cannot be used, `/favicon.ico` is tried once. A file that cannot be drawn shows the globe or the letter instead. Icon files are never deleted.
+
+The bottom strip holds spaces. Drag a space before or after another to reorder it. Arrow keys, Home and End move focus; Enter activates the focused space. Alt+Shift+Left/Right reorders it without changing the active space. Space order survives a restart.
+
+Swipe horizontally over the sidebar or an empty page to switch spaces. About 30 pixels of travel is enough. One flick moves one space, however long its momentum runs, and stops at the ends. A new flick switches again at once, even while the last one is still coasting. The lists slide in briefly, unless the system asks for reduced motion. Vertical scrolling, pinch gestures, text inputs and open dialogs do not switch spaces. An overflowing space strip scrolls normally. Over a web page the swipe belongs to the page instead, in every shell.
+
+Swipe two fingers sideways on a web page to go back or forward, as in Chrome on the Mac: toward the right goes back, toward the left goes forward. A round arrow slides in from that edge and fills as you swipe; about 140 pixels of travel navigates, and reversing before that cancels. One swipe navigates once, however long its momentum runs, also into the page it opens. It only starts when nothing under the pointer can still scroll that way, so carousels, maps and wide tables scroll first, and never when the page handles the wheel itself, on a pinch, or when there is no history that way. The page keeps all its scrolling.
+
+A tab opened from a page, such as a link that opens a new tab, appears indented under the tab it came from. These trails can be any depth. Closing a tab lifts its children one level. Pinning a tab, making it a favorite or moving it to another space takes it out of its trail. Ctrl+Tab follows the order shown.
+
+There are no pin or favorite buttons. The sidebar has three sections: favorites, pinned tabs (with folders) and tabs. Drag any tab of the space into a section to make it a favorite, pin it, or unpin it, at the spot you let go. Drop on a folder name to add it to that folder, also when the folder is closed. While a section is empty, a dashed drop area appears for it during a drag.
+
+While you drag, the sidebar shows what a release will do. A dashed copy of the tab sits where it will land, in the form it will take: an icon tile among favorites, a row among pinned tabs or tabs. The other items make room, and the original fades or hides so the tab never shows twice. Over a space button, a caption names the space. Where a release would change nothing, no copy appears and the cursor says so. Escape cancels. A screen reader hears the pending result. A trail child reorders only among its siblings.
+
+With a tab focused, Alt+Shift+Up/Down reorders it within its section. At the edge of a section a top-level tab steps into the next one: up from tabs to pinned to favorites, and back down. Alt+Shift+Left/Right moves it to the adjacent space. Moving an imported tab preserves its original profile session. On a Mac, Alt is Option.
+
+Cmd+Shift+N (Ctrl+Shift+N elsewhere) opens the incognito space and the command bar. There is one incognito space. It has a dark look, its own session in memory and a close button in its title row. Nothing in it is written to disk: its tabs are not in `state.json`, closing a tab does not archive it, auto-archive skips it, and its icons are held in memory. Closing the space, or quitting, drops its tabs and clears its cookies and site data. Tabs cannot move into or out of it. Normal spaces and settings are kept as usual.
+
+Cmd+Shift+C (Ctrl+Shift+C elsewhere) copies the current tab's address and shows "Copied URL" above the space strip for a moment. The page keeps focus. `tabs.copyUrl {id?}` does the same for any tab and returns `{url}`.
+
+Browser keys work as in Chrome, with Ctrl in place of Cmd elsewhere. Cmd+Left and Cmd+Right (Alt+Left and Alt+Right on Linux and Windows) go back and forward; inside a text field the field keeps them. Cmd+Shift+R reloads without the cache. Cmd+Shift+] and Cmd+Shift+[ show the next and previous tab. Cmd+1 to Cmd+8 show that tab of the space, counted as Ctrl+Tab counts them, and Cmd+9 shows the last. Cmd+= (or Cmd+Plus), Cmd+- and Cmd+0 zoom the page in, out and back to 100%, as do Ctrl+wheel; a trackpad pinch magnifies the page as Chrome does on the Mac. Same-site tabs share their zoom, and zoom is not saved. Cmd+P prints the page. Cmd+S sends the shell `toggle-sidebar`, which Layer and Quiet use to open and hide their sidebar. The View menu makes the interface larger, smaller or its actual size. `tabs.select {index}`, `tabs.zoom {id?, delta}`, `tabs.print {id?}` and `tabs.reload {id?, ignoreCache?}` are the commands behind them.
+
+Cmd+Shift+U (Ctrl+Shift+U elsewhere) opens the panel of the first extension that has one, such as uBlock Origin's, over the page; it closes when it loses focus. See Extensions below.
+
+The gear opens Settings: rename or color the current space, set the auto-archive delay, pick a shell or a search engine, set up your AI agents (see Your agent), open uBlock Origin's panel or dashboard, import from Arc, or fill a saved password. A delay of zero disables auto-archiving. The search engine is Google by default; the list also offers DuckDuckGo, Bing, Brave Search, Kagi and Ecosia, and `settings.set {"searchUrl": "https://example.com/?q=%s"}` sets any other URL with `%s`, which the list then shows as Custom. Archive has its own button. Deleting a space and clearing the archive require confirmation. Deleting a space archives its favorites with its other tabs. Every default shortcut is available in every profile; saved entries override a default with the same accelerator (see below). `ui.emit {"name": "toggle-settings", "data": {"section": "agents"}}` opens Settings at its Agents group (it never closes it).
+
+## Your agent
+
+Ask your own AI agent from the command bar. Press Cmd+T (Ctrl+T elsewhere) and type: the bar offers **Ask <agent>** with the model and effort it will use. For a question of several words it is the first row, so Enter sends it; for an address or a single word it waits at the bottom of the list. Tab on that row switches the bar to agent mode, where you pick the agent, the model and the effort, and can tick **Include this page**. Cmd+J (Ctrl+J elsewhere) opens the bar straight in agent mode, or switches an open bar to it and keeps what you typed. Backspace in an empty field leaves agent mode. Skiff speaks the [Agent Client Protocol](https://agentclientprotocol.com) (ACP), JSON-RPC over the agent's standard input and output, so any agent with ACP support works.
+
+Each question opens a new chat tab, nested under the page you asked from, titled with your question and marked with a sparkle. Its loading bar runs while the agent works. The tab is a quiet reading view modelled on bb: one centred column, your messages in grey bubbles on the right (with the page they carried, if any), the agent's answers as plain text with headings, lists, bold, italics, inline code and code blocks (a link shows its address on hover and does not open), its thinking folded into a **Thought** row that opens on click, and each tool call as a row that shows whether it is waiting, running, done or failed. A permission request sits in a tray above the composer with the agent's own options. In the composer you type a follow-up (Enter sends, Shift+Enter starts a new line), switch the model or effort for the next answer from the two menus beside Send, or press Stop. The model and effort you last used become the defaults for the next question. Chat tabs close, archive and move like any other tab. After a restart a chat tab asks the agent to load its session again (ACP `session/load`) and rebuilds the conversation from it; an agent that cannot load sessions leaves the tab saying so, and the next message starts a fresh session. Chat tabs are set in Inter, bundled as `chat/inter.woff2` under the SIL Open Font License (`chat/inter-license.txt`).
+
+Agents live in **Settings > Agents**, in the default shell and in Layer alike; the gear at the top of any chat tab opens it. To add one, pick a command from the list (or type your own, which the list then shows as Custom), check the name and press **Add agent** or Enter. Each agent's row shows whether it is running, its command, and **Default** or a **Make default** button; **Remove** drops it. Under the list, **Default model** and **Default effort** set what the default agent uses for the next question; Skiff starts the default agent while Settings is open so it can list them. With no agent set up, the bar's row reads **Ask an agent** and Enter opens Settings at Agents, as does **Add an agent...** in agent mode. A question that reached a chat tab before any agent existed (`ai.ask` from the API) waits there with **Connect an agent**, which opens the same place, and goes to the first agent you add. `settings.set {"ai": {"agents": [{"name": "omp", "command": "omp acp"}]}}` sets the whole list from the API, and `agent`, `model` and `effort` in the same object set the defaults. Commands for example:
+
+```sh
+omp acp
+ssh myserver omp acp
+gemini --acp
+npx -y @agentclientprotocol/codex-acp           # Codex
+npx -y @agentclientprotocol/claude-agent-acp    # Claude
+hermes acp
+```
+
+Each agent runs once, in your login shell with its own credentials, in a working folder `ai/` in the data dir, and serves all of its chats. Agent mode or Cmd+J starts it so the bar can list its models and efforts; nothing is sent until you press Enter. A question sends your text, and only with **Include this page** ticked the page's title, address, selected text and first 12000 characters of text. An agent that can use MCP over HTTP also gets a small set of browser tools: list, open, navigate, show and close tabs, and read a page; they never read or navigate a chat tab. The tools live on this machine, so an agent over ssh can chat but cannot reach them. When the agent asks before using one, the card with its options is the agent's own request; Skiff passes your answer back.
+
+**Include this page** is never offered for an incognito page and the tools cannot see or touch incognito tabs. A chat asked from an incognito page stays in the incognito space and is gone when it closes, though the agent may keep its own record of the session. Skiff never asks for or stores keys; it keeps only each chat tab's agent name and session id. Quitting stops every agent and everything it started.
+
+## API
+
+Every command goes through one registry. Ask the running app what exists:
+
+```sh
+bin/skiff commands.list
+bin/skiff state.get
+bin/skiff tabs.create '{"url":"example.com"}'
+bin/skiff tabs.create '{"url":"how to row a skiff","activate":false}'
+bin/skiff tabs.create '{"url":"example.com/docs","parentId":"<tab-id>"}'
+bin/skiff tabs.setFavorite '{"favorite":true}'
+bin/skiff tabs.setPinned '{"pinned":true,"folder":"Docs"}'
+bin/skiff ui.emit '{"name":"import-arc"}'
+bin/skiff ui.emit '{"name":"toggle-settings"}'
+bin/skiff spaces.move '{"id":"<space-id>","index":0}'
+bin/skiff import.arc.preview
+bin/skiff passwords.fill
+bin/skiff incognito.open
+bin/skiff archive.restore
+bin/skiff events            # server-sent events, one full state per change
+```
+
+Where `id` is optional it means the active tab. Tabs open only `http:` and `https:` URLs. Other text becomes a search.
+
+A tab is plain, pinned or a favorite, and always belongs to one space (`tab.spaceId`). A favorite shows only in its space; `tabs.setFavorite` keeps the tab where it is. A pinned tab stays in its space, optionally in a folder, and is never auto-archived. A folder exists only through the tabs that name it; `folders.setCollapsed` folds it.
+
+A plain tab may have a `parentId`, the plain tab of the same space it was opened from. `tabs.create {parentId?}` sets it; a parent that is pinned, a favorite or in another space is ignored. `tabs.move` reorders a tab among the tabs with the same parent.
+
+`tabs.close` returns `{archived: id}` for a plain tab, `{unloaded: id}` for a pinned tab or a favorite, which stays in the sidebar, and `{closed: id}` in the incognito space, where the tab is dropped and not archived.
+
+`incognito.open` creates the incognito space if needed, switches to it and returns it. The space has `incognito: true`. `spaces.remove` closes it and clears its session. `state.get` and the event stream include it while it is open; `state.json` never does.
+
+An agent working beside you opens its own tabs with `tabs.create {url, agent, spaceId?}`, where `agent` names it (at most 40 characters). An agent tab loads at once in a hidden window and never takes focus, never changes the active space or tab and never shows in the tab list, the desk, auto-archive or `browser_list_tabs`. It lives in `agentTabs` in `state.get` and the event stream, with the same fields as a tab plus `agent`, and is never written to `state.json`, so it is gone after a restart. It uses the session of its space (the active space by default, or the first normal one while the incognito space is active), so it shares that space's cookies and sign-ins; the incognito space is refused with `bad_params`. A link it opens in a new tab becomes another hidden tab of the same agent. `tabs.navigate`, `back`, `forward`, `reload`, `zoom`, `print` and `copyUrl` work on it by id, `tabs.read {id?}` returns its `{title, url, selection, text}`, and `ui.capture {target: "page", id}` screenshots it while hidden (without `id`, the page showing in the window). `tabs.close` drops it with `{closed: id}`, never archiving it, and `spaces.remove` drops a space's agent tabs; `tabs.move`, `tabs.setFavorite` and `tabs.setPinned` refuse it.
+
+```sh
+bin/skiff tabs.create '{"url":"example.com","agent":"omp"}'
+bin/skiff tabs.read '{"id":"<tab-id>"}'
+bin/skiff ui.capture '{"target":"page","id":"<tab-id>"}' | jq -r .png | base64 -d > agent.png
+```
+
+`tabs.activate {id}` (or `desk.show`) on an agent tab peeks at it: Skiff moves that same live page into your window, in front, over the current space, without reloading it, and sets `state.peek` to its id; `activeSpaceId` and `activeTabBySpace` do not change. In a desk shell it shows at its `tab.desk` rect, the `center` layout the first time, with a frame like any window, and `desk.place` or `desk.tile` move it. Showing any other tab or space, opening incognito, creating an active tab, `desk.hide` of it, closing it, or a click on any other window ends the peek and the page goes back to the hidden window, where the agent keeps working. Peeking does not move the keyboard; `ui.focusPage` does.
+
+The hidden window is one `BrowserWindow` that Skiff creates with the first agent tab and closes with the last: never shown, not focusable, out of the taskbar, 1280 by 800, painting while hidden. Agent pages are not throttled in the background, so their timers run at full rate and `document.visibilityState` is `visible`. On Linux under Xvfb, with no debugger attached, a page that has never been in a visible window gets no frames at all there: `requestAnimationFrame` never fires and `capturePage` fails with "Current display surface not available for capture". Showing the hidden window off-screen does not help. So each time an agent page is ready (`dom-ready`), Skiff adds its view to your window at 1 by 1 pixel and takes it out again in the same tick, which never paints and does not move the keyboard; from then on the page renders in the hidden window and `capturePage` returns its real pixels at 1280 by 800. Because nothing draws the hidden window, a page that keeps repainting gets about one animation frame a second there (a page that does not repaint gets 60), and full speed again while peeked. Playwright's debugger connection hides all of this, which is why `e2e/agent-tabs.spec.js` checks it on a second Skiff with nothing attached. macOS has not been checked. Because the hidden window exists, closing your window quits Skiff on Linux and Windows instead of waiting for `window-all-closed`.
+
+Open **Settings → Import from Arc** to choose any number of Arc profiles, the categories to bring over, and whether to keep their spaces. All profiles start selected; use the checkboxes or Select all / Clear selection. Saved passwords and website sign-ins start unchecked. Review your selection before importing; one native confirmation, with Cancel selected, covers all selected profiles before Skiff opens protected databases or asks Keychain for Arc's Safe Storage key. Preview reads profile metadata and sidebar contents only.
+
+The flow follows [Yab's local import approach](https://yetanotherbrowser.com/manual/bring-in): no upload or plaintext export. Arc can stay open; SQLite reads include committed WAL records. Each imported profile gets an isolated browser session, including its favorites, so accounts from different profiles do not overwrite each other. Arc shows a profile's favorites in all of its spaces; Skiff puts them in the first space imported for that profile. New tabs in an imported space use that profile. Moving an existing tab or making it a favorite preserves its original session.
+
+For the API, call `import.arc.preview`, then `import.arc` with `profileIds` (a nonempty array of returned IDs), `categories: {tabs, openTabs, passwords, logins}` (all booleans), and `keepSpaces` (boolean). Every ID is validated before import; repeated IDs are processed once. `tabs` includes favorites, pinned tabs and folders. With `keepSpaces: false`, each profile's tabs collect in a separate new space. Password-only or sign-in-only imports also create a profile space so the imported data is usable. The API cannot bypass the native confirmation, and no command returns passwords or cookies.
+
+Results include totals and expandable per-profile counts. Profiles with warnings open automatically. Passwords and sign-in cookies report imported, skipped and failed counts separately. A failed profile does not stop the others; unreadable database counts are unknown and reported as warnings. Repeat imports preserve existing passwords and destination cookies. Arc source IDs prevent duplicate tabs after renaming spaces, navigating tabs or changing the layout option. Layout choices apply to new imports and do not rearrange existing tabs. The API returns each profile's counts and warnings in its `profiles` array.
+
+Keeping Arc spaces also imports their background colors. Modern blended gradients retain their base and overlay stops, alpha and intensity, with light/dark semantic backgrounds. Legacy shaded palettes become solid backgrounds. Choosing a space color in Settings or `spaces.update` replaces the imported background, including when choosing the same accent; renaming does not. Repeat imports keep existing backgrounds and manual overrides. Combined profile spaces (`keepSpaces: false`) have no single source theme and retain the default appearance.
+
+Older imports can backfill a missing background only when the Arc source space ID and profile partition match and the current accent still exactly matches Arc's source accent. Name-only matches, different accents and explicit overrides are never backfilled. Old versions did not record color edit history, so an old edit back to the exact source accent is indistinguishable from an untouched import. Once changed with this version, an override remains protected across restarts and imports.
+
+To use an imported password, open the site's sign-in page in the imported profile and choose **Settings → Fill saved password**. The native account picker identifies the exact site; filling never submits the form. Only exact HTTPS origins match. Skiff does not fill embedded frames, password-creation forms, ambiguous forms with multiple password fields, or forms that submit to another origin. Passwords remain encrypted at rest, outside browser state and API events.
+
+Protected import currently supports macOS Arc v10 encryption and cookie database versions through 24. Unsupported encryption, partitioned cookies and unsafe records are reported rather than weakened. HTTP passwords, passkeys and site local storage do not transfer. Some sites will require signing in again. Source files are not modified; Skiff does not remove a password export because it does not create one.
+
+Imported tabs stay asleep. Their icons come from Arc's own saved icons first: the `Favicons` database in each Arc profile folder, which is not encrypted and needs no Keychain. Skiff takes the icon Arc saved for the exact page, or else the newest icon Arc has for the same site. A running Arc keeps that database locked, so Skiff then reads a private temporary copy and deletes it. A missing or unreadable icon database is skipped without an error. Importing again also refreshes the icons of tabs from an earlier import. A site Arc had no icon for is asked once after the import, without sign-ins: those requests carry no cookies or other credentials and do not use the imported sessions. Tabs with no icon from either source keep a letter or a globe.
+
+Automated checks cover synthetic encrypted SQLite databases, batch consent denial, profile isolation, repeat imports, partial failures and vault failures. Electron smoke runs on Linux and macOS verified signed-in HTTPS requests and approved password filling. Mac checks covered actual Keychain retrieval with a temporary synthetic key and a three-profile import with separate credentials and sessions for the same site. Real Arc credentials were not accessed.
+
+Over HTTP, read `port` and `token` from `api.json`:
+
+```sh
+curl -s -X POST http://127.0.0.1:$PORT/rpc \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"method":"spaces.create","params":{"name":"Work","color":"#2f9e5b"}}'
+# {"ok":true,"result":{...}}  or  {"ok":false,"error":{"code":"bad_params","message":"..."}}
+
+curl -s -N http://127.0.0.1:$PORT/events -H "Authorization: Bearer $TOKEN"
+```
+
+Error codes: `unknown_method`, `bad_params`, `not_found`, plus `unauthorized` and `forbidden` at the HTTP layer and `internal` for bugs. A request is refused if it has no bearer token, carries an `Origin` header, or has a `Host` other than `127.0.0.1:<port>` or `localhost:<port>`. Bodies are capped at 1 MB. Do not send an `Origin` header from your client.
+
+Command groups: `spaces.*`, `tabs.*`, `folders.setCollapsed`, `desk.*`, `archive.*`, `incognito.open`, `import.arc`, `import.arc.preview`, `passwords.fill`, `settings.set`, `extensions.*`, `ai.*`, `ui.*`. `commands.list` is the reference; this file does not repeat it.
+
+`spaces.move {id, index}` takes a zero-based integer position, clamped to the space list. It changes order only, preserving the active space, tabs and profile sessions.
+
+`tabs.thumbnails {ids, width?}` returns `[{id, image}]` for up to 24 tabs in the order asked: `image` is a JPEG data URL of the page as it is on screen now, `width` pixels wide (480 by default, 960 at most), or null for a tab that is not on screen (hidden, in another space, not loaded) or cannot be captured. Layer's exposé draws its cards with it.
+
+The agent is `ai.*`. `ai.agents` lists the configured agents with their status, models and efforts; `ai.warm {agent}` starts one and resolves once its models and efforts are known. `ai.ask {text, agent?, model?, effort?, includePage?, tabId?}` opens a chat tab under `tabId` (the active tab by default) and returns `{tabId, chatId}` at once; with no agent configured the tab waits in setup with the text and sends it to the first agent added. A chat tab's URL is `skiff://chat/<chatId>` and its `chat` field holds `{agent, sessionId}`. `ai.chat {chatId}` returns the conversation (`status` setup, restoring, ready, running or error, `error`, `pending`, `sessionId`, `models`, `model`, `efforts`, `effort`, `permission {id, title, options}` and `turns`), restoring it with `session/load` if this run has not seen it yet. `ai.prompt {chatId, text}` sends a follow-up and returns `{turnId}` at once, `ai.configure {chatId, model?, effort?}` changes the model or effort for the next turn, `ai.cancel {chatId}` stops the turn, and `ai.permit {chatId, optionId}` or `{chatId, cancel: true}` answers a permission request. A change to the agent list pushes `ai-agents` to the shell pages and chat tabs; a change to a chat pushes `chat` to that chat's own tab. `/events` streams both as `event: ai-agents` and `event: chat`.
+
+`POST /mcp` with the same bearer token is an MCP server (streamable HTTP, JSON replies) with the tools `browser_list_tabs`, `browser_open_tab`, `browser_navigate`, `browser_activate_tab`, `browser_close_tab` and `browser_read_page`. Skiff hands it to the agent at `session/new` when the agent can use MCP over HTTP. Every tool refuses incognito tabs.
+
+Shortcuts live in `settings.shortcuts` as `{ "<Electron accelerator>": { "method": "...", "params": {...} } }`. `settings.set {"shortcuts": {...}}` replaces the whole map and rebuilds the menu. Electron ignores an accelerator it cannot parse.
+
+On load, any default accelerator missing from the saved map is added back, so a profile created before a default existed still gets it. To turn a default off, map its accelerator to another command.
+
+Browser identity has a profile default and an optional per-tab override. The profile default is selected with `settings.set {"browserIdentity": {"persist:main": "native"}}`; read `state.get` first because each tab's `sessionPartition` identifies its profile, including after moving it to another space. Ordinary spaces share `persist:main`; imported Arc profiles have separate `persist:arc-...` partitions. Keys must start with `persist:` followed by letters, digits, dots, underscores or hyphens. Values are `native` or `compatible`; updates merge into the saved map and apply after restarting Skiff. Incognito partitions are not accepted.
+
+`compatible` remains the default profile identity: Skiff removes its own and Electron's product tokens. `native` keeps the installed Skiff/Electron identity. Existing profile sessions, cookies and site storage do not move or clear.
+
+New tabs opened at the exact host `web.whatsapp.com`, and older saved tabs restored at that host, get a persisted `compatible` tab override. A tab keeps its override when it navigates elsewhere, reloads, follows redirects or uses history. Popups choose independently by destination: a WhatsApp popup is compatible; an ordinary popup uses its profile default. Other tabs in a native profile, including Google tabs, remain native.
+
+To choose an identity while navigating an existing tab, pass it to `tabs.navigate`, for example `tabs.navigate {"url":"https://web.whatsapp.com/","browserIdentity":"compatible"}` for the active tab. This recreates that tab's view with the same session before loading the requested URL; the new view starts a fresh navigation history. Omit `browserIdentity` to keep the tab's current choice, or pass `null` to persistently use the profile default, including on WhatsApp. Do not first navigate a native tab to WhatsApp and expect automatic site-only switching. A compatible tab stays compatible on Google; use a native tab or explicitly select `native` when navigating to Google.
+
+This does not create profiles or change profile storage. Creating an ordinary space still shares the main profile; the existing profile-creation path is Arc import. There is no general profile editor or browser-identity control in Settings.
+
+## Customizing the shell
+
+```sh
+bin/skiff ui.shellPath      # where the live files are
+bin/skiff ui.capture '{"target":"shell"}' | jq -r .png | base64 -d > shell.png
+bin/skiff ui.devtools '{"target":"shell"}'
+bin/skiff ui.resetShell     # moves your shell to shell.bak-<timestamp>, restores the default
+```
+
+Edit the files in place. The app watches the folder and reloads the shell on every change, so the loop is: edit, `ui.capture`, look, repeat. A `shell` capture shows the interface without the web page (the page is a separate native view); capture `page` for the page itself. The folder holds `index.html`, `shell.js` and `shell.css` for the window, `palette.html` and `palette.js` for the command bar, which is its own page drawn over the window, and `common.js` for what the window and the command bar share. Chat tabs are not part of the shell: they show `chat/chat.html` from the app folder, with the same `window.skiff` bridge, in every shell.
+
+The contract a shell must keep:
+
+- `window.skiff.call(method, params)` returns a promise of the result, or rejects with `{code, message}`.
+- `window.skiff.on(name, listener)` subscribes to `state` (the full state after every change), `ai-agents` (the agent list, as `ai.agents` returns it) and to custom events sent with `ui.emit {name, data}`. The default shell listens for `new-tab` (opens the command bar for a new tab), `focus-address` (opens it to edit the current address), `toggle-archive`, `toggle-settings`, `ask-agent` (Cmd+J, opens the command bar in agent mode) and `import-arc`.
+- Tell the core where the page goes: `skiff.call('ui.setPageBounds', {x, y, width, height, radius})` in CSS pixels, on load and whenever that rectangle moves. Nothing is shown until you do.
+- Use `ui.setPageVisible {visible: false}` before a shell dialog and restore it when closing. The page is a native view and otherwise covers HTML overlays. To float something over the live page instead, open one of your own files with `ui.showOverlay {file}` and close it with `ui.hideOverlay`: the file is drawn as a transparent page covering the whole window, above the web page, and gets the same `window.skiff` bridge, `state` pushes and `ui.emit` events as the shell. The default command bar works this way. Pass `bounds: {x, y, width, height}` to confine the overlay to one rectangle, so the page around it stays clickable; a negative `x` or `y` measures from the right or bottom edge and follows resizes. Showing the same file again only moves it and leaves focus alone. There is one overlay, so showing another file replaces the first.
+- `ui.setWindowButtons {visible: false}` hides the macOS window buttons while your shell has nothing to put behind them; a shell change or reload shows them again. Hidden buttons leave moving the window to a drag region (`-webkit-app-region: drag`) of your own.
+- Keep no state of your own beyond input in progress. Rerender from each `state` event.
+- `tab.favicon` is `''`, `../favicons/<name>` or a `data:` URL. The path form names a file the core saved under `favicons/` in the data dir, relative to the shell's `index.html`, so it works as an image `src` as it is. Incognito tabs get the `data:` form. Draw your own placeholder when it is empty, fails to load, or loads and draws nothing. Chromium accepts some broken ICO files without an error event or a rejected `img.decode()`, so the default shell also checks that the icon has a visible pixel.
+- A space with `incognito: true` is the temporary incognito space. A plain tab may carry `parentId`; the default shell draws such tabs indented under their parent.
+- The shell runs under a strict CSP: no inline scripts, no inline style attributes, no remote scripts. Images load only from the shell's own files and `data:` URLs (`img-src 'self' data:`), so a remote image URL does not load. Set CSS variables with `element.style.setProperty`.
+- Page titles and URLs are untrusted. Use `textContent`, never `innerHTML`.
+
+Theme: the variables at the top of `shell.css` (`--canvas`, `--ink`, `--accent`, `--radius`, `--sidebar`) drive everything else through `color-mix`. `--accent` is set from the active space color. Light and dark defaults mix 14% of the space color into warm neutrals, with contrasting selected tabs. The incognito space uses a fixed dark gray theme. Imported backgrounds additionally paint the shell with `--space-background`, using their own semantic foreground rather than the default tint, without changing native page bounds. Manual color choices restore the default theme with the chosen accent.
+
+The persisted/API space field is `background: {light?: layer, dark?: layer}`, where a layer is `{color: "#rrggbb"}` or `{color, colors: ["#rrggbb", ...], overlayColors: [...], intensity: 0..1}`. Colors may include an `aa` alpha suffix; each stop list is limited to 16. Only validated color values and finite intensity numbers are retained, never arbitrary CSS. An absent field is eligible for conservative backfill; `null` records a manual override. Invalid persisted data becomes `null`. Import fallback uses valid semantic or legacy colors when the gradient is malformed.
+
+Rendering is an approximation of Arc's colors, not macOS vibrancy. Extended sRGB channels are clamped and rounded to 8-bit sRGB. Base colors run left to right across the window. Overlay colors run top to bottom over them. Stops are evenly spaced, and each color shows at two thirds of the stored intensity over the appearance's background color. Grain, wheel generation, translucency and window blur are not reproduced. Shell text is black or white, whichever contrasts more with the colors under the sidebar. The colors are not washed out for legibility: a uniform veil is added only when that contrast would still be below 4.5:1. The stored source colors and intensity are unchanged.
+
+An update to the bundled shell does not touch your copy. Run `ui.resetShell` to pick it up.
+
+## Trying another shell
+
+`shells/` holds complete alternative shells, each a folder with the same files as `shell/`. Pick one from the Shell field in Settings or from the Shell menu: the live shell folder is replaced and the window reloads it in place, with tabs, spaces and the page untouched. `default` is the bundled `shell/`. The choice is saved as `settings.shell`, and every state push lists the names in `shells`.
+
+```sh
+bin/skiff state.get | jq .shells
+bin/skiff ui.setShell '{"name":"timeline"}'
+bin/skiff ui.setShell '{"name":"default"}'
+```
+
+Switching copies the chosen folder over the live one, so edits you made to the live shell are overwritten; `ui.resetShell` keeps a backup, `ui.setShell` does not.
+
+To look at a shell without Skiff, `node scripts/shell-preview.js shells/timeline out.png` renders it in plain Chromium with a synthetic profile and a stand-in page; add `--dark`, or `--overlay palette.html --type lin` for the command bar. It needs `npx playwright install chromium` once.
+
+A desk shell renders at 1440 by 900 on a plain wallpaper, with stand-in pages at sample `tab.desk` rects, a frame view under each when `shell.json` declares one, named overlays, and a small core behind `desk.*`, `tabs.*` and `ui.setDesk`. Its steps run in the order given: `--click 'buoy:#buoy-main'` closes the panel (it is open at rest), `--drag "450,187 900,400 1436,450"` holds a drag mid-way (`--drop` releases it), `--click 'buoy:#buoy-tabs'` opens the tab list, `--emit new-tab --type lin` opens the command bar, `--size 560x600` changes the window. A selector (or `--eval` code) starting with `overlay:` targets the main overlay, `panel:` the panel's, `buoy:` the Buoy's, `tabs:` the tab list's, and `frame:<tab id>:` that window's frame. The preview stands for Skiff behind another app, so `--click 'tabs:.row-main'` shows just that tab's window.
+
+## Desk shells
+
+A shell folder with `shell.json` `{"window": "desk"}` gets a desk window instead of the app window: frameless, transparent, without a shadow, fixed over the work area of its display (never the menu bar or Dock), refitted when the displays change. Switching between an app shell and a desk shell opens a new window of the other kind and moves the open pages into it, still loaded; the app window's saved bounds are kept for the way back. `ui.setPageBounds` does nothing there.
+
+On the desk every tab may carry `tab.desk: {x, y, width, height, z, hidden?}` in window CSS pixels, saved with the tab; higher `z` is in front within its space. The window shows, for the active space, every ordinary tab (not a favorite, not pinned) that is not hidden, every other tab with a `tab.desk` that is not hidden, and the active tab, always in front. Placed windows stack by `z` above unplaced ones. A shown tab without a rect sits at a default: centred at 62% by 74% of the window (at least 240 by 160), 28px further down and right for each place in the space's tab order, starting over before it would leave the window; it is not saved until the shell places it. A tab opened while a desk window is open (from the command bar, `tabs.create`, a link or `archive.restore`) gets a rect at once: the last rect `desk.place` or `desk.tile` gave a tab of its host, 28px further down and right while a window shows at exactly that rect; else the largest part of the desk that no shown window or its frame's top inset covers, less an 8px margin, when that is at least 520 by 360; else the default. The last 200 hosts placed are kept in `deskHosts`, saved, incognito tabs never. A favorite or pinned tab activated on the desk gets that default rect and stays a window until hidden. Activating a tab, or clicking its page, shows it if hidden and brings it to the front; closing a favorite or pinned tab hides its window. State pushes carry `deskSize: {width, height}`, the window in CSS pixels, and `deskTop`, the frame's top inset, while a desk window is open. A space switch slides the shown windows like macOS Spaces over about 240ms, each page with its frame: the old space's leave the desk the way the switch goes (next space to the left, previous to the right, by `spaces.cycle`'s `delta` or else by space order) while the new space's come in from the other side, a switch mid-slide turns every window around from where it is, and a drag in progress ends; every space's shown windows load in the background after startup, so a first switch never waits for a page.
+
+```sh
+bin/skiff desk.place '{"x":40,"y":60,"width":900,"height":700}'   # the active tab; at least 240 by 160; shows it if hidden
+bin/skiff desk.hide '{"id":"<tab-id>"}'                          # stays a tab of its space, keeps its rect
+bin/skiff desk.show '{"id":"<tab-id>"}'                          # in front and active
+bin/skiff desk.layouts                                           # {fill: {x, y, width, height}, center: ..., ...} for this desk
+bin/skiff desk.tile '{"layout":"left"}'                          # the active tab at a layout, as desk.place does
+```
+
+The layouts are `fill`, `center` (60% by 75%), `left`, `right`, `top`, `bottom`, `left-third`, `center-third`, `right-third`, `left-two-thirds`, `right-two-thirds`, `top-left`, `top-right`, `bottom-left` and `bottom-right`, 8px from the desk's edges and from each other, with the frame's top inset free above each. Ctrl+Option+Left, Right, Up and Down tile the active window to that half of the desk, Ctrl+Option+Enter fills it and Ctrl+Option+C centres it (Ctrl+Super elsewhere); without a desk window they do nothing.
+
+Hiding the active tab makes the frontmost window left in the space active, or none. A hidden page stays loaded.
+
+A desk shell can draw around each window: `shell.json` `{"window": "desk", "frame": {"file": "frame.html", "top": 30, "right": 8, "bottom": 8, "left": 8}}` gives every shown window a transparent view of `frame.html?tab=<id>` at its rect grown by those insets (shell CSS pixels), stacked directly under that window's page, so window A's frame and page are both under window B's. Frames get the same `window.skiff` bridge and events as the shell, and `state` pushes while shown (one that shows again gets the current state), follow `preview`, keep their page while the tab exists and go when it closes.
+
+A press on an http(s) page's empty background in a desk window goes to that window's frame instead once it moves more than 4px: primary button, no modifier, main frame only, not on text, a scrollbar, a link, a form control, a label, media, a canvas, an embed, an editable or draggable element or an ARIA widget, under a default cursor, and not cancelled by the page on the press or its first move. The frame gets the event `page-drag {tab, phase, screenX, screenY}` in screen DIP: `start` at the press point, a `move` per pointer move, then `end` on release, or `cancel` on Escape or a lost button. The page keeps its focus and sees no click for that press; text selection, links and the page's own drags are untouched.
+
+Overlays can be named: `ui.showOverlay {file, bounds?, name?, focus?}` and `ui.hideOverlay {name?}`, `name` defaulting to `main`. Each name is its own view above every page and frame, `main` above the others. `focus: false` shows or moves an overlay without taking keyboard focus, `true` always takes it, and by default it is taken when the overlay is first shown or changes file. `ui.emit {name, data?, focus: false}` sends an event to the shell, its frames and overlays without focusing the shell.
+
+`ui.showOverlay {..., float: true}` (desk windows only) puts an overlay in a small window of its own instead of a view: frameless and transparent, above other apps' windows at the macOS floating level, on every desktop including full-screen apps, kept out of the Dock, the window list and Mission Control, and on macOS a non-activating panel, so showing, moving or clicking it never brings Skiff forward by itself. Its `bounds` are desk window CSS pixels, placed on the desk window's display, and it follows the desk window when the displays change. It is not part of the desk window, and it takes its own clicks. `hit: [{x, y, width, height}]`, in its own CSS pixels, lists where; everywhere else in it, such as the room for a shadow, clicks pass to whatever is below (without `hit` all of it takes them, and `ui.setDesk {capture: true}` holds them during a drag). It gets the same bridge, `state` pushes and events as other shell pages. `ui.hideOverlay` closes its window, and it closes when the shell reloads or a switch changes the kind of window. Whenever an overlay in the desk window or the shell takes the keyboard (`ui.showOverlay` focusing, or `ui.emit` without `focus: false`), the desk window comes forward first, so a click on a floating overlay while another app is in front opens what it asked for in front.
+
+The shell reports its own clickable areas with `ui.setDesk {hit: [{x, y, width, height}, ...]}`; everywhere else that is not a page, a frame or an overlay, clicks pass through to the apps below. `ui.setDesk {capture: true}` keeps every click during a drag or resize, and `{preview: {id, x, y, width, height}}` moves a page and its frame live without saving (`null` ends it; a space switch ends it too and sends the shell `drag-cancel`). `{animate: false}` switches spaces without the slide, as reduced motion in the system settings does. `{only: [tabIds]}` brings just those windows of the active space forward: every other window's page and frame stay loaded but leave the desk window, and clicks there pass to the apps below. The active tab always joins the set (activating another tab adds it); moving or resizing a shown window keeps it; `null`, a space switch, or the last of its windows closing or hiding ends it. Every `state` push carries the set as `deskOnly` (`null` without one). These are not saved and reset when the shell reloads. `ui.inFront` answers `{front}`: whether Skiff is the app in front, that is the desk window, or a floating overlay clicked while the desk window had the keyboard, is focused. When the desk window gains focus while Skiff was not in front, and not from `ui.raise` or a shown overlay in the last 400ms nor a click on a window or overlay under the pointer, the shell gets `desk-activated`: Skiff was brought forward from outside, by the Dock or the app switcher.
+
+`shells/layer` is the bundled desk shell. Each window's frame view draws a 1px ring around its page (the space colour when active), a soft shadow and an ear on its top edge at the left (favicon and title, solid space colour when active), with hide and close buttons on hover. When a window in front (with its ear), the Buoy or the open panel covers that corner, the ear slides right along its own top edge until it is clear, shrinks its title to the widest stretch still showing if the whole ear does not fit, and hides only when no room for the favicon is left; ears glide to their new place as other windows are dragged. Drag the ear, or any empty part of the page's background (not text, links or controls), to move; double click the ear to fill and back; pinch on the ear to grow or shrink the window around its centre. The frame reaches 12px past the page on the sides and bottom, and all of it resizes: the edges, and 22px squares at the four corners; the edge (or both edges at a corner) a press would resize lights up in the space colour as the pointer reaches it. A press anywhere on the frame brings the window forward. Windows snap to each other and to the edges within 8px. Dragging to the left or right edge tiles to that half, the bottom edge to the bottom half, a corner to that quarter, and the top edge to the whole desk, except its middle third, which opens a strip of layouts (fill, centre, halves, thirds, two thirds and quarters, as `desk.layouts` gives them): hovering a cell previews it, letting go on it tiles the window there, and leaving the strip closes it. Letting go over the Buoy hides the window. The Buoy shows the space, the space's favorites as small icons in the panel's order, the number of the space's active (ordinary) tabs, hidden ones included, and a plus. Favorites: the active tab's is ringed in the space colour, hovering shows its title and a click brings its window forward with every other window of the space; once the pill would pass 60% of the desk width, the rest sit behind a +N that opens the panel. Drag it anywhere, from a favorite too (it snaps to the edges, the corners and the top and bottom centre, and remembers its place). A two finger swipe across it, anywhere on the panel or on a window's ear switches to the next or previous space as soon as it has moved 30px (a pinch on the ear still resizes, and scrolling up and down in the panel scrolls its list). Each gesture switches once, however fast or long it runs, even when its momentum ends over another of them; a new touch or a swipe back starts the next one. A swipe also brings Skiff in front of other apps and gives the keyboard to the new space's front window. It is a floating overlay: it stays above other apps on every desktop, full-screen apps included. A click on the number opens the tab list next to it, placed as the panel is and above it when both are open: a floating card of the space's active tabs as the panel's rows (favicon and title, the active one marked, hidden ones dimmed). Opening it brings nothing forward and changes nothing on the desk. A click on a row with another app in front shows only that tab's window, hidden or not, and brings Skiff forward with just that window over the other app; further picks while Skiff is in front add their windows; with the whole desk showing a pick just brings that window forward. The whole desk comes back from a click on the Buoy's name or a favorite, the panel opening or a pick in it, anything picked in the command bar, exposé opening, a space switch, and Skiff brought forward by the Dock or the app switcher. The list closes on a pick, a second click on the number, Escape, any other press on the Buoy, another window coming forward, or once it has the keyboard, a click anywhere else; a two finger swipe over it switches spaces as the panel does. The panel next to it is open from launch and stays open, above every window and anchored to the Buoy as it moves, while you click pages, the desk or other apps, pick a tab, use the command bar, switch spaces or press Escape, and it never takes the keyboard by itself. Only Cmd+S, a click on the Buoy's name or the panel's own close button closes it; Cmd+S or the Buoy (bringing the desk forward if another app was in front) opens it again. It holds favorites, pinned tabs and folders, then every ordinary tab of the space, each a window with an eye to hide or show it; a hidden window's row is dimmed, a click on a row brings that window forward and gives it the keyboard, and dragging a row out onto the desk puts its window there. The plus opens the command bar over it (Escape closes the bar and gives the keyboard back to where it was).
+
+Swipe two fingers up on the Buoy or on a window's ear for exposé, as a three finger swipe up does on macOS: every window of the space glides from its place into rows spread across the screen, each a live picture of its page with its title under it, and hidden windows wait in a tray along the bottom with their icon. Click a window, or pick one with the arrow keys and Enter, to bring it to the front (a hidden one is shown again). Swipe down on the Buoy, an ear or anywhere over exposé, swipe up again, press Escape or click the empty background to leave with nothing changed; the windows glide back. A space with no windows says so, and the incognito space shows its own. A swipe that is mostly up or down (40px of travel) never switches spaces, and a sideways one never opens exposé. Up and down follow the fingers: Skiff reads the Mac's scroll direction setting at launch, so it works with natural scrolling on or off.
+
+The same swipe up works on a page when it has nothing to scroll: over something that does not scroll, or with the page (and every scrolling box under the pointer) already at its end in the direction the swipe would scroll. Whether it can scroll is decided when the gesture starts, so a swipe that scrolls to the end and keeps going never opens exposé; a page that takes the wheel itself, such as a map, keeps it. A mouse wheel turned at the end of a page counts as well.
+
+While agents have tabs open, the panel's footer shows an Agents button next to Archive with their count (`ui.emit {name: "toggle-agents"}` opens it too). It lists every agent tab of every space under a heading per agent, such as "omp · 2 tabs", each row with its favicon, title, space and a close button. A click on a row peeks at that tab: its window comes in front on the desk with its frame and ear, and the row is marked current. The ear's hide button ends the peek and its close button closes the agent tab. The Buoy adds a small chip after the space name, such as "2 agents · 3 tabs", that follows agent tabs as they open and close and disappears when there are none.
+
+## Extensions
+
+uBlock Origin is built in. At first launch Skiff downloads the latest release from GitHub into `extensions/` in the data dir and loads it into every space except incognito; while that runs, Settings shows it as installing. A minute after each start, and every six hours after that, Skiff asks GitHub for the latest release and replaces the installed copy when the release is newer. The folder, and so the extension id and its storage, stay the same, so uBlock Origin's settings, filter lists and rules survive an update. A failed download is shown under the row in Settings and retried at the next check (five minutes later while nothing is installed). It cannot be removed; `SKIFF_BUILTIN_EXTENSIONS='[]'` in the environment turns the built-in set off, and a JSON list of `{name, release}` replaces it.
+
+Settings lists every extension with **Panel** (its popup over the page) and **Settings** (its options page, uBlock Origin's dashboard, as a tab). Cmd+Shift+U opens the first panel; `extensions.popup {id, bounds}` is the command behind it, and the panel closes when it loses focus. Other unpacked extensions or zips can be added from the API; an extension with the same name as one already added replaces it and keeps its storage:
+
+```sh
+bin/skiff extensions.list                           # built-in first: id, name, version, builtin, state, error, ...
+bin/skiff extensions.update                         # run the built-in install or update check now
+bin/skiff extensions.add '{"path":"/path/to/unpacked-extension-or.zip"}'
+bin/skiff extensions.download '{"url":"https://example.com/extension.zip"}'
+bin/skiff extensions.open '{"id":"<id>"}'          # its options page, as a tab
+bin/skiff extensions.remove '{"id":"<id>"}'
+```
+
+Each extension keeps its own settings per profile session, so an imported Arc profile has its own copy of the filter lists and rules. Extension pages opened as tabs, such as uBlock's dashboard, are not kept across restarts. Zips are unpacked with `unzip`.
+
+Electron does not implement all of Chrome's extension API. It runs content scripts, messaging, storage, alarms, scripting and blocking `webRequest` itself. Skiff adds what uBlock Origin needs on top: tab and navigation events, `tabs.get`, `query`, `create`, `remove`, `update`, `insertCSS` and `removeCSS`, a single-window `windows` API, and inert `browserAction`, `contextMenus` and `privacy` surfaces. There is no toolbar icon, badge or context menu, no `declarativeNetRequest` (so uBlock Origin Lite does not work, use uBlock Origin), and extensions that need other Chrome APIs may not work; check the console. Every `session.webRequest` listener in the core would silence extension listeners in that session, so the core has none.
+
+## Visual end-to-end tests
+
+```sh
+npm run test:visual                     # compare with reviewed platform-specific screenshots
+npm run test:visual:update              # generate candidate baselines; inspect every changed image
+npx playwright show-report             # open the local results
+```
+
+The suite launches real Electron with its sandbox enabled. It clicks, drags, types and sends wheel events through Playwright. It covers the command bar (inline completion, tab switching, site search, edit mode), space and tab movement, drag previews into favorites, pinned tabs, folders and spaces, swipe flicks with momentum, gesture guards, website navigation and scrolling, two finger swipes back and forward on pages, favorites per space, saved and prefetched icons, trails, the incognito space, archive controls, focus preservation, Settings, multi-profile import, consent cancellation, partial failures, light/dark appearance, narrow windows, long content, contrast and 200% zoom. Asking the agent, Settings > Agents and chat tabs run against `e2e/fake-agent.js`, a scripted ACP agent that streams replies (in markdown on cue), offers two models and two efforts, asks for permission, calls Skiff's MCP server, stalls, crashes on cue and reloads its sessions after a restart. Layer's exposé is opened and closed by wheel timelines on the Buoy, an ear and itself, and picked from by mouse and keyboard. Native sensitive-data consent cases run on macOS. Menu shortcuts are triggered by clicking their menu item from the main process, because synthetic key events do not reach the native menu. `e2e/agent-tabs.spec.js` covers agent tabs: one created over the API stays out of the window and the tab list, its hidden window is neither visible nor focused, the user's page keeps the keyboard while typing, and the page's interval and animation frame counters keep advancing; `ui.capture` by id returns a 1280 by 800 PNG whose sampled pixels show the page and `tabs.read` returns its text; peeking moves the same page into the window at the page bounds with a marker in the page intact and no new request, and leaving the peek parks it again, where it navigates, reads, captures and opens links into more agent tabs; it shares cookies with its space and the incognito space is refused; in the Layer shell a real click in the Agents list puts the window in front on the desk with its frame, a click on another window or the ear's hide button ends the peek, and the Buoy chip counts agent tabs live; and a second Skiff launched with no debugger attached, driven over the command API alone, shows the hidden page's timers and animation frames advancing and captures it, before and after a peek.
+
+Each test owns a temporary home and Skiff profile, a local website, synthetic Arc metadata and synthetic databases. External requests and Keychain commands are blocked. Real Arc credentials and the user's Skiff profile are never used. Native consent responses are simulated; these tests do not prove actual Keychain access or password encryption. They cover wheel input, not physical trackpad finger recognition.
+
+The imported-background scenarios import two real Arc themes, colors only, through synthetic Arc metadata. They read screenshot pixels: the hue at the window corners, and the contrast of the space title and every tab label against the pixels behind it. They also exercise appearance switching, restart and manual override, and assert unchanged shell and native page bounds. They attach shell images for visual review.
+
+Prefer an unprivileged Linux user with a virtual display (`xvfb-run -a npm run test:visual`) so testing cannot interrupt someone's desktop. Never use `--no-sandbox`. Mac runs open real windows and are blocked unless `SKIFF_VISUAL_DESKTOP=1` is explicitly set; use that only when the desktop is available for testing. Screenshot baselines are separate for each OS and architecture; missing or changed baselines fail the normal command. Reviewed Linux baselines are included. Mac baselines still need a non-disruptive review session.
+
+The suite captures the shell, while separately exercising the native webpage view, which does not appear in shell screenshots. The command bar is captured from its own overlay page, over a blank background; the page beneath it is asserted live, not drawn. Only an owned test window may be captured for a composed native screenshot.
+
+Tests close their owned Electron process groups and remove temporary profiles. A shutdown that cannot be confirmed preserves its profile and fails. `test-results/` and `playwright-report/` are local, ignored artifacts; they are not packaged into the app. The test-only startup and consent override are excluded from packaged builds.
+
+The shell watcher compares file contents before reloading. Delayed macOS file-copy notifications and metadata-only changes no longer close dialogs or reset focus; actual shell edits still reload.
+
+## Not here
+
+Sync, a general profile editor, split view, find in page, history, a downloads UI, an app icon, error pages for failed loads. Imported Arc profiles have isolated sessions; other spaces share the main session, and the incognito space has its own in memory. Trails cannot be collapsed. Permission grants (camera, microphone, location, notifications) are asked per origin and session, and forgotten at quit.
+
+Folders are flat: a nested Arc folder arrives as `Parent / Child`, and a folder with no tabs is gone. The import skips Arc's archive and space icons, and there is no import from other browsers. Password import and deliberate filling are supported; saving newly entered passwords, automatic fill and password editing are not.
