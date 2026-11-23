@@ -230,6 +230,10 @@ input.setting-input[type='number'] { width: 80px; }
 .confirm-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; margin-top: 10px; }
 #shell-error-dismiss { margin-top: 6px; margin-left: -8px; }
 
+.update-pill { flex: none; margin-left: auto; min-height: 22px; padding: 0 10px; border-radius: 999px; background: var(--ink); color: var(--bg); font: 500 12px/1 Archivo, system-ui, sans-serif; white-space: nowrap; }
+.update-pill[hidden] { display: none; }
+.update-pill:hover { background: var(--soft); }
+.update-pill:not([hidden]) + #settings-toggle { margin-left: 4px; }
 #sidebar > footer { position: relative; flex: none; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
 .space-strip { display: flex; align-items: center; gap: 2px; min-width: 0; min-height: 44px; padding: 0 12px 0 10px; }
 #dots { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; overflow-x: auto; overscroll-behavior-x: contain; }

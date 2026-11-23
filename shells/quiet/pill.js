@@ -1,7 +1,7 @@
 'use strict'
 
 const $ = (id) => document.getElementById(id)
-const pill = $('pill')
+const pill = $('dock')
 let state = null
 let noticeText = ''
 let noticeTimer
@@ -27,15 +27,24 @@ function render() {
   document.documentElement.classList.toggle('incognito', Boolean(space.incognito))
   $('pill-name').textContent = space.name
   $('pill-count').textContent = noticeText || tabCount(state.tabs.filter((t) => t.spaceId === space.id && !t.favorite && !t.pinned).length)
-  pill.title = `${space.name}: open the sidebar`
+  $('pill').title = `${space.name}: open the sidebar`
+  renderUpdate()
   fit()
+}
+
+function renderUpdate() {
+  const update = state.update?.status === 'ready' ? `Restart to update to Skiff ${state.update.version}` : ''
+  $('update-pill').hidden = !update
+  $('update-pill').title = update
+  $('update-pill').setAttribute('aria-label', update)
 }
 
 const openPanel = () => {
   active = false
   return call('ui.showOverlay', { file: 'panel.html' })
 }
-pill.addEventListener('click', openPanel)
+$('pill').addEventListener('click', openPanel)
+$('update-pill').addEventListener('click', () => call('updates.install'))
 skiff.on('toggle-sidebar', openPanel)
 // Retire resize and startup-focus requests as soon as another surface is requested.
 for (const name of ['new-tab', 'focus-address', 'toggle-settings', 'toggle-archive', 'import-arc']) {

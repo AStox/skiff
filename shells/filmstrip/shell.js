@@ -526,7 +526,7 @@ async function fillSavedPassword() {
 // Every quick-panel entry of settings.catalog is drawn here by its type, so a new host setting or action reaches this shell with no change to it.
 function refreshQuick() {
   const request = ++ui.quickRequest
-  ui.quickKey = JSON.stringify(state.settings)
+  ui.quickKey = JSON.stringify([state.settings, state.update?.status])
   return Promise.resolve(skiff.call('settings.catalog', { quickPanel: true, owner: 'core' })).then((list) => {
     if (request !== ui.quickRequest) return
     ui.quick = Array.isArray(list) ? list : []
@@ -1146,6 +1146,10 @@ function render() {
   $('empty-import').hidden = Boolean(space.incognito)
   $('archive-toggle').setAttribute('aria-pressed', String(ui.archive))
   $('settings-toggle').setAttribute('aria-pressed', String(ui.settings))
+  const pill = $('update-pill')
+  pill.hidden = state.update?.status !== 'ready'
+  pill.title = `Restart to update to Skiff ${state.update?.version ?? ''}`.trim()
+  pill.setAttribute('aria-label', pill.title)
   $('panel').hidden = !ui.settings
   $('list').hidden = ui.settings
   $('list').setAttribute('aria-label', ui.archive ? 'Archived tabs' : 'Tabs')
@@ -1175,7 +1179,7 @@ function render() {
     if (from >= 0 && !still.matches) for (const id of ['favorites', 'space-head', 'list']) $(id).animate([{ transform: travel, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 130, easing: 'ease-out' })
   }
   section('panel', ui.settings && [space, state.spaces.length, ui.quick, state.settings.searchUrl, ui.imported, ui.filling, Boolean(tab), ui.extensions], () => (ui.settings ? panel(space) : []))
-  if (ui.settings && ui.quickKey !== JSON.stringify(state.settings)) refreshQuick()
+  if (ui.settings && ui.quickKey !== JSON.stringify([state.settings, state.update?.status])) refreshQuick()
   if (!holds) section('list', ui.archive ? [state.archive] : [tabs, tab?.id, state.collapsed], () => (ui.archive ? archiveRows() : [
     tabRows(space, tabs, (t, depth) => tabRow(t, t.id === tab?.id, depth)),
     h('li', { class: 'row new', 'data-new-tab': true }, h('button', { id: 'new-tab', class: 'row-main', onclick: () => openPalette('new') }, icon('plus'), h('span', { class: 'label' }, 'New tab')))
@@ -1197,6 +1201,7 @@ function reportBounds() {
   call('ui.setPageBounds', bounds)
 }
 
+$('update-pill').addEventListener('click', () => call('updates.install'))
 $('back').addEventListener('click', () => call('tabs.back'))
 $('forward').addEventListener('click', () => call('tabs.forward'))
 $('reload').addEventListener('click', () => call('tabs.reload'))

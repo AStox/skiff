@@ -38,6 +38,10 @@ function render() {
   $('buoy-tabs').setAttribute('aria-label', tabCount(n))
   $('buoy-tabs').title = `${tabCount(n)}. Show the active tabs`
   $('buoy-tabs').setAttribute('aria-expanded', String(list))
+  const update = state.update?.status === 'ready' ? `Restart to update to Skiff ${state.update.version}` : ''
+  $('update-pill').hidden = !update
+  $('update-pill').title = update
+  $('update-pill').setAttribute('aria-label', update)
   pill.classList.toggle('drop', hiding)
   renderFavorites()
   fit()
@@ -153,6 +157,7 @@ document.addEventListener('pointercancel', release)
 
 $('buoy-main').addEventListener('click', () => { if (!press?.moved) buoyAction('panel') })
 $('buoy-tabs').addEventListener('click', () => { if (!press?.moved) buoyAction('tabs') })
+$('update-pill').addEventListener('click', () => { if (!press?.moved) skiff.call('updates.install').catch((error) => notice(error.message || 'Update failed')) })
 $('buoy-new').addEventListener('click', () => { if (!press?.moved) buoyAction('palette', { mode: 'new' }) })
 appearance.addEventListener('change', render)
 

@@ -318,6 +318,10 @@ input.setting-input[type='number'] { width: 80px; font-family: var(--mono); }
 .confirm-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; margin-top: 8px; }
 #shell-error-dismiss { margin-top: 5px; }
 
+.update-pill { flex: none; margin-left: auto; min-height: 22px; padding: 0 10px; border-radius: 999px; background: var(--ink); color: var(--bg); font: 500 12px/1 var(--sans); white-space: nowrap; }
+.update-pill[hidden] { display: none; }
+.update-pill:hover { background: var(--soft); }
+.update-pill:not([hidden]) + #settings-toggle { margin-left: 4px; }
 #sidebar > footer { flex: none; display: flex; align-items: center; justify-content: space-between; height: 32px; padding: 0 12px 0 12px; border-top: 1px solid var(--line); }
 #archive-toggle { align-items: baseline; min-height: 24px; padding: 0 4px; color: var(--ink); font: 400 12px/1 var(--sans); }
 .count { color: var(--soft); font: 11px/1 var(--mono); }

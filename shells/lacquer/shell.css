@@ -337,3 +337,5 @@ input.setting-input[type='number'] { width: 80px; }
   .import-footer > .import-note { max-height: 48px; overflow-y: auto; }
   #arc-content { padding-top: 12px; padding-bottom: 12px; }
 }
+.update-pill { flex: none; margin: 0 4px 0 auto; padding: 3px 10px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 500; line-height: 16px; }
+.update-pill:hover { background: color-mix(in oklab, var(--accent) 85%, var(--ink)); }

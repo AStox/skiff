@@ -14,7 +14,8 @@ const catalog = [
   { id: 'memorySaverMinutes', type: 'integer', default: 30, scope: 'global', title: 'Memory saver delay', description: 'Minutes before an inactive eligible page may be unloaded.', aliases: ['memory', 'sleep', 'minutes'], section: 'tabs', minimum: 1, maximum: 10080 },
   { id: 'transcriptRecovery', type: 'boolean', default: false, scope: 'global', title: 'Save conversation recovery transcripts', description: 'Opt in to local recovery transcripts for normal conversations. Private conversations are never saved.', aliases: ['chat', 'agent', 'transcript', 'recovery', 'privacy'], section: 'transcripts' },
   { id: 'transcriptRetentionDays', type: 'integer', default: 30, scope: 'global', title: 'Transcript retention', description: 'Days to retain opted-in conversation recovery transcripts.', aliases: ['chat', 'agent', 'transcript', 'days'], section: 'transcripts', minimum: 1, maximum: 3650 },
-  { id: 'defaultBrowser', type: 'action', scope: 'global', title: 'Default browser', description: 'Open web links from other apps in Skiff.', actionLabel: 'Make Skiff your default browser', aliases: ['default', 'browser', 'links', 'handler'], section: 'general', quickPanel: true }
+  { id: 'defaultBrowser', type: 'action', scope: 'global', title: 'Default browser', description: 'Open web links from other apps in Skiff.', actionLabel: 'Make Skiff your default browser', aliases: ['default', 'browser', 'links', 'handler'], section: 'general', quickPanel: true },
+  { id: 'update', type: 'action', scope: 'global', title: 'Update', description: 'Skiff downloads updates in the background. Restart to finish installing one.', actionLabel: 'Restart to update', aliases: ['update', 'upgrade', 'restart', 'version'], section: 'general', quickPanel: true }
 ]
 for (const entry of catalog) {
   entry.owner = 'core'

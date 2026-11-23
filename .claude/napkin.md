@@ -31,8 +31,8 @@
 ## Shell & Command Reliability
 1. **[2026-11-11] Electron 45 has no postinstall download**
    Do instead: run `node node_modules/electron/install.js` only when a new isolated install needs its binary before the first `npm start`; preserve an existing managed runtime during source updates. Run `npm test`, not `node --test test/`, on Node 22.
-2. **[2026-11-13] Electron `session.fetch` responses have an empty `.url`**
-   Do instead: use `net.request` and follow its `redirect` events when the final URL matters, as `pageFetch` in `src/main.js` does.
+2. **[2026-11-23] `autoUpdater.quitAndInstall()` must not meet the blocking `before-quit` handler, and Electron skips `before-quit` for it**
+   Do instead: route every exit through `createQuit` in `src/updates.js`: cleanup and `flush()` run once (`quitFlow.run`), then `updates.install` calls `quitAndInstall`. Squirrel.Mac emits `before-quit-for-update` and closes windows without the usual `before-quit`, so the cleanup must be done before the call, never inside a `before-quit` listener. Updates exist only in the packaged macOS app, so a Linux run proves the sequencing in `test/updates.test.js` but not the relaunch; verify that on a Mac with a real signed pair of releases.
 3. **[2026-11-13] An HTML drop is refused unless `dragenter` is accepted too**
    Do instead: call the same handler on `dragenter` and `dragover`. When the pointer lands on a new element Chromium fires only `dragenter`, and a release then never fires `drop`. In Playwright drags, move to the drop point in one step; passing other rows leaves the preview where it first appeared.
 4. **[2026-11-23] New host settings and actions must reach every shell, owned copies included**

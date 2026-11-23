@@ -198,6 +198,9 @@ html.dragging #buoy, html.dragging #buoy * { cursor: grabbing !important; }
 #buoy-name { max-width: 200px; overflow: hidden; font-weight: 600; letter-spacing: .005em; text-overflow: ellipsis; }
 #buoy-notice, #buoy-agents { font-size: 11px; color: var(--buoy-soft); }
 #buoy-agents { padding: 3px 7px; border-radius: 999px; background: color-mix(in srgb, var(--buoy-ink) 8%, transparent); }
+#buoy .update-pill { flex: none; height: 22px; margin: 0 4px 0 3px; padding: 0 9px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 600; }
+#buoy .update-pill[hidden] { display: none; }
+#buoy .update-pill:hover { background: color-mix(in srgb, var(--accent) 85%, #000); }
 #buoy-favs { display: flex; align-items: center; gap: 2px; padding: 0 4px 0 2px; }
 #buoy-favs[hidden] { display: none; }
 #buoy .buoy-fav { display: inline-flex; flex: none; align-items: center; justify-content: center; min-width: 22px; height: 22px; border-radius: 6px; }

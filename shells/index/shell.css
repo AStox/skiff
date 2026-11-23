@@ -315,3 +315,5 @@ li.pick small, li.pick .act { color: color-mix(in srgb, var(--bg) 70%, transpare
   .import-footer > .import-note { max-height: 48px; overflow-y: auto; }
   #arc-content { padding-top: 12px; padding-bottom: 12px; }
 }
+.update-pill { flex: none; height: 28px; border-top: 1px solid var(--line); background: var(--accent); color: var(--bg); font: 600 11px 'Geist Mono', monospace; font-stretch: 75%; letter-spacing: .08em; text-transform: uppercase; }
+.update-pill:hover { background: var(--ink); }

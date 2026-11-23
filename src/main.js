@@ -1,5 +1,5 @@
 'use strict'
-const { app, BrowserWindow, WebContentsView, Menu, ipcMain, session, dialog, safeStorage, net, clipboard, screen, systemPreferences } = require('electron')
+const { app, BrowserWindow, WebContentsView, Menu, ipcMain, session, dialog, safeStorage, net, clipboard, screen, systemPreferences, Notification } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
 const http = require('node:http')
@@ -14,6 +14,7 @@ const { createExtensions } = require('./extensions')
 const { createAi, browserTools, handleMcp } = require('./ai')
 const { shell } = require('electron')
 const { autoUpdater } = require('electron-updater')
+const { createQuit, createUpdates } = require('./updates')
 const { spawn } = require('node:child_process')
 const { createRegistry, schemaFor } = require('./commands')
 const settingsCatalog = require('./settings-catalog')
@@ -183,7 +184,7 @@ const live = (t) => ({ loading: false, canGoBack: false, canGoForward: false, ..
 const naturalScroll = process.platform !== 'darwin' || (() => {
   try { return require('node:child_process').execFileSync('defaults', ['read', '-g', 'com.apple.swipescrolldirection'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== '0' } catch { return true }
 })()
-const snapshot = () => ({ ...state, shells, naturalScroll, safeMode, splitBounds, browserData: browserData?.snapshot(), deskOnly: desk.only, tabs: state.tabs.map(live), agentTabs: state.agentTabs.map(live) })
+const snapshot = () => ({ ...state, shells, naturalScroll, safeMode, splitBounds, update: updates.state() ?? undefined, browserData: browserData?.snapshot(), deskOnly: desk.only, tabs: state.tabs.map(live), agentTabs: state.agentTabs.map(live) })
 const sseFrame = (snap) => `event: state\ndata: ${JSON.stringify(snap)}\n\n`
 
 // Frames hear about state only while shown, so a push costs the shown windows; catchUpFrames serves one that shows again.
@@ -1341,6 +1342,14 @@ const settingsActions = {
       return { text: done ? 'Skiff is your default browser.' : '', available: !done }
     },
     run: () => { app.setAsDefaultProtocolClient('http'); app.setAsDefaultProtocolClient('https') }
+  },
+  update: {
+    supported: () => Boolean(updates.state()),
+    status: () => {
+      const { status, version } = updates.state()
+      return { text: status === 'ready' ? `Skiff ${version} is ready.` : status === 'downloading' ? `Downloading Skiff ${version}...` : '', available: status === 'ready' }
+    },
+    run: () => updates.install()
   }
 }
 
@@ -1579,6 +1588,8 @@ command('links.route', 'Resolve an external link profile', { url: string }, ['ur
 command('links.open', 'Open an external link in its routed profile', { url: string }, ['url'], (p) => openProfileTab(S.routeLink(state, p)))
 command('settings.catalog', 'Search core and owned component settings metadata; core entries carry their current value, action entries their status text and availability (unsupported actions are omitted); quickPanel: true lists what an interface draws in its quick Settings panel', { query: string, section: string, spaceId: string, owner: string, quickPanel: boolean, scope: { enum: ['global', 'space', 'tab', 'profile'] } }, [], async (p) => settingsCatalog.searchEntries([...settingsCatalog.present(settingsCatalog.list(), { values: state.settings, actions: settingsActions }), ...await registry.call('components.settings.list', { spaceId: p.spaceId })], p.query || '', p))
 command('settings.run', 'Run a settings action entry from settings.catalog (for example defaultBrowser) and return the refreshed entry', { id: string }, ['id'], (p) => settingsCatalog.run(p.id, settingsActions))
+command('updates.check', 'Check for a new Skiff version now; resolves with the update state (macOS packaged app only)', {}, [], () => updates.check())
+command('updates.install', 'Restart Skiff into a downloaded update: runs the normal shutdown cleanup and state flush once, then quits and relaunches (macOS packaged app only; refused unless state.update.status is ready)', {}, [], () => updates.install())
 command('grants.list', 'List scoped agent grants without credentials', {}, [], () => access.list())
 command('grants.issue', 'Approve explicit browser, customization, and component-tool scopes', { owner: string, sessionId: string, tabIds: strings, spaceIds: strings, read: boolean, mutate: boolean, commands: strings, tools: strings, components: strings }, ['owner'], (p) => access.issue(p))
 command('grants.revoke', 'Revoke a grant and its session credentials', { ...ids, owner: string, sessionId: string }, [], (p) => access.revoke(p))
@@ -1812,6 +1823,18 @@ function zoomShell(level) {
   syncView()
 }
 
+function updateMenuItems() {
+  const u = updates.state()
+  if (!u) return []
+  const busy = u.status === 'checking' || u.status === 'downloading'
+  return [
+    { type: 'separator' },
+    u.status === 'ready'
+      ? { label: `Restart to Update to ${u.version}`, click: () => rpc('updates.install') }
+      : { label: 'Check for Updates...', enabled: !busy, click: () => rpc('updates.check') }
+  ]
+}
+
 function buildMenu() {
   const items = Object.entries(state.settings.shortcuts).map(([accelerator, { method, params }]) => ({
     label: [method, ...Object.values(params || {})].join(' '),
@@ -1820,7 +1843,18 @@ function buildMenu() {
   }))
   const mac = process.platform === 'darwin'
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    ...(mac ? [{ role: 'appMenu' }] : []),
+    ...(mac ? [{ label: 'Skiff', submenu: [
+      { role: 'about' },
+      ...updateMenuItems(),
+      { type: 'separator' },
+      { role: 'services' },
+      { type: 'separator' },
+      { role: 'hide' },
+      { role: 'hideOthers' },
+      { role: 'unhide' },
+      { type: 'separator' },
+      { role: 'quit' }
+    ] }] : []),
     { role: 'editMenu' },
     // Page zoom owns CmdOrCtrl+0/+/-; these size the shell itself, by the step the zoom roles used.
     { label: 'View', submenu: [
@@ -2056,40 +2090,55 @@ async function start() {
   startUpdates()
 }
 
+const quitFlow = createQuit({
+  quit: () => app.quit(),
+  cleanup: async () => {
+    const results = await Promise.allSettled([
+      async () => { try { await ai?.stop() } finally { transcripts?.stop() } },
+      () => browserData?.stop(),
+      () => pageFeatures?.stop(),
+      () => access?.stop(),
+      () => sync?.stop(),
+      () => components?.stop(),
+      async () => {
+        const previewsStopped = await Promise.allSettled([...previews.keys()].map(closePreview))
+        for (const result of previewsStopped) if (result.status === 'rejected') console.error(result.reason)
+      }
+    ].map((stop) => Promise.resolve().then(stop)))
+    try { if (state) flush() }
+    finally { for (const result of results) if (result.status === 'rejected') console.error(result.reason) }
+  }
+})
+
+const readyNotices = new Set()
+const supportedUpdates = app.isPackaged && process.platform === 'darwin' && !previewMode
+const updates = createUpdates({
+  updater: supportedUpdates ? autoUpdater : { on() {} },
+  supported: supportedUpdates,
+  quit: quitFlow,
+  onChange: () => { pushState(); buildMenu() },
+  notify: (version) => {
+    const notice = new Notification({ title: `Skiff ${version} is ready`, body: 'Restart Skiff to update.' })
+    readyNotices.add(notice)
+    notice.on('click', () => rpc('updates.install'))
+    notice.on('close', () => readyNotices.delete(notice))
+    notice.show()
+  }
+})
+
 function startUpdates() {
-  if (!app.isPackaged || process.platform !== 'darwin' || previewMode) return
+  if (!updates.state()) return
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
-  autoUpdater.on('error', (error) => console.error('update failed:', error))
-  const check = () => autoUpdater.checkForUpdates().catch((error) => console.error('update check failed:', error))
+  const check = () => updates.check().catch(console.error)
   check()
-  setInterval(check, 6 * 3600e3)
+  setInterval(check, updates.HOUR)
+  app.on('browser-window-focus', () => updates.checkIfStale()?.catch(console.error))
 }
 
 if (app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => process.platform === 'darwin' || app.quit())
-  let quitting = false
-  app.on('before-quit', (event) => {
-    if (quitting) return
-    event.preventDefault()
-    quitting = true
-    Promise.resolve().then(async () => {
-      const results = await Promise.allSettled([
-        async () => { try { await ai?.stop() } finally { transcripts?.stop() } },
-        () => browserData?.stop(),
-        () => pageFeatures?.stop(),
-        () => access?.stop(),
-        () => sync?.stop(),
-        () => components?.stop(),
-        async () => {
-          const previewsStopped = await Promise.allSettled([...previews.keys()].map(closePreview))
-          for (const result of previewsStopped) if (result.status === 'rejected') console.error(result.reason)
-        }
-      ].map((stop) => Promise.resolve().then(stop)))
-      try { if (state) flush() }
-      finally { for (const result of results) if (result.status === 'rejected') console.error(result.reason) }
-    }).catch(console.error).finally(() => app.quit())
-  })
+  app.on('before-quit', quitFlow.beforeQuit)
   app.whenReady().then(start).catch(console.error)
 } else {
   app.quit()

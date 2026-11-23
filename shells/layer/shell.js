@@ -494,7 +494,7 @@ async function advanceImport(event) {
 // Every quick-panel entry of settings.catalog is drawn here by its type, so a new host setting or action reaches this shell with no change to it.
 function refreshQuick() {
   const request = ++ui.quickRequest
-  ui.quickKey = JSON.stringify(state.settings)
+  ui.quickKey = JSON.stringify([state.settings, state.update?.status])
   return Promise.resolve(skiff.call('settings.catalog', { quickPanel: true, owner: 'core' })).then((list) => {
     if (request !== ui.quickRequest) return
     ui.quick = Array.isArray(list) ? list : []
@@ -1234,7 +1234,7 @@ function render() {
     if (from >= 0 && !still.matches) for (const id of ['favorites', 'space-head', 'list']) $(id).animate([{ transform: travel, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 130, easing: 'ease-out' })
   }
   section('panel', ui.settings && [space, state.spaces.length, ui.quick, state.settings.searchUrl, state.settings.shell, state.shells, state.settings.ai, ui.imported, ui.filling, Boolean(tab), ui.extensions, ui.agents, ui.agentError], () => (ui.settings ? panel(space) : []))
-  if (ui.settings && ui.quickKey !== JSON.stringify(state.settings)) refreshQuick()
+  if (ui.settings && ui.quickKey !== JSON.stringify([state.settings, state.update?.status])) refreshQuick()
   if (ui.settings) warmDefault()
   if (!holds) section('list', ui.archive ? [state.archive] : ui.agentList ? ['agents', state.agentTabs, state.peek, state.spaces.map((s) => s.name)] : [tabs, tab?.id, state.collapsed, state.deskSize], () => (ui.archive ? archiveRows() : ui.agentList ? agentTabRows() : [
     tabRows(space, tabs, (t, depth) => tabRow(t, t.id === tab?.id, depth)),

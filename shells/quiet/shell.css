@@ -108,7 +108,12 @@ html.strip body { display: grid; grid-template-rows: 3px minmax(0, 1fr); grid-te
 /* The pill: a small overlay at the bottom left, 16px from the window edges. */
 html.pill body { background: transparent; }
 /* Sized by its content: the overlay rectangle follows the pill, never the other way round. */
-#pill { position: absolute; top: 0; left: 16px; display: inline-flex; align-items: center; gap: 8px; width: max-content; height: 30px; padding: 0 12px 0 11px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--ink); box-shadow: 0 6px 20px rgba(0, 0, 0, .18); white-space: nowrap; }
+#dock { position: absolute; top: 0; left: 16px; display: flex; align-items: center; gap: 6px; width: max-content; }
+#pill { display: inline-flex; align-items: center; gap: 8px; width: max-content; height: 30px; padding: 0 12px 0 11px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--ink); box-shadow: 0 6px 20px rgba(0, 0, 0, .18); white-space: nowrap; }
+.update-pill { flex: none; height: 22px; padding: 0 9px; border-radius: 999px; background: var(--ink); color: var(--bg); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.update-pill[hidden] { display: none; }
+.update-pill:hover { background: var(--soft); }
+#dock .update-pill { height: 30px; padding: 0 12px; box-shadow: 0 6px 20px rgba(0, 0, 0, .18); }
 #pill:hover { background: var(--press); }
 #pill:focus-visible { outline-offset: 2px; }
 #pill-name { max-width: 200px; overflow: hidden; font-size: 12px; font-weight: 600; letter-spacing: .005em; text-overflow: ellipsis; white-space: nowrap; }
