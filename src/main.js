@@ -865,7 +865,11 @@ function reloadShell() {
 
 function watchShell() {
   watcher?.close()
-  watcher = watchShellFiles(shellRoot(), reloadShell)
+  watcher = null
+  const root = shellRoot()
+  // Bundled shells inside app.asar cannot change and fs.watch fails on them.
+  if (root.split(path.sep).some((part) => part.endsWith('.asar'))) return
+  watcher = watchShellFiles(root, reloadShell)
 }
 
 // Stock sources always remain bundled. Switching selects them without rewriting owned copies.
