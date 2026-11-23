@@ -237,7 +237,7 @@ async function openExpose() {
   stage.replaceChildren(...cards.map((c) => c.el))
   placeTray(cards.filter((c) => c.hidden))
   ;(cards.find((c) => c.tab === active) || cards[0])?.el.focus({ preventScroll: true })
-  // Three frames, not two: the overlay's frame with the cards can reach the screen after the pages leave it, which left the desk bare in 7 of 26 Xvfb openings.
+  // Three frames, not two: the overlay's frame with the cards can reach the screen after the pages leave it, which left the desk bare in 7 of 13 Xvfb openings.
   for (let i = 0; i < 3; i++) await frame()
   if (shown !== token || closing) return
   await skiff.call('ui.setPageVisible', { visible: false }).catch(() => {})
