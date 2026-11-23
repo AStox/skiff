@@ -159,6 +159,12 @@ function trail(plain) {
   return [...depths]
 }
 
+function folderRow(space, folder, open, count, toggle = () => call('folders.setCollapsed', { spaceId: space.id, folder, collapsed: open })) {
+  return h('li', { class: 'row', 'data-folder-head': folder },
+    h('button', { class: 'row-main', title: folder, 'aria-expanded': String(open), onclick: toggle },
+      icon('chevron'), h('span', { class: 'label' }, folder), h('span', { class: 'when' }, String(count))))
+}
+
 function tabRows(space, tabs, row) {
   const pinned = tabs.filter((t) => t.pinned)
   const folders = [...new Set(pinned.map((t) => t.folder).filter(Boolean))]
@@ -168,9 +174,7 @@ function tabRows(space, tabs, row) {
       const inside = pinned.filter((t) => t.folder === folder)
       const open = !state.collapsed[`${space.id}/${folder}`]
       return [
-        h('li', { class: 'row', 'data-folder-head': folder },
-          h('button', { class: 'row-main', title: folder, 'aria-expanded': String(open), onclick: () => call('folders.setCollapsed', { spaceId: space.id, folder, collapsed: open }) },
-            icon('chevron'), h('span', { class: 'label' }, folder), h('span', { class: 'when' }, String(inside.length)))),
+        folderRow(space, folder, open, inside.length),
         open ? inside.map((t) => row(t)) : []
       ]
     }),

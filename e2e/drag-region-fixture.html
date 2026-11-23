@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Background drag region fixture</title>
+<style>
+  html, body { margin: 0 }
+  #drag-region, #drag-region::before, #overflow {
+    -webkit-app-region: drag !important;
+    window-drag: move !important;
+  }
+  #drag-region { position: fixed; inset: 0 }
+  #drag-region::before { content: ''; position: absolute; inset: 0 }
+  #overflow { position: absolute; left: 660px; top: 0; width: 180px; height: 620px }
+</style>
+<body id="drag-region"><div id="overflow"></div>
+<script>
+  window.addClosedDragShadow = () => {
+    const style = document.querySelector('style')
+    const css = style.textContent
+    style.remove()
+    const host = document.createElement('div')
+    document.body.replaceChildren(host)
+    const shadow = host.attachShadow({ mode: 'closed' })
+    shadow.innerHTML = `<style>${css}</style><div id="drag-region"><div id="overflow"></div></div>`
+  }
+</script>
+</body>
+</html>

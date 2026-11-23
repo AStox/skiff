@@ -41,6 +41,11 @@
 
 <div id="chat-foot">
   <p id="chat-error" role="alert" hidden></p>
+  <section id="chat-recovery" aria-labelledby="chat-recovery-title" hidden>
+    <h2 id="chat-recovery-title">Recovered transcript · read only</h2>
+    <p>The agent could not restore this session. Write a new message, then start fresh. Earlier turns stay here for reference and are not sent as context.</p>
+    <button id="chat-start-fresh" class="text-btn primary" type="button">Start fresh session</button>
+  </section>
   <section id="chat-permission" aria-labelledby="chat-permission-title" hidden>
     <div class="card">
       <p class="ask">Permission request</p>

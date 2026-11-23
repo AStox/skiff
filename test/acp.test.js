@@ -81,3 +81,28 @@ test('a line over 4 MB rejects everything and closes', async () => {
   await assert.rejects(pending, { closed: true, message: /4 MB/ })
   assert.match(closed.message, /4 MB/)
 })
+
+test('aborted requests detach from late replies without closing unrelated sessions', async () => {
+  const { client, sent, reply } = pair()
+  const controller = new AbortController()
+  const cancelled = client.request('session/load', { sessionId: 'cancelled' }, { signal: controller.signal })
+  const other = client.request('session/load', { sessionId: 'other' })
+  controller.abort(new Error('Grant revoked'))
+  await assert.rejects(cancelled, { message: 'Grant revoked' })
+  const [first, second] = sent()
+  reply({ id: first.id, result: { privateText: 'Late result must be ignored' } })
+  reply({ id: second.id, result: { sessionId: 'other' } })
+  assert.deepEqual(await other, { sessionId: 'other' })
+  client.close()
+})
+
+test('bounded startup requests time out and reject late responses without leaking pending calls', async () => {
+  const { client, sent, reply } = pair()
+  const waiting = client.request('initialize', {}, { timeout: 10 })
+  await assert.rejects(waiting, { code: 'timeout' })
+  reply({ id: sent()[0].id, result: { protocolVersion: 1 } })
+  const next = client.request('ping', {})
+  reply({ id: sent()[1].id, result: {} })
+  assert.deepEqual(await next, {})
+  client.close()
+})

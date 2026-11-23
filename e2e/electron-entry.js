@@ -56,8 +56,11 @@ childProcess.execFile = function (file, ...args) {
   return execFile.call(this, file, ...args)
 }
 dialog.showMessageBox = async (_window, options) => {
-  if (!options.message.startsWith('Import ') || !options.message.endsWith(' from Arc?')) throw new Error(`Unexpected native dialog: ${options.message}`)
-  const response = Number(process.env.SKIFF_VISUAL_CONSENT || 0)
+  let response
+  if (options.message.startsWith('Import ') && options.message.endsWith(' from Arc?')) response = Number(process.env.SKIFF_VISUAL_CONSENT || 0)
+  else if (options.message.startsWith('Trust component ') && process.env.SKIFF_VISUAL_COMPONENT_CONSENT !== undefined) response = Number(process.env.SKIFF_VISUAL_COMPONENT_CONSENT)
+  else if (options.message.includes(' wants to ') && process.env.SKIFF_VISUAL_PERMISSION_CONSENT !== undefined) response = Number(process.env.SKIFF_VISUAL_PERMISSION_CONSENT)
+  else throw new Error(`Unexpected native dialog: ${options.message}`)
   audit.decisions.push({ message: options.message, detail: options.detail, response })
   return { response, checkboxChecked: false }
 }
@@ -111,8 +114,9 @@ electron.ipcMain.handle = (channel, listener) => handle(channel, channel !== 'sk
   if (DESK_CALLS.has(method)) audit.calls.push({ method, params })
   if (OVERLAY_CALLS.has(method)) audit.overlayCalls.push({ method, params, t: performance.now() })
   if (method === 'spaces.cycle' || method === 'spaces.activate') audit.spaceCalls.push({ method, params })
+  const invoke = () => listener(event, method, params)
   const delay = global.__skiffVisualDelay?.[method]
-  return delay ? new Promise((resolve) => setTimeout(resolve, delay)).then(() => listener(event, method, params)) : listener(event, method, params)
+  return delay ? new Promise((resolve) => setTimeout(resolve, delay)).then(invoke) : invoke()
 })
 const RecordedWindow = new Proxy(electron.BrowserWindow, {
   construct(target, args) {
@@ -121,10 +125,26 @@ const RecordedWindow = new Proxy(electron.BrowserWindow, {
     return win
   }
 })
+// macOS desktops, which Linux has none of: fixtureOptions.desktops is their ids in order, the first current; a spec calls
+// global.__skiffDesktops.switchTo(id) in the main process, as moving to another desktop does, or reassigns .ids as Mission Control would.
+const fakeDesktops = (ids) => {
+  const listeners = new Set()
+  const fake = global.__skiffDesktops = { ids, current: ids[0], switchTo(id) { fake.current = id; for (const listener of listeners) listener() } }
+  return { open: () => ({ list: () => fake.ids.map((id, i) => ({ id, number: i + 1 })), current: () => fake.current, subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener) } }) }
+}
 const mainFile = path.join(__dirname, '..', 'src', 'main.js')
 const load = Module._load
 Module._load = function (request, parent, ...rest) {
   const exported = load.call(this, request, parent, ...rest)
+  if (request === './ai' && parent?.filename === mainFile && process.env.SKIFF_VISUAL_STOP_FAILURE === '1') {
+    return { ...exported, createAi: (options) => {
+      const instance = exported.createAi(options)
+      const stop = instance.stop.bind(instance)
+      instance.stop = async () => { await stop(); throw new Error('Fixture AI shutdown rejection') }
+      return instance
+    } }
+  }
+  if (request === './desktops' && parent?.filename === mainFile && process.env.SKIFF_VISUAL_DESKTOPS) return fakeDesktops(process.env.SKIFF_VISUAL_DESKTOPS.split(',').map(Number))
   if (request !== 'electron' || parent?.filename !== mainFile) return exported
   return new Proxy(exported, { get: (target, key) => (key === 'BrowserWindow' ? RecordedWindow : Reflect.get(target, key)) })
 }

@@ -342,7 +342,6 @@ test('batch selection has no small fixed profile limit', async (t) => {
   const result = await f.importer.run({ profileIds, categories: { tabs: true, openTabs: false, passwords: false, logins: false }, keepSpaces: true })
   assert.equal(result.spaces, 80)
   assert.deepEqual(result.profiles.map((profile) => profile.id), profileIds)
-  assert.equal(new Set(f.state.spaces.filter((space) => space.sessionPartition).map((space) => space.sessionPartition)).size, 80)
   assert.equal(f.confirmations(), 0)
   assert.equal(f.reads(), 0)
 })

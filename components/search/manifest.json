@@ -1,0 +1,10 @@
+{
+  "apiVersion": 1,
+  "id": "stock.search",
+  "version": "1.0.0",
+  "surfaces": {},
+  "backend": "backend.js",
+  "roles": ["search"],
+  "commands": { "search": "stock.search.run" },
+  "capabilities": ["backend", "commands.register", "storage", "call:host.search", "call:state.get", "call:history.search"]
+}

@@ -85,7 +85,8 @@ function draws(img) {
 
 function favicon(tab, fallback = h('span', { class: 'favicon letter', 'aria-hidden': 'true' }, (hostOf(tab.url)[0] || '?').toUpperCase())) {
   if (!/^(\.\.\/favicons\/|data:)/.test(tab.favicon)) return fallback
-  const img = h('img', { class: 'favicon', src: tab.favicon, alt: '', draggable: 'false' })
+  const src = tab.favicon.startsWith('../favicons/') && skiff.assets?.favicons ? new URL(tab.favicon.slice(12), skiff.assets.favicons).href : tab.favicon
+  const img = h('img', { class: 'favicon', src, alt: '', draggable: 'false' })
   img.decode().then(() => draws(img), () => false).then((shown) => shown || img.replaceWith(fallback))
   return img
 }

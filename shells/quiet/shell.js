@@ -121,6 +121,12 @@ function trail(plain) {
   return [...depths]
 }
 
+function folderRow(space, folder, open, count, toggle = () => call('folders.setCollapsed', { spaceId: space.id, folder, collapsed: open })) {
+  return h('li', { class: 'row', 'data-folder-head': folder },
+    h('button', { class: 'row-main', title: folder, 'aria-expanded': String(open), onclick: toggle },
+      icon('folder'), h('span', { class: 'label' }, folder), !open && h('span', { class: 'when' }, String(count)), h('span', { class: 'chevron' }, icon('chevron-down'))))
+}
+
 // Pinned: folders first, then loose pinned tabs, as the mock lays them out.
 function tabRows(space, tabs, row) {
   const pinned = tabs.filter((t) => t.pinned)
@@ -130,9 +136,7 @@ function tabRows(space, tabs, row) {
       const inside = pinned.filter((t) => t.folder === folder)
       const open = !state.collapsed[`${space.id}/${folder}`]
       return [
-        h('li', { class: 'row', 'data-folder-head': folder },
-          h('button', { class: 'row-main', title: folder, 'aria-expanded': String(open), onclick: () => call('folders.setCollapsed', { spaceId: space.id, folder, collapsed: open }) },
-            icon('folder'), h('span', { class: 'label' }, folder), !open && h('span', { class: 'when' }, String(inside.length)), h('span', { class: 'chevron' }, icon('chevron-down')))),
+        folderRow(space, folder, open, inside.length),
         open ? inside.map((t) => row(t)) : []
       ]
     }),

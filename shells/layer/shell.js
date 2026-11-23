@@ -11,7 +11,7 @@ const calendar = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'shor
 
 overlayName = 'panel'
 let state = null
-const ui = { archive: false, agentList: false, settings: false, renaming: false, imported: '', filling: false, extensions: [], agents: [], agentForm: null, agentError: '', warmed: '' }
+const ui = { archive: false, agentList: false, settings: false, renaming: false, imported: '', filling: false, defaultBrowser: null, extensions: [], agents: [], agentForm: null, agentError: '', warmed: '' }
 const drawn = {}
 const importDialog = $('arc-import')
 let importer = null
@@ -132,6 +132,12 @@ function trail(plain) {
   return [...depths]
 }
 
+function folderRow(space, folder, open, count, toggle = () => call('folders.setCollapsed', { spaceId: space.id, folder, collapsed: open })) {
+  return h('li', { class: 'row', 'data-folder-head': folder },
+    h('button', { class: 'row-main', title: folder, 'aria-expanded': String(open), onclick: toggle },
+      icon('folder'), h('span', { class: 'label' }, folder), !open && h('span', { class: 'when' }, String(count)), h('span', { class: 'chevron' }, icon('chevron-down'))))
+}
+
 // Pinned: folders first, then loose pinned tabs, as the mock lays them out.
 function tabRows(space, tabs, row) {
   const pinned = tabs.filter((t) => t.pinned)
@@ -141,9 +147,7 @@ function tabRows(space, tabs, row) {
       const inside = pinned.filter((t) => t.folder === folder)
       const open = !state.collapsed[`${space.id}/${folder}`]
       return [
-        h('li', { class: 'row', 'data-folder-head': folder },
-          h('button', { class: 'row-main', title: folder, 'aria-expanded': String(open), onclick: () => call('folders.setCollapsed', { spaceId: space.id, folder, collapsed: open }) },
-            icon('folder'), h('span', { class: 'label' }, folder), !open && h('span', { class: 'when' }, String(inside.length)), h('span', { class: 'chevron' }, icon('chevron-down')))),
+        folderRow(space, folder, open, inside.length),
         open ? inside.map((t) => row(t)) : []
       ]
     }),
@@ -487,6 +491,18 @@ async function advanceImport(event) {
   renderImport()
 }
 
+function refreshDefaultBrowser() {
+  return Promise.resolve(skiff.call('browser.isDefault', {})).then((result) => {
+    ui.defaultBrowser = result || null
+    render()
+  }).catch(() => {})
+}
+
+async function makeDefaultBrowser() {
+  try { ui.defaultBrowser = await skiff.call('browser.setDefault', {}) } catch { await refreshDefaultBrowser() }
+  render()
+}
+
 async function fillSavedPassword() {
   if (ui.filling || importer) return
   ui.filling = true
@@ -554,6 +570,7 @@ function panel(space) {
     h('p', { class: 'hint' }, 'Switches the whole interface in place. Tabs stay as they are.'),
     h('label', { class: 'field', for: 'search-engine' }, 'Search engine', search),
     agentRows(),
+    defaultBrowserRow(),
     ui.extensions.length > 0 && [
       h('div', { class: 'field-label', id: 'extensions-label' }, 'Extensions'),
       h('ul', { id: 'extensions', 'aria-labelledby': 'extensions-label' }, ui.extensions.map(extensionRow)),
@@ -589,6 +606,17 @@ function extensionRow(entry) {
     h('button', { class: 'text-btn', disabled: !entry.options, onclick: () => call('extensions.open', { id: entry.id }) }, 'Settings'),
     !entry.builtin && h('button', { class: 'text-btn danger', onclick: () => confirmAction(`Remove ${entry.name}?`, 'It stops running everywhere and its files are deleted.', 'Remove', 'extensions.remove', { id: entry.id }) }, 'Remove'),
     failure && h('p', { class: 'hint' }, failure))
+}
+
+function defaultBrowserRow() {
+  const info = ui.defaultBrowser
+  if (!info?.supported) return null
+  return [
+    h('div', { class: 'field-label', id: 'default-browser-label' }, 'Default browser'),
+    info.default
+      ? h('p', { class: 'hint', id: 'default-browser-status' }, 'Skiff is your default browser.')
+      : h('button', { id: 'default-browser', class: 'text-btn', onclick: makeDefaultBrowser }, 'Make Skiff your default browser')
+  ]
 }
 
 function refreshExtensions() {
@@ -1180,7 +1208,7 @@ function render() {
     const travel = `translateX(${state.spaces.indexOf(space) > from ? 24 : -24}px)`
     if (from >= 0 && !still.matches) for (const id of ['favorites', 'space-head', 'list']) $(id).animate([{ transform: travel, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 130, easing: 'ease-out' })
   }
-  section('panel', ui.settings && [space, state.spaces.length, state.settings.autoArchiveHours, state.settings.searchUrl, state.settings.shell, state.shells, state.settings.ai, ui.imported, ui.filling, Boolean(tab), ui.extensions, ui.agents, ui.agentError], () => (ui.settings ? panel(space) : []))
+  section('panel', ui.settings && [space, state.spaces.length, state.settings.autoArchiveHours, state.settings.searchUrl, state.settings.shell, state.shells, state.settings.ai, ui.imported, ui.filling, Boolean(tab), ui.extensions, ui.agents, ui.agentError, ui.defaultBrowser], () => (ui.settings ? panel(space) : []))
   if (ui.settings) warmDefault()
   if (!holds) section('list', ui.archive ? [state.archive] : ui.agentList ? ['agents', state.agentTabs, state.peek, state.spaces.map((s) => s.name)] : [tabs, tab?.id, state.collapsed, state.deskSize], () => (ui.archive ? archiveRows() : ui.agentList ? agentTabRows() : [
     tabRows(space, tabs, (t, depth) => tabRow(t, t.id === tab?.id, depth)),
@@ -1229,7 +1257,7 @@ function toggleSettings(data) {
   render()
   if (!ui.settings) return
   if (agents) showAgents()
-  Promise.all([refreshExtensions(), refreshAgents()]).then(() => { if (agents) showAgents() })
+  Promise.all([refreshExtensions(), refreshAgents(), refreshDefaultBrowser()]).then(() => { if (agents) showAgents() })
 }
 
 $('archive-toggle').addEventListener('click', toggleArchive)

@@ -82,7 +82,8 @@ function draws(img) {
 
 function favicon(tab, fallback = h('span', { class: 'favicon letter', 'aria-hidden': 'true' }, (hostOf(tab.url)[0] || '?').toUpperCase())) {
   if (!/^(\.\.\/favicons\/|data:)/.test(tab.favicon)) return fallback
-  const img = h('img', { class: 'favicon', src: tab.favicon, alt: '', draggable: 'false' })
+  const src = tab.favicon.startsWith('../favicons/') && skiff.assets?.favicons ? new URL(tab.favicon.slice(12), skiff.assets.favicons).href : tab.favicon
+  const img = h('img', { class: 'favicon', src, alt: '', draggable: 'false' })
   img.decode().then(() => draws(img), () => false).then((shown) => shown || img.replaceWith(fallback))
   return img
 }
@@ -202,11 +203,15 @@ function defaultRect(state, tab) {
 const rectOf = (state, tab) => (tab.desk ? { x: tab.desk.x, y: tab.desk.y, width: tab.desk.width, height: tab.desk.height } : defaultRect(state, tab))
 const activeTabOf = (state) => state.tabs.find((t) => t.id === state.activeTabBySpace[state.activeSpaceId])
 const isShown = (state, tab) => tab === activeTabOf(state) || (tab.desk ? !tab.desk.hidden : isPlain(tab))
+// The core sets state.desktops only where macOS desktops are known; each tab belongs to one, and the desk shows the current desktop's.
+const onDesktop = (state, tab) => !state.desktops || tab.desktopId === state.desktops.current
+// Labels exist only with two or more desktops.
+const desktopOf = (state, tab) => (state.desktops?.list.length > 1 ? state.desktops.list.find((d) => d.id === tab.desktopId) : null)
 // Back to front, as the core stacks them: unplaced windows, placed ones by z, the active tab, then a peeked agent tab in front; only the foreground set while there is one.
 function deskWindows(state) {
   const active = activeTabOf(state)
   const only = state.deskOnly
-  const shown = visibleTabs(state, state.activeSpaceId).filter((t) => t !== active && isShown(state, t) && (!only || only.includes(t.id)))
+  const shown = visibleTabs(state, state.activeSpaceId).filter((t) => t !== active && onDesktop(state, t) && isShown(state, t) && (!only || only.includes(t.id)))
   const list = [...shown.filter((t) => !t.desk), ...shown.filter((t) => t.desk).sort((a, b) => a.desk.z - b.desk.z)]
   if (active) list.push(active)
   const peeked = state.agentTabs?.find((t) => t.id === state.peek && t.desk)

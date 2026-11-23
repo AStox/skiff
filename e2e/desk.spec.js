@@ -2,16 +2,22 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { test, expect } = require('./fixtures')
+const { execFileSync } = require('node:child_process')
+
+test.use({ fixtureOptions: { componentConsent: 1, legacyShell: process.env.SKIFF_POINTER_LEGACY_SOURCE, nativeScale: process.env.SKIFF_POINTER_NATIVE_SCALE === '1' } })
 
 const shellsDir = path.join(__dirname, '..', 'shells')
 const manifest = (name) => { try { return JSON.parse(fs.readFileSync(path.join(shellsDir, name, 'shell.json'), 'utf8')) } catch { return {} } }
 const deskShell = (fs.existsSync(shellsDir) ? fs.readdirSync(shellsDir) : []).sort().find((name) => manifest(name).window === 'desk')
 
-// ui.setShell replaces the window that runs the call, so the call is not awaited.
+// An owned shell survives a preset change until its role is explicitly rebound.
 async function switchWindow(skiff, name) {
+  const owned = (await skiff.rpc('ui.inspectSource', { role: 'shell' })).kind === 'user'
+  if (owned) await skiff.rpc('ui.setShell', { name })
   const old = skiff.shell
   const closed = old.waitForEvent('close')
-  await old.evaluate((name) => { window.skiff.call('ui.setShell', { name }) }, name)
+  if (owned) await skiff.rpc('components.bind', { role: 'shell', id: 'stock.shell' })
+  else await old.evaluate((name) => { window.skiff.call('ui.setShell', { name }) }, name)
   await closed
   await expect.poll(() => !skiff.shell.isClosed()).toBe(true)
   await skiff.shell.waitForLoadState()
@@ -65,15 +71,21 @@ const cascade = ({ width, height }, index) => {
   return { x: Math.round((width - w) / 2) + 28 * n, y: Math.round((height - h) / 2) + 28 * n, width: w, height: h }
 }
 const recorder = "<script>window.events = []; for (const name of ['look-through', 'ping', 'desk-activated']) window.skiff.on(name, (data) => window.events.push([name, data])); window.skiff.on('state', (s) => { window.lastState = s })</script>"
-// Rewrites the live shell so every page, the frame and a few overlay files only run the given script, and waits for the reload.
+// Copy the selected desk into an owned component, make its UI inert, and select
+// every copied surface explicitly so independent stock frame/overlay code stops.
 async function inertShell(skiff, script) {
-  const reloaded = skiff.shell.waitForEvent('load')
-  const shellDir = path.join(skiff.data, 'shell')
-  const pages = new Set([...fs.readdirSync(shellDir).filter((file) => file.endsWith('.html') && file !== 'index.html'), 'frame.html', 'a.html', 'b.html', 'f.html'])
-  for (const file of pages) fs.writeFileSync(path.join(shellDir, file), `<!doctype html><title>${file}</title>${script}`)
-  fs.writeFileSync(path.join(shellDir, 'shell.json'), JSON.stringify({ window: 'desk', frame: { file: 'frame.html', ...INSET } }))
-  fs.writeFileSync(path.join(shellDir, 'index.html'), `<!doctype html><title>Desk test</title>${script}`)
-  await reloaded
+  const selected = await skiff.rpc('ui.inspectSource', { role: 'shell' })
+  const copy = await skiff.rpc('components.create', { id: 'custom.inert-desk', from: selected.id })
+  const pages = new Set([...copy.files.filter((file) => file.endsWith('.html') && file !== 'index.html'), 'frame.html', 'a.html', 'b.html', 'f.html'])
+  for (const file of pages) await skiff.rpc('components.source.write', { id: copy.id, file, content: `<!doctype html><title>${file}</title>${script}` })
+  await skiff.rpc('components.source.write', { id: copy.id, file: 'shell.json', content: JSON.stringify({ window: 'desk', frame: { file: 'frame.html', ...INSET } }) })
+  await skiff.rpc('components.source.write', { id: copy.id, file: 'index.html', content: `<!doctype html><title>Desk test</title>${script}` })
+  await skiff.rpc('components.apply', { id: copy.id })
+  for (const role of Object.keys(copy.manifest.surfaces)) {
+    const bound = await skiff.rpc('components.bind', { id: copy.id, role })
+    expect(bound.owner).toBe(copy.id)
+  }
+  await expect(skiff.shell).toHaveTitle('Desk test')
 }
 // webContents ids of the frame views by tab id.
 const frameIds = (skiff) => skiff.app.evaluate(({ webContents }) => Object.fromEntries(webContents.getAllWebContents().filter((wc) => wc.getURL().includes('/frame.html?tab=')).map((wc) => [new URL(wc.getURL()).searchParams.get('tab'), wc.id])))
@@ -83,6 +95,198 @@ const takeMoves = (skiff) => skiff.app.evaluate(() => { const list = global.__sk
 const xs = (log, id) => log.filter((move) => move.id === id).map((move) => move.x)
 const falling = (list) => list.every((x, i) => !i || x <= list[i - 1])
 const rising = (list) => list.every((x, i) => !i || x >= list[i - 1])
+// Isolate native Mac hits from any real app underneath a transparent desk.
+const guardNativeDesk = (skiff, wcId) => process.platform === 'darwin' ? skiff.app.evaluate(async ({ BrowserWindow, screen, webContents }, id) => {
+  const wc = webContents.fromId(id)
+  const desk = BrowserWindow.getAllWindows().find((w) => w.contentView.children.some((v) => v.webContents === wc))
+  const area = screen.getDisplayMatching(desk.getBounds()).workArea
+  const guard = new BrowserWindow({ ...area, show: false, frame: false, transparent: false, backgroundColor: '#202020', hasShadow: false, skipTaskbar: true, movable: false, resizable: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } })
+  await guard.loadURL('data:text/html,<html><body style="margin:0;background:%23202020"></body></html>')
+  guard.setIgnoreMouseEvents(false)
+  guard.setAlwaysOnTop(true, 'floating')
+  guard.showInactive()
+  desk.setAlwaysOnTop(true, 'floating', 1)
+  desk.focus()
+  // Existing fixture teardown destroys both owned windows on failure too.
+  return guard.getContentBounds()
+}, wcId) : null
+
+test('background page drag regions cannot block native modal and media controls', async ({ skiff }, testInfo) => {
+  if (process.env.SKIFF_POINTER_LEGACY_SOURCE) expect((await skiff.rpc('ui.shellPath')).owner).toBe('legacy.shell')
+  else await switchWindow(skiff, deskShell)
+  const peer = await skiff.rpc('tabs.create', { url: skiff.origin + '/drag-region-fixture' })
+  const peerPage = await skiff.page('/drag-region-fixture')
+  const peerBounds = { x: 220, y: 120, width: 720, height: 500 }
+  await skiff.rpc('desk.place', { id: peer.id, ...peerBounds })
+  const tab = await skiff.rpc('tabs.create', { url: skiff.origin + '/pointer-fixture' })
+  const page = await skiff.page('/pointer-fixture')
+  const bounds = { x: 300, y: 160, width: 720, height: 500 }
+  await skiff.rpc('desk.place', { id: tab.id, ...bounds })
+  const identity = await page.evaluate(() => performance.timeOrigin)
+  const wcId = (await pageIds(skiff))['/pointer-fixture']
+  const overflow = await peerPage.locator('#overflow').evaluate((el) => el.getBoundingClientRect().toJSON())
+  const dragDocument = await peerPage.content()
+  const protectedArea = await guardNativeDesk(skiff, wcId)
+  await cursor(skiff, null)
+  let stage
+  const hit = async (selector, { click = false, at, dx = 0 } = {}) => {
+    const rect = await page.locator(selector).evaluate((el) => el.getBoundingClientRect().toJSON())
+    const geometry = await skiff.app.evaluate(({ BrowserWindow, webContents }, id) => {
+      const wc = webContents.fromId(id)
+      const win = BrowserWindow.getAllWindows().find((w) => w.contentView.children.some((v) => v.webContents === wc))
+      const view = win.contentView.children.find((v) => v.webContents === wc)
+      return { content: win.getContentBounds(), bounds: view.getBounds(), zoom: wc.getZoomFactor() }
+    }, wcId)
+    const css = at || { x: rect.x + rect.width / 2 + dx, y: rect.y + rect.height / 2 }
+    const point = { x: Math.round(geometry.content.x + geometry.bounds.x + css.x * geometry.zoom), y: Math.round(geometry.content.y + geometry.bounds.y + css.y * geometry.zoom), click }
+    if (protectedArea) {
+      expect(point.x).toBeGreaterThanOrEqual(protectedArea.x)
+      expect(point.y).toBeGreaterThanOrEqual(protectedArea.y)
+      expect(point.x).toBeLessThan(protectedArea.x + protectedArea.width)
+      expect(point.y).toBeLessThan(protectedArea.y + protectedArea.height)
+    }
+    await page.evaluate(() => { window.pointerEvents = [] })
+    execFileSync('python3', [path.join(__dirname, 'native-pointer.py'), JSON.stringify(point)], { timeout: 5000 })
+    let event
+    try {
+      await expect.poll(async () => {
+        event = await page.evaluate(({ point, type }) => window.pointerEvents.findLast((event) => event.type === type && Math.abs(event.screenX - point.x) <= 1 && Math.abs(event.screenY - point.y) <= 1), { point, type: click ? 'click' : 'mousemove' })
+        return Boolean(event)
+      }).toBe(true)
+      expect(event).toMatchObject({ target: selector.slice(1), trusted: true })
+      expect(Math.abs(event.x - css.x)).toBeLessThanOrEqual(2)
+      expect(Math.abs(event.y - css.y)).toBeLessThanOrEqual(2)
+    } finally {
+      const events = await page.evaluate(() => ({ pointer: window.pointerEvents, hover: window.hoverEvents }))
+      await testInfo.attach('native-pointer-coordinates', { body: JSON.stringify({ stage, selector, rect, geometry, css, point, event, events }, null, 2), contentType: 'application/json' })
+    }
+  }
+  for (const [index, name] of ['author-important', 'navigation', 'dynamic-closed-shadow', 'iframe'].entries()) {
+    stage = name
+    if (stage === 'navigation') {
+      const previous = await peerPage.evaluate(() => performance.timeOrigin)
+      await peerPage.goto(skiff.origin + '/drag-region-fixture?navigation=1')
+      expect(await peerPage.evaluate(() => performance.timeOrigin)).not.toBe(previous)
+    }
+    if (stage === 'dynamic-closed-shadow') await peerPage.evaluate(() => window.addClosedDragShadow())
+    if (stage === 'iframe') {
+      // An opaque-origin child document uses the real browser-session preload.
+      await peerPage.evaluate((html) => {
+        document.querySelector('style')?.remove()
+        const frame = document.createElement('iframe')
+        frame.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;border:0'
+        frame.src = 'data:text/html;charset=utf-8,' + encodeURIComponent(html)
+        document.body.replaceChildren(frame)
+      }, dragDocument)
+      await expect.poll(() => peerPage.frames().some((frame) => frame.url().startsWith('data:text/html'))).toBe(true)
+      await expect(peerPage.frames().find((frame) => frame.url().startsWith('data:text/html')).locator('#overflow')).toBeAttached()
+    }
+    const layout = await children(skiff)
+    expect(layout.filter((view) => view.kind === 'page').map((view) => view.name)).toEqual(['/drag-region-fixture', '/pointer-fixture'])
+    expect(layout.find((view) => view.name === '/pointer-fixture')).toMatchObject(bounds)
+    expect(layout.find((view) => view.name === '/drag-region-fixture')).toMatchObject(peerBounds)
+    const peerFrame = layout.find((view) => view.kind === 'frame' && view.name === peer.id)
+    // The second video point is outside the peer frame but inside its overflow.
+    expect(bounds.x + 690).toBeGreaterThan(peerFrame.x + peerFrame.width)
+    expect(bounds.x + 690).toBeGreaterThan(peerBounds.x + overflow.x)
+    expect(bounds.x + 690).toBeLessThan(peerBounds.x + overflow.right)
+    expect(bounds.y + 175).toBeGreaterThan(peerBounds.y + overflow.y)
+    expect(bounds.y + 175).toBeLessThan(peerBounds.y + overflow.bottom)
+    // Native drag-region updates reach the compositor asynchronously.
+    await page.waitForTimeout(150)
+    await hit('#close', { click: true })
+    expect(await page.evaluate(() => window.closedImages)).toBe(index + 1)
+    await hit('#video')
+    await hit('#video', { at: { x: 690, y: 175 } })
+    await hit('#play', { click: true })
+    await expect.poll(() => page.locator('video').evaluate((video) => video.paused)).toBe(index % 2 === 1)
+    const leaves = await page.evaluate(() => { window.hoverEvents = []; return window.playerLeaves })
+    await hit('#volume')
+    await hit('#volume', { click: true, dx: 4 })
+    expect(await page.evaluate(() => window.volumeClicks)).toBe(index + 1)
+    expect(await page.locator('#controls').evaluate((el) => getComputedStyle(el).visibility)).toBe('visible')
+    expect(await page.evaluate(() => window.playerLeaves)).toBe(leaves)
+    expect(await page.evaluate(() => window.hoverEvents.filter((event) => event.target === 'player' && ['mouseleave', 'pointerleave'].includes(event.type)))).toEqual([])
+    expect(await page.evaluate(() => performance.timeOrigin)).toBe(identity)
+  }
+})
+
+test('native wheel and scrollbar drags scroll pages without moving the root window or tab', async ({ skiff }, testInfo) => {
+  if (!process.env.SKIFF_POINTER_LEGACY_SOURCE) await switchWindow(skiff, deskShell)
+  const tab = await skiff.rpc('tabs.create', { url: skiff.origin + '/scroll-fixture' })
+  const page = await skiff.page('/scroll-fixture')
+  await skiff.rpc('desk.place', { id: tab.id, x: 160, y: 120, width: 640, height: 520 })
+  const wcId = (await pageIds(skiff))['/scroll-fixture']
+  const protectedArea = await guardNativeDesk(skiff, wcId)
+  await cursor(skiff, null)
+  await skiff.app.evaluate(({ ipcMain }) => {
+    global.__nativeScrollDrags = []
+    ipcMain.on('skiff:page-drag', (_event, phase, x, y) => global.__nativeScrollDrags.push({ phase, x, y }))
+  })
+  const geometry = () => skiff.app.evaluate(({ BrowserWindow, webContents }, id) => {
+    const wc = webContents.fromId(id)
+    const win = BrowserWindow.getAllWindows().find((w) => w.contentView.children.some((v) => v.webContents === wc))
+    const view = win.contentView.children.find((v) => v.webContents === wc)
+    return { root: win.getBounds(), content: win.getContentBounds(), tab: view.getBounds(), zoom: wc.getZoomFactor() }
+  }, wcId)
+  const original = await geometry()
+  const originalDesk = (await tabOf(skiff, tab.id)).desk
+  const native = (at, action) => {
+    const screen = ({ x, y }) => ({ x: Math.round(original.content.x + original.tab.x + x * original.zoom), y: Math.round(original.content.y + original.tab.y + y * original.zoom) })
+    const point = { ...screen(at), ...action }
+    if (action.drag) point.drag = screen(action.drag)
+    for (const position of [point, ...(point.drag ? [point.drag] : [])]) {
+      if (!protectedArea) continue
+      expect(position.x).toBeGreaterThanOrEqual(protectedArea.x)
+      expect(position.y).toBeGreaterThanOrEqual(protectedArea.y)
+      expect(position.x).toBeLessThan(protectedArea.x + protectedArea.width)
+      expect(position.y).toBeLessThan(protectedArea.y + protectedArea.height)
+    }
+    execFileSync('python3', [path.join(__dirname, 'native-pointer.py'), JSON.stringify(point)], { timeout: 5000 })
+  }
+  for (const selector of [null, '#nested']) {
+    const offset = () => page.evaluate((selector) => (selector ? document.querySelector(selector) : document.scrollingElement).scrollTop, selector)
+    const metrics = await page.evaluate((selector) => {
+      const el = selector ? document.querySelector(selector) : document.scrollingElement
+      const rect = selector ? el.getBoundingClientRect() : { x: 0, y: 0, width: innerWidth, height: innerHeight }
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, clientWidth: el.clientWidth, clientHeight: el.clientHeight, scrollHeight: el.scrollHeight }
+    }, selector)
+    expect(metrics.width - metrics.clientWidth).toBeGreaterThan(0)
+    const center = { x: metrics.x + (selector ? metrics.clientWidth / 2 : metrics.clientWidth - 64), y: metrics.y + metrics.clientHeight / 2 }
+    try {
+      await page.evaluate(() => { window.nativeScrollEvents = [] })
+      // OS-generated discrete wheel input is not proof of physical trackpad behavior.
+      native(center, { wheel: 3 })
+      await expect.poll(offset).toBeGreaterThan(0)
+      await expect.poll(() => page.evaluate(() => window.nativeScrollEvents.some((event) => event.type === 'wheel' && event.trusted && event.deltaY > 0))).toBe(true)
+      // Wait for native wheel animation to finish before locating the thumb.
+      let previous = -1
+      let stable = 0
+      await expect.poll(async () => {
+        const current = await offset()
+        stable = current === previous ? stable + 1 : 0
+        previous = current
+        return stable
+      }, { intervals: [50] }).toBeGreaterThanOrEqual(2)
+      expect(await geometry()).toEqual(original)
+      expect((await tabOf(skiff, tab.id)).desk).toEqual(originalDesk)
+      await page.evaluate((selector) => { (selector ? document.querySelector(selector) : document.scrollingElement).scrollTop = 0 }, selector)
+      await expect.poll(offset).toBe(0)
+      const thumb = { x: metrics.x + metrics.clientWidth + (metrics.width - metrics.clientWidth) / 2, y: metrics.y + metrics.clientHeight * metrics.clientHeight / metrics.scrollHeight / 2 }
+      native(thumb, { drag: { x: thumb.x, y: thumb.y + 90 } })
+      await expect.poll(offset).toBeGreaterThan(100)
+      expect(await geometry()).toEqual(original)
+      expect((await tabOf(skiff, tab.id)).desk).toEqual(originalDesk)
+    } finally {
+      await testInfo.attach('native-scroll-result', { body: JSON.stringify({
+        scroller: selector || 'document', metrics, original, final: await geometry(),
+        originalDesk, finalDesk: (await tabOf(skiff, tab.id)).desk, scrollTop: await offset(),
+        pageDrags: await skiff.app.evaluate(() => global.__nativeScrollDrags),
+        events: await page.evaluate(() => window.nativeScrollEvents)
+      }, null, 2), contentType: 'application/json' })
+    }
+  }
+})
 
 test('a desk shell gets a transparent window over the work area that shows every ordinary tab as a framed window', async ({ skiff }) => {
   const one = (await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })).id

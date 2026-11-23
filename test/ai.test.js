@@ -6,6 +6,9 @@ const os = require('node:os')
 const path = require('node:path')
 const http = require('node:http')
 const { createAi, browserTools, handleMcp } = require('../src/ai')
+const { createAccess } = require('../src/access')
+const { createRegistry } = require('../src/commands')
+const { createTranscripts } = require('../src/transcripts')
 const S = require('../src/state')
 
 const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`
@@ -14,16 +17,18 @@ const PAGE = { title: 'Example page', url: 'https://example.com/a', selection: '
 const ICON = '../favicons/0123456789abcdef01234567.svg'
 const FOOT = '\nModel: fake-small Effort: low'
 
-function setup({ agents = [{ name: 'Fake', command: AGENT }], page = PAGE, api = () => null } = {}) {
+function setup({ agents = [{ name: 'Fake', command: AGENT }], page = PAGE, api = () => null, revokeAccess, pageGeneration, transcriptRecovery = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skiff-ai-'))
   const s = S.load({ settings: { ai: { agents } } })
+  s.settings.transcriptRecovery = transcriptRecovery
   const web = S.createTab(s, { url: PAGE.url }, 0)
   const pushes = { chat: [], agents: [] }
   const reads = []
   const live = []
   const make = () => {
     const ai = createAi({
-      dir: path.join(dir, 'ai'), version: '0.0.0', state: () => s, changed: () => {}, favicon: ICON, api,
+      dir: path.join(dir, 'ai'), version: '0.0.0', state: () => s, changed: () => {}, favicon: ICON, api, revokeAccess, pageGeneration,
+      transcripts: createTranscripts({ dir: path.join(dir, 'journal'), state: () => s }),
       pageText: (tabId) => {
         reads.push(tabId)
         return page
@@ -347,23 +352,203 @@ test('handleMcp answers initialize, ping, tools/list, tools/call and refuses unk
   assert.deepEqual((await mcp([{ jsonrpc: '2.0', id: 8, method: 'ping' }, { jsonrpc: '2.0', method: 'notifications/initialized' }])).map((r) => r.id), [8])
 })
 
-test('the browser tools see and touch only non-incognito tabs, and do not read or navigate chats', async () => {
+test('browser tools use the owned registry and selected grant boundary rather than a second dispatcher', async () => {
   const s = S.load()
   const tab = S.createTab(s, { url: 'https://a.example/' }, 0)
   const chat = S.createTab(s, { activate: false }, 0, { id: 'c0123456789ab', agent: 'Fake', title: 'Hi', favicon: '' })
+  const registry = createRegistry()
+  const definition = (name, tool, properties, run) => registry.register('core', { name, description: name, tool: { name: tool }, inputSchema: { type: 'object', properties, additionalProperties: false }, run })
+  definition('tabs.list', 'browser_list_tabs', {}, () => ({ tabs: s.tabs, activeTabId: S.activeTab(s)?.id }))
+  definition('tabs.read', 'browser_read_page', { id: { type: 'string' } }, ({ id }) => ({ id, text: S.findTab(s, id).url }))
+  definition('tabs.create', 'browser_open_tab', { url: { type: 'string' }, spaceId: { type: 'string' } }, (params) => S.createTab(s, params, 1))
+  definition('tabs.navigate', 'browser_navigate', { id: { type: 'string' }, url: { type: 'string' } }, (params) => S.navigateTab(s, params, 2))
+  const access = createAccess({ state: () => s })
+  const grant = access.issue({ owner: 'Fake Agent', spaceIds: [tab.spaceId], read: true, mutate: true })
+  const context = access.authorize(grant.token, { route: '/mcp', method: 'POST' })
   S.openIncognito(s)
   const secret = S.createTab(s, { url: 'https://secret.example/' }, 0)
-  const calls = []
-  const tools = browserTools({ state: () => s, call: async (method, params) => { calls.push([method, params]); return { id: 'tNew', url: params.url } }, readTab: async (t) => ({ title: 'A', url: t.url, text: 'x'.repeat(30000) }) })
-  const run = (name, args = {}) => tools.find((t) => t.name === name).run(args)
-  assert.deepEqual(await run('browser_list_tabs'), { activeTabId: null, tabs: [{ id: tab.id, title: tab.title, url: tab.url, space: 'Home', favorite: false, pinned: false }, { id: chat.id, title: 'Hi', url: 'skiff://chat/c0123456789ab', space: 'Home', favorite: false, pinned: false, chat: true }] })
-  await run('browser_open_tab', { url: 'https://b.example/' })
-  assert.deepEqual(calls, [['tabs.create', { url: 'https://b.example/', spaceId: s.spaces[0].id, activate: true }]])
+  const tools = access.tools(context, browserTools({ registry }))
+  const run = (name, params = {}) => tools.find((tool) => tool.name === name).run(params)
+  assert.deepEqual((await run('browser_list_tabs')).tabs.map((item) => item.id), [tab.id, chat.id])
+  assert.equal((await run('browser_open_tab', { url: 'https://b.example/' })).spaceId, tab.spaceId)
   await assert.rejects(run('browser_open_tab', { url: 'javascript:alert(1)' }), { code: 'bad_params' })
-  await assert.rejects(run('browser_read_page'), { code: 'bad_params', message: 'No active tab' })
-  await assert.rejects(run('browser_read_page', { tabId: secret.id }), { code: 'bad_params' })
-  await assert.rejects(run('browser_close_tab', {}), { code: 'bad_params' })
-  for (const name of ['browser_read_page', 'browser_navigate']) await assert.rejects(run(name, { tabId: chat.id, url: 'https://c.example/' }), { code: 'bad_params', message: 'That tab is a conversation, not a web page.' })
-  const page = await run('browser_read_page', { tabId: tab.id })
-  assert.deepEqual({ ...page, text: page.text.length }, { id: tab.id, title: 'A', url: tab.url, text: 20000 })
+  await assert.rejects(run('browser_read_page', { tabId: secret.id }), { code: 'forbidden' })
+  for (const name of ['browser_read_page', 'browser_navigate']) await assert.rejects(run(name, { tabId: chat.id, url: 'https://c.example/' }), { code: 'forbidden' })
+  assert.equal((await run('browser_read_page', { tabId: tab.id })).text, tab.url)
+  await assert.rejects(run('browser_read_page', { id: tab.id, tabId: secret.id }), { code: 'forbidden' })
+  registry.dispose('core')
+  await assert.rejects(run('browser_read_page', { tabId: tab.id }))
+})
+
+test('session credentials carry chat identity, are absent from warm sessions, and are revoked on cancel and stop', async () => {
+  const issued = []
+  const revoked = []
+  const { ai, web } = setup({ api: (identity) => {
+    issued.push(identity)
+    const token = `session-token-${issued.length}`
+    return { port: 1, token, revoke: () => revoked.push(token) }
+  } })
+  await ai.warm({ agent: 'Fake' })
+  assert.deepEqual(issued, [])
+  const first = ai.ask({ text: 'first', includePage: true })
+  await settled(ai, first.chatId)
+  assert.equal(issued[0].chatId, first.chatId)
+  assert.equal(issued[0].tabId, web.id)
+  assert.equal(issued[0].agent, 'Fake')
+  const second = ai.ask({ text: 'second' })
+  await settled(ai, second.chatId)
+  assert.equal(issued[1].chatId, second.chatId)
+  assert.equal(issued[1].tabId, null)
+  ai.cancel({ chatId: first.chatId })
+  assert.deepEqual(revoked, ['session-token-1'])
+  ai.prompt({ chatId: first.chatId, text: 'again' })
+  await settled(ai, first.chatId)
+  assert.equal(issued.length, 3)
+  ai.stop()
+  assert.deepEqual(new Set(revoked), new Set(['session-token-1', 'session-token-2', 'session-token-3']))
+})
+
+test('local recovery is read-only when ACP cannot restore and only an explicit fresh prompt starts a new session', async () => {
+  const { ai, make, dir } = setup({ transcriptRecovery: true })
+  const { chatId } = ai.ask({ text: 'remember this locally' })
+  const before = await settled(ai, chatId)
+  ai.stop()
+  fs.rmSync(path.join(dir, 'fake-sessions.json'))
+  const next = make()
+  const recovered = await settled(next, chatId)
+  assert.deepEqual(recovered.recovery, { source: 'local', readOnly: true, requiresFresh: true, transcriptId: chatId })
+  assert.ok(recovered.turns.some((turn) => turn.kind === 'user' && turn.text === 'remember this locally'))
+  assert.throws(() => next.prompt({ chatId, text: 'do not silently replay' }), { code: 'bad_params' })
+  next.prompt({ chatId, text: 'new context only', fresh: true })
+  const fresh = await settled(next, chatId)
+  assert.notEqual(fresh.sessionId, before.sessionId)
+  assert.equal(fresh.recovery, undefined)
+  const remote = stored(dir)[fresh.sessionId]
+  assert.equal(JSON.stringify(remote).includes('remember this locally'), false)
+  assert.equal(JSON.stringify(remote).includes('new context only'), true)
+})
+
+test('ACP session/load remains primary over an available local recovery journal', async () => {
+  const { ai, make } = setup({ transcriptRecovery: true })
+  const { chatId } = ai.ask({ text: 'remote context' })
+  const before = await settled(ai, chatId)
+  ai.stop()
+  const next = make()
+  const after = await settled(next, chatId)
+  assert.equal(after.sessionId, before.sessionId)
+  assert.equal(after.recovery, undefined)
+  assert.deepEqual(after.turns.map((turn) => [turn.kind, turn.text]), before.turns.map((turn) => [turn.kind, turn.text]))
+})
+
+test('cancel during credential acquisition revokes the late credential before any session can use it', async () => {
+  let deliver
+  let revoked = 0
+  const { ai } = setup({ api: () => new Promise((resolve) => { deliver = resolve }) })
+  const { chatId } = ai.ask({ text: 'cancel before opening session' })
+  await until(() => deliver)
+  ai.cancel({ chatId })
+  deliver({ port: 1, token: 'late-token', revoke: () => { revoked++ } })
+  const chat = await settled(ai, chatId)
+  assert.equal(revoked, 1)
+  assert.equal(chat.sessionId, null)
+  assert.equal(last(ai, chatId).stopReason, 'cancelled')
+})
+
+test('a newly selected grant is attached on the next turn without replaying local history', async () => {
+  let enabled = false
+  const identities = []
+  const { ai } = setup({ api: (identity) => {
+    identities.push(identity)
+    return enabled ? { port: 1, token: 'newly-selected', revoke() {} } : null
+  } })
+  const { chatId } = ai.ask({ text: 'no browser grant yet' })
+  const first = await settled(ai, chatId)
+  enabled = true
+  ai.prompt({ chatId, text: 'grant now available' })
+  const second = await settled(ai, chatId)
+  assert.equal(second.sessionId, first.sessionId)
+  assert.equal(identities.length, 2)
+  assert.equal(identities[1].sessionId, first.sessionId)
+  assert.equal(last(ai, chatId).text, `You said: grant now available${FOOT}`)
+  assert.equal(kinds(second, 'user').length, 2)
+})
+
+test('replacing or removing an agent command revokes its owner grant even before it launches', () => {
+  const revoked = []
+  const { ai, s } = setup({ revokeAccess: (selector) => revoked.push(selector) })
+  S.setSettings(s, { ai: { agents: [{ name: 'Fake', command: `${AGENT} --replaced` }] } })
+  ai.settingsChanged()
+  assert.deepEqual(revoked, [{ owner: 'Fake' }])
+  S.setSettings(s, { ai: { agents: [] } })
+  ai.settingsChanged()
+  assert.deepEqual(revoked, [{ owner: 'Fake' }, { owner: 'Fake' }])
+})
+
+test('removing or replacing an agent while page extraction waits cannot launch the obsolete command', async () => {
+  for (const replace of [false, true]) {
+    let resolvePage
+    const page = new Promise((resolve) => { resolvePage = resolve })
+    const { ai, s, dir, reads, pushes } = setup({ page })
+    const { chatId } = ai.ask({ text: 'must never reach the old agent', includePage: true })
+    await until(() => reads.length === 1)
+    S.setSettings(s, { ai: { agents: replace ? [{ name: 'Fake', command: `${AGENT} --replacement` }] : [] } })
+    ai.settingsChanged()
+    resolvePage(PAGE)
+    await new Promise(setImmediate)
+    const chat = await settled(ai, chatId)
+    assert.equal(chat.status, 'error')
+    assert.equal(chat.sessionId, null)
+    assert.equal(last(ai, chatId).done, true)
+    assert.equal(fs.existsSync(dir), false, 'the obsolete command must not even create its working directory')
+    assert.equal(pushes.agents.some((entries) => entries.some((agent) => agent.status === 'starting')), false)
+  }
+})
+
+test('explicit page context excludes peeks and retained private partitions before extraction', async () => {
+  for (const excluded of [{ userPeek: true }, { sessionPartition: 'incognito-retained' }]) {
+    const { ai, web, reads } = setup()
+    Object.assign(web, excluded)
+    const { chatId } = ai.ask({ text: 'no excluded page', tabId: web.id, includePage: true })
+    const chat = await settled(ai, chatId)
+    assert.deepEqual(reads, [])
+    assert.equal(kinds(chat, 'user')[0].context, null)
+    assert.equal(last(ai, chatId).text, `You said: no excluded page${FOOT}`)
+  }
+})
+
+test('page eligibility is rechecked after extraction rather than trusting its original status', async () => {
+  for (const excluded of [{ userPeek: true }, { agent: 'Other' }, { sessionPartition: 'incognito-late' }]) {
+    let resolvePage
+    const page = new Promise((resolve) => { resolvePage = resolve })
+    const { ai, web, reads } = setup({ page })
+    const { chatId } = ai.ask({ text: 'do not attach excluded text', tabId: web.id, includePage: true })
+    await until(() => reads.length === 1)
+    Object.assign(web, excluded)
+    resolvePage(PAGE)
+    const chat = await settled(ai, chatId)
+    assert.equal(kinds(chat, 'user')[0].context, null)
+    assert.equal(last(ai, chatId).text, `You said: do not attach excluded text${FOOT}`)
+  }
+})
+
+test('page context is dropped if navigation, removal, space, document generation or privacy changes during ACP attachment', async () => {
+  for (const change of ['navigate', 'remove', 'move', 'reload', 'private']) {
+    let continueSession
+    let generation = 1
+    const { ai, s, web } = setup({ pageGeneration: () => generation, api: () => new Promise((resolve) => { continueSession = resolve }) })
+    const { chatId } = ai.ask({ text: 'only this prompt', tabId: web.id, includePage: true })
+    await until(() => continueSession)
+    if (change === 'navigate') S.navigateTab(s, { id: web.id, url: 'https://new.example/' }, 1)
+    if (change === 'reload') generation++
+    if (change === 'remove') S.closeTab(s, { id: web.id }, 1)
+    if (change === 'move') {
+      const space = S.createSpace(s, { name: 'Destination' })
+      S.moveTab(s, { id: web.id, spaceId: space.id }, 1)
+    }
+    if (change === 'private') web.sessionPartition = 'incognito-during-startup'
+    continueSession(null)
+    const chat = await settled(ai, chatId)
+    assert.equal(kinds(chat, 'user')[0].context, null, change)
+    assert.equal(last(ai, chatId).text, `You said: only this prompt${FOOT}`, change)
+  }
 })

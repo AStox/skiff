@@ -1,10 +1,81 @@
 'use strict'
-// Runs in every frame of every page session and does nothing outside the main frame of an http(s) page. In a tab's page a two finger
-// swipe goes back or forward (below). In a desk window a press on the page's empty background that moves more than 4px drags the window: the main process
-// passes start, move, end or cancel with the pointer's screen position to that window's frame, which moves it.
-const { ipcRenderer } = require('electron')
+// Runs in every browser-page frame with no exposed browser API. HTTP(S) frames
+// report draft/media safety; their main frame also owns link peek and the
+// existing swipe and desk-background drag gestures below.
+const { ipcRenderer, webFrame } = require('electron')
+
+// Page CSS must not create native window drag regions through sibling views.
+// User-origin rules override author !important, including closed shadow roots.
+webFrame.insertCSS(`
+  *, *::before, *::after {
+    app-region: no-drag !important;
+    window-drag: none !important;
+  }
+`, { cssOrigin: 'user' })
+
+if (/^https?:$/.test(location.protocol)) {
+  const documentId = `${performance.timeOrigin}:${Math.random().toString(36).slice(2)}`
+  let generation = null
+  let dirty = false
+  let queued = false
+  const playing = new Set()
+  const report = () => {
+    queued = false
+    ipcRenderer.send('skiff:page-state', {
+      document: documentId, generation, timeOrigin: performance.timeOrigin,
+      url: location.href.slice(0, 8192), dirty, media: playing.size > 0
+    })
+  }
+  const scheduleReport = () => {
+    if (queued) return
+    queued = true
+    queueMicrotask(report)
+  }
+  ipcRenderer.on('skiff:page-state-generation', (_event, value) => {
+    if (!Number.isSafeInteger(value) || value < 1 || value === generation) return
+    generation = value
+    scheduleReport()
+  })
+  const edited = (event) => {
+    if (!event.isTrusted || dirty) return
+    if (!event.composedPath().some((node) => node instanceof Element && (node.matches('input, textarea, select, [role="textbox"], [role="combobox"]') || node.isContentEditable))) return
+    // A submit or autosave is not evidence that a draft reached its server.
+    // Keep protection until a new document; never send field contents.
+    dirty = true
+    scheduleReport()
+  }
+  for (const type of ['beforeinput', 'input', 'change', 'paste', 'cut', 'drop']) addEventListener(type, edited, true)
+  // Custom editors may consume modifier shortcuts without native beforeinput.
+  // Conservatively protect those too, including nonmutating shortcuts in editors.
+  addEventListener('keydown', (event) => {
+    if (['Control', 'Meta', 'Alt', 'Shift'].includes(event.key)) return
+    if (event.ctrlKey || event.metaKey || event.altKey || event.key.length === 1 || ['Backspace', 'Delete', 'Enter'].includes(event.key)) edited(event)
+  }, true)
+  for (const type of ['play', 'playing', 'pause', 'ended', 'emptied']) addEventListener(type, (event) => {
+    const media = event.target
+    if (!(media instanceof HTMLMediaElement)) return
+    if (!media.paused && !media.ended) playing.add(media)
+    else playing.delete(media)
+    scheduleReport()
+  }, true)
+  const ready = () => {
+    for (const media of document.querySelectorAll('audio, video')) if (!media.paused && !media.ended) playing.add(media)
+    scheduleReport()
+  }
+  addEventListener('DOMContentLoaded', ready, { once: true })
+  addEventListener('pageshow', ready)
+  if (document.readyState !== 'loading') ready()
+}
 
 if (window === window.top && /^https?:$/.test(location.protocol)) {
+  addEventListener('click', (event) => {
+    if (!event.isTrusted || event.button !== 0 || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+    const link = event.composedPath().find((node) => node instanceof Element && node.matches('a[href]'))
+    if (!link || typeof link.href !== 'string' || link.href.length > 8192 || !URL.canParse(link.href) || !/^https?:$/.test(new URL(link.href).protocol)) return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    ipcRenderer.send('skiff:link-peek', { url: link.href })
+  }, true)
   const ROLES = 'button checkbox combobox grid gridcell link listbox menu menubar menuitem menuitemcheckbox menuitemradio option radio radiogroup scrollbar searchbox slider spinbutton switch tab tablist textbox tree treegrid treeitem'
   const INTERACTIVE = ['a[href]', 'area', 'button', 'input', 'textarea', 'select', 'label', 'summary', 'video', 'audio', 'canvas', 'embed', 'object', 'iframe', ...ROLES.split(' ').map((role) => `[role~="${role}"]`)].join(',')
   let desk = false

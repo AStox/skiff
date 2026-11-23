@@ -78,6 +78,9 @@ test('pinning by drag previews rows, joins folders, unpins, survives state pushe
   const { row, tile, ghosts, drawn, order } = helpers(skiff, s.space)
   const shell = skiff.shell
   const head = shell.locator('#list [data-folder-head="Ref"]')
+  await expect(head.locator('.label')).toHaveText('Ref')
+  await expect(head.locator('.when')).toHaveText('1')
+  await expect(head.locator('.row-main .icon')).toBeVisible()
 
   await dragStart(skiff, row(s.t1))
   await dragOver(skiff, row(s.p2), { y: 4 })

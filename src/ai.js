@@ -9,7 +9,6 @@ const TURNS = 200
 const LONG = 200000
 const TOOL_TEXT = 4000
 const PAGE_TEXT = 12000
-const READ_TEXT = 20000
 const TOOL_STATUS = ['pending', 'in_progress', 'completed', 'failed', 'cancelled']
 const UNRESTORED = 'This conversation could not be restored. New messages start a fresh session.'
 const KINDS = { model: 'Model', effort: 'Effort' }
@@ -45,11 +44,21 @@ function option(list, category) {
 }
 
 // dir: the agents' working folder; state(): the live browser state, whose settings.ai lists the agents; changed(): tabs or settings were changed here;
-// favicon: the icon of chat tabs; api(): {port, token} of the local API or null; pageText(tabId): {title, url, selection, text} of a loaded non-incognito web tab, or null;
+// favicon: the icon of chat tabs; api({agent,sessionId,chatId,tabId}): scoped {port,token,revoke} or null; pageText(tabId): explicit page context;
 // push(name, data): 'ai-agents' with the agents list, or 'chat' with one chat object (at most once per 30 ms per chat).
-function createAi({ dir, version, state, changed, favicon, api, pageText, push }) {
+function createAi({ dir, version, state, changed, favicon, api = () => null, revokeAccess = () => {}, pageText, pageGeneration = () => null, push, transcripts }) {
   const agents = new Map()
   const chats = new Map()
+  let halted = false
+  const release = (c) => {
+    const credential = c.credential
+    c.credential = null
+    credential?.revoke?.()
+  }
+  const journal = (c, force = false) => {
+    if (!transcripts || c.replay || c.restorePending || (!force && c.status === 'running' && Date.now() - (c.journalAt || 0) < 500)) return
+    try { transcripts.record(shape(c)); c.journalAt = Date.now(); c.transcriptError = '' } catch (e) { c.transcriptError = e.message }
+  }
 
   const configured = () => state().settings.ai.agents
   function agentOf(name) {
@@ -58,19 +67,22 @@ function createAi({ dir, version, state, changed, favicon, api, pageText, push }
     if (!agents.has(name)) agents.set(name, { name, command: conf.command, status: 'idle', error: '', info: null, models: null, model: null, efforts: null, effort: null, loadSession: false, proc: null, ready: null, spare: null })
     return agents.get(name)
   }
+  const currentAgent = (agent) => Boolean(agent && agents.get(agent.name) === agent && configured().some((entry) => entry.name === agent.name && entry.command === agent.command))
   const entry = (a) => ({ name: a.name, command: a.command, status: a.status, error: a.error, info: a.info, models: a.models, model: a.model, efforts: a.efforts, effort: a.effort, loadSession: a.loadSession })
   const list = () => configured().map((a) => entry(agentOf(a.name)))
   const pushAgents = () => push('ai-agents', list())
 
-  const shape = (c) => ({ id: c.id, tabId: c.tabId, agent: c.agent, status: c.status, error: c.error, pending: c.pending, sessionId: c.sessionId, models: c.models, model: c.model, efforts: c.efforts, effort: c.effort, permission: c.permission, turns: c.turns })
+  const shape = (c) => ({ id: c.id, tabId: c.tabId, agent: c.agent, status: c.status, error: c.error, pending: c.pending, sessionId: c.sessionId, models: c.models, model: c.model, efforts: c.efforts, effort: c.effort, permission: c.permission, turns: c.turns, ...(c.recovery && { recovery: c.recovery }), ...(c.transcriptError && { transcriptError: c.transcriptError }) })
   const touch = (c) => {
+    if (halted) return
     c.timer ??= setTimeout(() => {
       c.timer = null
+      journal(c)
       push('chat', shape(c))
     }, 30)
   }
   function newChat(id, tabId, agent, sessionId) {
-    const c = { id, tabId, agent, status: 'ready', error: '', pending: '', sessionId, models: null, model: null, efforts: null, effort: null, permission: null, turns: [], count: 0, timer: null, proc: null, asker: null, config: {}, replay: null, stopping: false, want: {} }
+    const c = { id, tabId, agent, status: 'ready', error: '', pending: '', sessionId, models: null, model: null, efforts: null, effort: null, permission: null, turns: [], count: 0, timer: null, proc: null, asker: null, config: {}, replay: null, stopping: false, want: {}, credential: null, scopeTabId: null, recovery: null }
     chats.set(id, c)
     return c
   }
@@ -113,17 +125,19 @@ function createAi({ dir, version, state, changed, favicon, api, pageText, push }
 
   // A closed connection waits for the exit (2 s at most), so down() has ended the chats and named the error before the caller sees it.
   async function rpc(agent, p, method, params) {
-    const result = await p.rpc.request(method, params).catch(async (e) => {
+    if (!currentAgent(agent) || agent.proc !== p) throw stopped()
+    const result = await p.rpc.request(method, params, { timeout: method === 'session/prompt' ? 0 : 30000 }).catch(async (e) => {
       if (e.closed) await within(2000, p.exited, '').catch(() => {})
       throw e
     })
-    if (agent.proc !== p) throw stopped()
+    if (!currentAgent(agent) || agent.proc !== p) throw stopped()
     return result
   }
 
   // Ends the agent's process. With a message, every chat running on it or holding a session in it ends in that error and keeps its session id for session/load.
   function down(agent, p, message) {
     if (agent.proc !== p) return
+    for (const c of chats.values()) if (c.agent === agent.name) release(c)
     Object.assign(agent, { proc: null, ready: null, spare: null, status: message ? 'error' : 'idle', error: message })
     p.rpc.close()
     // The shell may run the agent as a child (npx, ssh), so its whole process group goes.
@@ -183,23 +197,34 @@ function createAi({ dir, version, state, changed, favicon, api, pageText, push }
     agent.ready.catch((e) => e.closed || down(agent, p, `The agent could not start: ${e.message}`))
     return agent.ready
   }
-  const start = (agent) => agent.ready || launch(agent)
+  const start = (agent) => halted || !currentAgent(agent) ? Promise.reject(stopped()) : agent.ready || launch(agent)
 
-  // session/new or session/load, signing in with the agent's first method when it asks for that.
-  function open(agent, p, method, extra) {
-    const local = api()
-    const mcpServers = p.http && local ? [{ type: 'http', name: 'skiff', url: `http://127.0.0.1:${local.port}/mcp`, headers: [{ name: 'Authorization', value: `Bearer ${local.token}` }] }] : []
+  // Warm sessions have no credential. A real chat gets only its explicitly selected grant.
+  async function open(agent, p, method, extra, c) {
+    if (halted || c?.stopping || !currentAgent(agent) || agent.proc !== p) throw stopped()
+    if (c) release(c)
+    const local = c && p.http ? await api({ agent: agent.name, sessionId: extra.sessionId ?? c.sessionId ?? c.id, chatId: c.id, tabId: c.scopeTabId }) : null
+    if (halted || c?.stopping || !currentAgent(agent) || agent.proc !== p) { local?.revoke?.(); throw stopped() }
+    if (c) c.credential = local
+    const mcpServers = local ? [{ type: 'http', name: 'skiff', url: `http://127.0.0.1:${local.port}/mcp`, headers: [{ name: 'Authorization', value: `Bearer ${local.token}` }] }] : []
     const params = { ...extra, cwd: dir, mcpServers }
-    return rpc(agent, p, method, params).catch(async (e) => {
-      if (e.code !== -32000 || !p.auth.length) throw e
-      await rpc(agent, p, 'authenticate', { methodId: p.auth[0]?.id })
-      return rpc(agent, p, method, params)
-    })
+    try {
+      const result = await rpc(agent, p, method, params).catch(async (e) => {
+        if (e.code !== -32000 || !p.auth.length) throw e
+        await rpc(agent, p, 'authenticate', { methodId: p.auth[0]?.id })
+        return rpc(agent, p, method, params)
+      })
+      if (halted || c?.stopping) throw stopped()
+      return result
+    } catch (e) {
+      if (c?.credential === local) release(c)
+      throw e
+    }
   }
 
-  async function newSession(agent, p) {
-    const created = await open(agent, p, 'session/new', {})
-    if (typeof created?.sessionId !== 'string') throw new Error('session/new returned no sessionId')
+  async function newSession(agent, p, c) {
+    const created = await open(agent, p, 'session/new', {}, c)
+    if (typeof created?.sessionId !== 'string') { if (c) release(c); throw new Error('session/new returned no sessionId') }
     return { p, sessionId: created.sessionId, configOptions: created.configOptions }
   }
 
@@ -218,7 +243,7 @@ function createAi({ dir, version, state, changed, favicon, api, pageText, push }
     p.sessions.set(c.sessionId, c)
     c.replay = mode
     try {
-      const result = await open(agent, p, 'session/load', { sessionId: c.sessionId })
+      const result = await open(agent, p, 'session/load', { sessionId: c.sessionId }, c)
       Object.assign(c, parse(agent, result?.configOptions), { proc: p })
     } catch (e) {
       p.sessions.delete(c.sessionId)
@@ -241,8 +266,10 @@ function createAi({ dir, version, state, changed, favicon, api, pageText, push }
     const taken = agent.spare
     agent.spare = null
     const spare = await taken?.catch(() => null)
-    const { sessionId, configOptions } = spare?.p === p ? spare : await newSession(agent, p)
+    const reusable = spare?.p === p && (!p.http || agent.loadSession)
+    const { sessionId, configOptions } = reusable ? spare : await newSession(agent, p, c)
     Object.assign(c, parse(agent, configOptions), { sessionId, proc: p })
+    if (reusable && p.http) await load(c, agent, p, 'ignore')
     p.sessions.set(sessionId, c)
     saveTab(c, { sessionId })
     if (lost) add(c, { kind: 'notice', text: 'Started a new session' }, before)
@@ -256,18 +283,34 @@ function createAi({ dir, version, state, changed, favicon, api, pageText, push }
     touch(c)
   }
 
+  const eligiblePage = (tab) => Boolean(tab && state().tabs.includes(tab) && !tab.chat && !tab.agent && !tab.userPeek && !String(tab.sessionPartition || '').startsWith('incognito-') && state().spaces.some((space) => space.id === tab.spaceId && !space.incognito))
+  const currentPage = (page) => eligiblePage(page.tab) && page.tab.url === page.url && page.tab.spaceId === page.spaceId && page.tab.sessionPartition === page.partition && pageGeneration(page.tab.id) === page.generation
   async function readPage(tabId) {
+    const tab = S.findTab(state(), tabId)
+    if (!eligiblePage(tab)) return null
+    const page = { tab, url: tab.url, spaceId: tab.spaceId, partition: tab.sessionPartition, generation: pageGeneration(tabId) }
     const raw = await within(2000, Promise.resolve().then(() => pageText(tabId)), 'The page did not answer').catch(() => null)
-    return S.isObject(raw) ? { title: str(raw.title, 300), url: str(raw.url, 2000), selection: str(raw.selection, PAGE_TEXT), text: str(raw.text, PAGE_TEXT) } : null
+    if (!currentPage(page) || !S.isObject(raw)) return null
+    page.content = { title: str(raw.title, 300), url: str(raw.url, 2000), selection: str(raw.selection, PAGE_TEXT), text: str(raw.text, PAGE_TEXT) }
+    return page
   }
 
   async function run(c, user, reply, text, pageTab) {
     const agent = agentOf(c.agent)
     try {
-      const page = pageTab ? await readPage(pageTab) : null
-      if (page) user.context = { url: page.url, title: page.title }
+      let page = pageTab ? await readPage(pageTab) : null
+      const recheckPage = () => {
+        if (page && !currentPage(page)) page = null
+        if (!page) { c.scopeTabId = null; user.context = null }
+      }
+      if (!currentAgent(agent)) return
+      if (c.stopping || halted) { finish(reply, 'cancelled'); c.status = 'ready'; return touch(c) }
+      recheckPage()
       const p = await start(agent)
+      recheckPage()
       if (c.proc !== p) await attach(c, agent, p, user)
+      else if (agent.loadSession && p.http) await load(c, agent, p, 'ignore')
+      recheckPage()
       for (const kind of ['model', 'effort']) {
         const value = c.want[kind]
         delete c.want[kind]
@@ -276,20 +319,32 @@ function createAi({ dir, version, state, changed, favicon, api, pageText, push }
             if (e.closed) throw e
             add(c, { kind: 'notice', text: `${KINDS[kind]} ${value} is not available` }, user)
           })
+          recheckPage()
         }
       }
       if (c.stopping) {
         finish(reply, 'cancelled')
         c.status = 'ready'
+        c.proc = null
         return touch(c)
       }
+      if (!currentAgent(agent)) return
+      recheckPage()
+      if (page) user.context = { url: page.content.url, title: page.content.title }
       touch(c)
-      const result = await rpc(agent, p, 'session/prompt', { sessionId: c.sessionId, prompt: [...(page ? [{ type: 'text', text: contextBlock(page) }] : []), { type: 'text', text }] })
+      const result = await rpc(agent, p, 'session/prompt', { sessionId: c.sessionId, prompt: [...(page ? [{ type: 'text', text: contextBlock(page.content) }] : []), { type: 'text', text }] })
       finish(openOf(c) || reply, str(result?.stopReason, 50) || 'end_turn')
       c.status = 'ready'
+      if (c.stopping) c.proc = null
     } catch (e) {
+      if (!currentAgent(agent)) return
       // A closed connection means the process went down, and down() ends the turn.
       const open = openOf(c)
+      if (c.stopping) {
+        if (open) finish(open, 'cancelled')
+        Object.assign(c, { status: 'ready', proc: null })
+        return touch(c)
+      }
       if (!open || e.closed) return
       finish(open, 'error')
       if (c.proc) Object.assign(c, { status: 'ready', error: e.message })
@@ -303,6 +358,7 @@ function createAi({ dir, version, state, changed, favicon, api, pageText, push }
 
   function send(c, text, pageTab) {
     Object.assign(c, { status: 'running', error: '', pending: '', stopping: false })
+    if (pageTab) c.scopeTabId = pageTab
     const user = add(c, { kind: 'user', text, context: null })
     const reply = add(c, { kind: 'assistant', text: '', thought: '', done: false })
     run(c, user, reply, text, pageTab)
@@ -311,7 +367,7 @@ function createAi({ dir, version, state, changed, favicon, api, pageText, push }
   }
 
   function update(c, u) {
-    if (!S.isObject(u) || c.replay === 'ignore') return
+    if (!S.isObject(u) || c.replay === 'ignore' || c.stopping || halted) return
     const text = u.content?.type === 'text' ? str(u.content.text, LONG) : ''
     if (u.sessionUpdate === 'user_message_chunk') {
       if (c.replay !== 'rebuild') return
@@ -339,7 +395,7 @@ function createAi({ dir, version, state, changed, favicon, api, pageText, push }
 
   function request(p, method, params, id) {
     const c = method === 'session/request_permission' && p.sessions.get(params?.sessionId)
-    if (!c) return p.rpc.respond(id, method === 'session/request_permission' ? { outcome: { outcome: 'cancelled' } } : Object.assign(new Error(`Method not found: ${method}`), { code: -32601 }))
+    if (!c || c.stopping || halted || c.status !== 'running') return p.rpc.respond(id, method === 'session/request_permission' ? { outcome: { outcome: 'cancelled' } } : Object.assign(new Error(`Method not found: ${method}`), { code: -32601 }))
     if (c.permission) answer(c, { outcome: 'cancelled' })
     const call = S.isObject(params?.toolCall) ? params.toolCall : {}
     const options = (Array.isArray(params?.options) ? params.options : []).filter(S.isObject).slice(0, 20).map((o) => ({ optionId: str(o.optionId, 200), name: str(o.name, 200), kind: str(o.kind, 50) }))
@@ -358,17 +414,35 @@ function createAi({ dir, version, state, changed, favicon, api, pageText, push }
   async function restore(c) {
     const agent = agentOf(c.agent)
     c.status = 'restoring'
+    c.restorePending = true
+    const oldTurns = c.turns
+    c.turns = []
     try {
       if (!agent) throw new Error(`No agent named ${c.agent}`)
       const p = await start(agent)
       if (!agent.loadSession) throw new Error('The agent cannot load sessions')
       await load(c, agent, p, 'rebuild')
+      c.recovery = null
       c.status = 'ready'
     } catch {
-      if (c.status !== 'restoring') return
+      if (halted) return
+      if (c.stopping) { Object.assign(c, { status: 'ready', turns: oldTurns, proc: null }); return touch(c) }
+      c.turns = oldTurns
+      if (transcripts) {
+        try {
+          const saved = transcripts.get({ id: c.id })
+          c.turns = saved.turns
+          c.count = Math.max(c.count, ...c.turns.map((turn) => Number(turn.id?.replace(/^t/, '')) || 0))
+          c.recovery = { source: 'local', readOnly: true, requiresFresh: true, transcriptId: c.id }
+        } catch (e) {
+          if (e.code !== 'not_found') c.transcriptError = e.message
+        }
+      }
       add(c, { kind: 'notice', text: UNRESTORED })
       Object.assign(c, { status: 'ready', sessionId: null })
       saveTab(c, { sessionId: null })
+    } finally {
+      c.restorePending = false
     }
     touch(c)
   }
@@ -382,6 +456,14 @@ function createAi({ dir, version, state, changed, favicon, api, pageText, push }
     const c = newChat(p.chatId, tab.id, tab.chat.agent, tab.chat.sessionId)
     if (!c.agent && !c.sessionId) c.status = 'setup'
     if (c.sessionId) restore(c)
+    else if (transcripts) {
+      try {
+        const saved = transcripts.get({ id: c.id })
+        c.turns = saved.turns
+        c.count = Math.max(0, ...c.turns.map((turn) => Number(turn.id?.replace(/^t/, '')) || 0))
+        c.recovery = { source: 'local', readOnly: true, requiresFresh: true, transcriptId: c.id }
+      } catch (e) { if (e.code !== 'not_found') c.transcriptError = e.message }
+    }
     return shape(c)
   }
   const find = (p) => {
@@ -420,9 +502,17 @@ function createAi({ dir, version, state, changed, favicon, api, pageText, push }
   function prompt(p) {
     const c = find(p)
     if (typeof p.text !== 'string' || !p.text.trim()) throw bad('text must be a non-empty string')
-    if (c.status === 'running' || c.status === 'restoring') throw bad('The agent is still working.')
+    if (c.status === 'running' || c.restorePending) throw bad('The agent is still working.')
+    if (c.recovery?.requiresFresh && p.fresh !== true) throw bad('This is a read-only local recovery. Choose Start fresh session before sending.')
     const name = agentOf(c.agent) ? c.agent : defaultAgent()
     if (!name) throw bad('No agent configured.')
+    if (c.recovery || p.fresh === true) {
+      release(c)
+      c.proc?.sessions.delete(c.sessionId)
+      Object.assign(c, { recovery: null, sessionId: null, proc: null })
+      add(c, { kind: 'notice', text: 'Started a fresh session. The recovered transcript was not sent to the agent.' })
+      saveTab(c, { sessionId: null })
+    }
     if (name !== c.agent) {
       const { model, effort } = state().settings.ai
       Object.assign(c, { agent: name, want: { model, effort } })
@@ -467,11 +557,13 @@ function createAi({ dir, version, state, changed, favicon, api, pageText, push }
 
   function cancel(p) {
     const c = find(p)
+    release(c)
+    c.stopping = true
     if (c.status === 'running') {
-      c.stopping = true
       if (c.proc && c.sessionId) c.proc.rpc.notify('session/cancel', { sessionId: c.sessionId })
     }
     if (c.permission) answer(c, { outcome: 'cancelled' })
+    if (c.status !== 'running') c.proc = null
     return null
   }
 
@@ -488,91 +580,58 @@ function createAi({ dir, version, state, changed, favicon, api, pageText, push }
   function settingsChanged() {
     for (const agent of [...agents.values()]) {
       if (configured().find((a) => a.name === agent.name)?.command === agent.command) continue
+      revokeAccess({ owner: agent.name })
       if (agent.proc) down(agent, agent.proc, 'Agent stopped')
+      for (const c of chats.values()) {
+        if (c.agent !== agent.name) continue
+        c.stopping = true
+        release(c)
+        if (c.permission) answer(c, { outcome: 'cancelled' })
+        const reply = openOf(c)
+        if (reply) finish(reply, 'cancelled')
+        Object.assign(c, { proc: null, status: 'error', error: 'Agent configuration changed' })
+        touch(c)
+      }
       agents.delete(agent.name)
     }
     pushAgents()
   }
 
   function stop() {
+    halted = true
+    for (const c of chats.values()) {
+      release(c)
+      c.stopping = true
+      clearTimeout(c.timer)
+      c.timer = null
+      journal(c, true)
+    }
     for (const agent of agents.values()) if (agent.proc) down(agent, agent.proc, '')
   }
 
+  for (const configuredAgent of configured()) agentOf(configuredAgent.name)
   return { agents: list, warm, ask, chat, prompt, configure, cancel, permit, settingsChanged, stop }
 }
 
-// state(): the browser state; call(method, params): runs a command; readTab(tab): {title, url, text} once the tab's page has loaded.
-function browserTools({ state, call, readTab }) {
-  const tabOf = (id, required, web) => {
-    if (required && typeof id !== 'string') throw bad('tabId is required')
-    const s = state()
-    const tab = id === undefined ? S.activeTab(s) : S.findTab(s, id)
-    if (!tab || S.isIncognito(s, tab.spaceId)) throw bad(id === undefined ? 'No active tab' : `No tab ${id}`)
-    if (web && tab.chat) throw bad('That tab is a conversation, not a web page.')
-    return tab
-  }
-  const schema = (properties, required = []) => ({ type: 'object', properties, required })
-  const tabId = { type: 'string', description: 'A tab id from browser_list_tabs' }
-  const url = { type: 'string', description: 'An http or https address' }
-  return [
-    {
-      name: 'browser_list_tabs',
-      description: 'List the open browser tabs (id, title, url, space name, favorite, pinned, and chat: true for a conversation with an agent) and the id of the active tab',
-      inputSchema: schema({}),
-      run: () => {
-        const s = state()
-        const active = S.activeTab(s)
-        const spaces = new Map(s.spaces.filter((x) => !x.incognito).map((x) => [x.id, x.name]))
-        return { activeTabId: active && spaces.has(active.spaceId) ? active.id : null, tabs: s.tabs.filter((t) => spaces.has(t.spaceId)).map((t) => ({ id: t.id, title: t.title, url: t.url, space: spaces.get(t.spaceId), favorite: !!t.favorite, pinned: !!t.pinned, ...(t.chat && { chat: true }) })) }
+// Tool discovery and execution share the owned command registry with the UI and CLI.
+function browserTools({ registry, call }) {
+  return registry.list().filter((definition) => definition.tool).map((definition) => ({
+    name: definition.tool.name || definition.name,
+    command: definition.name,
+    description: definition.description,
+    inputSchema: definition.inputSchema,
+    run: (input = {}, context = {}) => {
+      const params = { ...input }
+      if (params.tabId !== undefined && definition.owner === 'core' && definition.name.startsWith('tabs.') && definition.name !== 'tabs.create') {
+        if (params.id !== undefined && params.id !== params.tabId) throw bad('id and tabId must identify the same tab')
+        params.id = params.tabId
+        delete params.tabId
       }
-    },
-    {
-      name: 'browser_open_tab',
-      description: 'Open an address in a new tab of the active space',
-      inputSchema: schema({ url, activate: { type: 'boolean', description: 'Show the new tab (default true)' } }, ['url']),
-      run: async (a) => {
-        const s = state()
-        const space = s.spaces.find((x) => x.id === s.activeSpaceId && !x.incognito) || s.spaces.find((x) => !x.incognito)
-        const tab = await call('tabs.create', { url: S.webUrl(a.url), spaceId: space.id, activate: a.activate !== false })
-        return { id: tab.id, url: tab.url }
-      }
-    },
-    {
-      name: 'browser_navigate',
-      description: 'Load an address in a tab, the active tab by default; not in a conversation tab',
-      inputSchema: schema({ url, tabId }, ['url']),
-      run: async (a) => {
-        const tab = await call('tabs.navigate', { id: tabOf(a.tabId, false, true).id, url: S.webUrl(a.url) })
-        return { id: tab.id, url: tab.url }
-      }
-    },
-    {
-      name: 'browser_activate_tab',
-      description: 'Show a tab, switching to its space',
-      inputSchema: schema({ tabId }, ['tabId']),
-      run: async (a) => {
-        const { id } = tabOf(a.tabId, true)
-        await call('tabs.activate', { id })
-        return { id }
-      }
-    },
-    {
-      name: 'browser_close_tab',
-      description: 'Close a tab into the archive; favorites and pinned tabs are only unloaded',
-      inputSchema: schema({ tabId }, ['tabId']),
-      run: async (a) => call('tabs.close', { id: tabOf(a.tabId, true).id })
-    },
-    {
-      name: 'browser_read_page',
-      description: `Read the title, address and visible text (first ${READ_TEXT} characters) of a tab, the active tab by default; a tab that is not loaded is loaded in the background first; not a conversation tab`,
-      inputSchema: schema({ tabId }),
-      run: async (a) => {
-        const tab = tabOf(a.tabId, false, true)
-        const page = await within(15000, readTab(tab), 'The page did not load within 15 seconds')
-        return { id: tab.id, title: str(page?.title, 300), url: str(page?.url, 2000), text: str(page?.text, READ_TEXT) }
-      }
+      if (definition.name.startsWith('components.') && !call) throw S.err('forbidden', 'Component customization requires the host consent dispatcher')
+      const dispatch = call || registry.call.bind(registry)
+      return dispatch(definition.name, params, context.grantId ? { ...context, accessContext: context, owner: `agent.${Buffer.from(context.owner).toString('hex')}`, agentOwner: context.owner } : context)
     }
-  ]
+  }))
 }
 
 // One MCP JSON-RPC message or a batch; resolves to the reply, or null when nothing is owed (notifications, responses).

@@ -6,12 +6,14 @@ let state = null
 let noticeText = ''
 let noticeTimer
 let lastWidth = 0
+let active = true
 
 const call = (method, params) => skiff.call(method, params).catch(() => {})
 const activeSpace = () => state.spaces.find((s) => s.id === state.activeSpaceId)
 
 // The overlay rectangle is only the pill plus its 16px margins, so the page around it stays clickable.
 function fit() {
+  if (!active) return
   const width = Math.ceil(pill.getBoundingClientRect().width) + 32
   if (width === lastWidth) return
   lastWidth = width
@@ -29,9 +31,17 @@ function render() {
   fit()
 }
 
-const openPanel = () => call('ui.showOverlay', { file: 'panel.html' })
+const openPanel = () => {
+  active = false
+  return call('ui.showOverlay', { file: 'panel.html' })
+}
 pill.addEventListener('click', openPanel)
 skiff.on('toggle-sidebar', openPanel)
+// Retire resize and startup-focus requests as soon as another surface is requested.
+for (const name of ['new-tab', 'focus-address', 'toggle-settings', 'toggle-archive', 'import-arc']) {
+  skiff.on(name, () => { active = false })
+}
+addEventListener('pagehide', () => { active = false })
 new ResizeObserver(fit).observe(pill)
 
 // The pill is the only shell surface at rest, so short notices show in place of the tab count.
@@ -56,4 +66,4 @@ skiff.call('state.get').then((first) => {
   render()
 }).catch(() => { $('pill-name').textContent = 'Skiff' })
 // The pill is shown again after the panel or the bar closes, and the page must get the keyboard back.
-call('ui.setWindowButtons', { visible: false }).then(() => call('ui.focusPage'))
+call('ui.setWindowButtons', { visible: false }).then(() => { if (active) return call('ui.focusPage') })

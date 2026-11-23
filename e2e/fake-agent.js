@@ -76,6 +76,42 @@ async function openTab(sessionId, session, url) {
   send(sessionId, { sessionUpdate: 'tool_call_update', toolCallId, status, content: [{ type: 'content', content: { type: 'text', text } }] })
 }
 
+async function customizeFixture(sessionId, session, params) {
+  const server = session.mcpServers.find((item) => item.name === 'skiff')
+  if (!server) throw new Error('Customization fixture requires an explicitly selected MCP grant')
+  const invoke = async (name, args, denied = false) => {
+    const toolCallId = `customize-${++count}`
+    send(sessionId, { sessionUpdate: 'tool_call', toolCallId, title: name, kind: 'edit', status: 'pending' })
+    const response = await mcp(server, { id: count, method: 'tools/call', params: { name, arguments: args } })
+    const failed = Boolean(response.error || response.result?.isError)
+    const text = response.result?.content?.[0]?.text || JSON.stringify(response.error)
+    send(sessionId, { sessionUpdate: 'tool_call_update', toolCallId, status: failed ? 'failed' : 'completed', content: [{ type: 'content', content: { type: 'text', text } }] })
+    if (denied) {
+      if (!failed) throw new Error(`Unexpected authority: ${name}`)
+      return true
+    }
+    if (failed) throw new Error(`${name}: ${text}`)
+    return JSON.parse(text)
+  }
+  const inspected = await invoke('components.inspect', { id: params.id })
+  const file = inspected.manifest.surfaces.launcher
+  const original = await invoke('components.source.read', { id: params.id, file })
+  const copy = await invoke('components.create', { id: params.copyId, from: params.id, role: 'launcher' })
+  const firstSource = original.content + '<p>ACP fixture revision one</p>'
+  await invoke('components.source.write', { id: copy.id, file, content: firstSource })
+  const checked = await invoke('components.check', { id: copy.id })
+  if (!checked.ok) throw new Error('The edited component failed its real component check')
+  const preview = await invoke('components.preview', { id: copy.id })
+  const first = await invoke('components.apply', { id: copy.id })
+  await invoke('components.bind', { id: copy.id, role: 'launcher' })
+  await invoke('components.source.write', { id: copy.id, file, content: original.content + '<p>ACP fixture revision two</p>' })
+  const second = await invoke('components.apply', { id: copy.id })
+  const reverted = await invoke('components.revert', { id: copy.id })
+  const deniedSource = await invoke('components.source.read', { id: 'stock.chat', file: 'chat.html' }, true)
+  const deniedBrowser = await invoke('browser_read_page', {}, true)
+  return { copyId: copy.id, preview, first: first.revision, second: second.revision, reverted: reverted.revision, deniedSource, deniedBrowser }
+}
+
 async function prompt({ sessionId, prompt: blocks }) {
   const session = sessions.get(sessionId)
   if (!session) throw fail(-32602, `No session ${sessionId}`)
@@ -83,6 +119,14 @@ async function prompt({ sessionId, prompt: blocks }) {
   const text = texts.at(-1) || ''
   const context = texts.length > 1 ? texts[0] : null
   session.cancelled = false
+  if (text.startsWith('customize-fixture ')) {
+    const result = await customizeFixture(sessionId, session, JSON.parse(text.slice('customize-fixture '.length)))
+    const reply = `CUSTOMIZE_RESULT ${JSON.stringify(result)}`
+    say(sessionId, reply)
+    session.turns.push({ user: texts, reply })
+    save(sessionId)
+    return { stopReason: 'end_turn' }
+  }
   if (text.includes('crash')) {
     process.stderr.write('Fake agent crashed\n')
     process.exit(3)

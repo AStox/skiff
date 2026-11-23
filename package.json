@@ -1,8 +1,13 @@
 {
   "name": "skiff",
   "productName": "Skiff",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
   "description": "Bare-bones Arc-like browser whose interface is a replaceable shell folder driven by one command API",
+  "author": "AStox",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AStox/skiff.git"
+  },
   "main": "src/main.js",
   "private": true,
   "bin": {
@@ -13,11 +18,84 @@
     "test": "node --test test/*.test.js",
     "test:visual": "playwright test",
     "test:visual:update": "playwright test --update-snapshots=all",
-    "app": "electron-packager . Skiff --platform=darwin --out=dist --overwrite --ignore=^/test --ignore=^/e2e --ignore=^/playwright --ignore=^/dist"
+    "app": "electron-builder --mac --publish never",
+    "release": "electron-builder --mac --publish always"
   },
   "devDependencies": {
-    "@electron/packager": "^20.3.0",
     "@playwright/test": "^1.65.0",
-    "electron": "^45.3.0"
+    "electron": "45.4.1",
+    "electron-builder": "^26.18.0"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "electron-updater": "^6.8.11",
+    "koffi": "^2.16.4"
+  },
+  "build": {
+    "appId": "com.astox.browser",
+    "productName": "Skiff",
+    "copyright": "Copyright AStox",
+    "files": [
+      "**/*",
+      "!test",
+      "!e2e",
+      "!docs",
+      "!research",
+      "!scripts",
+      "!playwright*",
+      "!.claude",
+      "!.github",
+      "!build",
+      "!dist",
+      "!PRODUCT.md",
+      "!README.md",
+      "!node_modules/koffi/build/koffi/{freebsd,linux,musl,openbsd,win32}_*/**"
+    ],
+    "asarUnpack": [
+      "node_modules/koffi/build/koffi/darwin_*/**"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": true,
+      "extendInfo": {
+        "NSCameraUsageDescription": "Web pages you visit can ask to use your camera.",
+        "NSMicrophoneUsageDescription": "Web pages you visit can ask to use your microphone."
+      }
+    },
+    "protocols": [
+      {
+        "name": "Web site URL",
+        "schemes": [
+          "http",
+          "https"
+        ],
+        "role": "Viewer"
+      }
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "AStox",
+      "repo": "skiff",
+      "releaseType": "draft"
+    }
   }
 }

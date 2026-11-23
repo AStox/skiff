@@ -12,9 +12,21 @@ const { createVault } = require('./migration')
 const { watchShellFiles } = require('./watch-shell')
 const { createExtensions } = require('./extensions')
 const { createAi, browserTools, handleMcp } = require('./ai')
+const { shell } = require('electron')
+const { autoUpdater } = require('electron-updater')
+const { spawn } = require('node:child_process')
+const { createRegistry, schemaFor } = require('./commands')
+const settingsCatalog = require('./settings-catalog')
+const { createComponents } = require('./components')
+const { createBrowserData } = require('./browser-data')
+const { createPageFeatures } = require('./page-features')
+const { createAccess } = require('./access')
+const { createTranscripts } = require('./transcripts')
+const { createSync } = require('./sync')
+const D = require('./desktops')
 
 app.setName('Skiff')
-if (process.env.SKIFF_DATA) app.setPath('userData', path.resolve(process.env.SKIFF_DATA))
+app.setPath('userData', process.env.SKIFF_DATA ? path.resolve(process.env.SKIFF_DATA) : path.join(app.getPath('appData'), 'Skiff'))
 const nativeUserAgent = app.userAgentFallback
 app.userAgentFallback = nativeUserAgent.replace(new RegExp(` (Electron|${app.getName()})/\\S+`, 'gi'), '')
 const compatibleUserAgent = app.userAgentFallback
@@ -26,15 +38,43 @@ const faviconDir = path.join(dataDir, 'favicons')
 const bundledShell = path.join(__dirname, '..', 'shell')
 const bundledShells = path.join(__dirname, '..', 'shells')
 const chatDir = path.join(__dirname, '..', 'chat')
+const toolsDir = path.join(__dirname, '..', 'components', 'browser-tools')
+let safeMode = process.argv.includes('--safe-mode')
+const previewMode = process.argv.includes('--component-preview')
+if (previewMode) process.on('SIGTERM', () => app.quit())
+const trustedFiles = new WeakMap()
+const surfaceLoads = new WeakMap()
+const previews = new Map()
+let commandNotice = false
+const registry = createRegistry({ changed: () => {
+  if (commandNotice) return
+  commandNotice = true
+  queueMicrotask(() => { commandNotice = false; if (state) pushAi('commands-changed', null) })
+} })
+let components, browserData, pageFeatures, access, transcripts, sync
+const toolSections = ['settings', 'history', 'downloads', 'profiles', 'folders', 'sites', 'sync', 'components', 'grants', 'transcripts', 'page', 'commands']
+let splitBounds = null
+let roleSpace = null
+let installingShell = false
+const pendingUrls = process.argv.filter((arg) => /^https?:\/\//i.test(arg))
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  if (!/^https?:\/\//i.test(url)) return
+  if (state && win) rpc('links.open', { url })
+  else pendingUrls.push(url)
+})
 const SPARKLE = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#8b5cf6" d="M8 0c.6 4.2 3.8 7.4 8 8-4.2.6-7.4 3.8-8 8-.6-4.2-3.8-7.4-8-8 4.2-.6 7.4-3.8 8-8z"/></svg>'
 const shells = ['default', ...(fs.existsSync(bundledShells) ? fs.readdirSync(bundledShells).filter((name) => fs.existsSync(path.join(bundledShells, name, 'index.html'))).sort() : [])]
-const CODES = ['unknown_method', 'bad_params', 'not_found']
+const CODES = ['unknown_method', 'bad_params', 'not_found', 'forbidden', 'unauthorized', 'cancelled', 'timeout', 'component_error', 'command_collision', 'bad_schema', 'bad_result']
 
 let state
 let browserIdentity
 const identityForTab = (tab) => tab.browserIdentity || browserIdentity[tab.sessionPartition || 'persist:main'] || 'compatible'
 let win = null
+let windowReady = Promise.resolve()
 let deskMode = false
+// macOS desktops (null off macOS): tabs belong to one, and the desk window is present on every desktop.
+let desktops = null
 let attached = null
 let shown = []
 let pageBounds = null
@@ -45,6 +85,7 @@ let vault
 let filling = false
 let watcher = null
 const overlays = new Map()
+const pageToolRequests = new Map()
 const frames = new Map()
 // Frame view -> the state push it has seen.
 const seen = new WeakMap()
@@ -103,13 +144,13 @@ const extensions = createExtensions({
       const wc = views.get(created.id)?.webContents
       return wc ? extensions.tabInfoOf(wc.id) : { id: -1, windowId: 1, url: created.url, title: created.title, active: false }
     },
-    closeTab: (wcId) => commands['tabs.close'].run({ id: tabOfContents(wcId) }),
-    navigateTab: (wcId, url) => commands['tabs.navigate'].run({ id: tabOfContents(wcId), url }),
-    activateTab: (wcId) => commands['tabs.activate'].run({ id: tabOfContents(wcId) }),
+    closeTab: (wcId) => call('tabs.close', { id: tabOfContents(wcId) }),
+    navigateTab: (wcId, url) => call('tabs.navigate', { id: tabOfContents(wcId), url }),
+    activateTab: (wcId) => call('tabs.activate', { id: tabOfContents(wcId) }),
     attachView: (view) => win?.contentView.addChildView(view),
     detachView: (view) => win?.contentView.removeChildView(view),
     placeView: (view, bounds) => view.setBounds(edgeBounds(bounds)),
-    listChanged: () => { for (const wc of shellContents()) wc.send('skiff:event', 'extensions-changed', null) }
+    listChanged: () => { for (const wc of shellContents()) sendEvent(wc, 'extensions-changed', null) }
   },
   // SKIFF_BUILTIN_EXTENSIONS, a JSON list of {name, release}, replaces the built-in set; "[]" turns it off.
   ...(process.env.SKIFF_BUILTIN_EXTENSIONS ? { builtin: JSON.parse(process.env.SKIFF_BUILTIN_EXTENSIONS) } : {})
@@ -142,7 +183,7 @@ const live = (t) => ({ loading: false, canGoBack: false, canGoForward: false, ..
 const naturalScroll = process.platform !== 'darwin' || (() => {
   try { return require('node:child_process').execFileSync('defaults', ['read', '-g', 'com.apple.swipescrolldirection'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== '0' } catch { return true }
 })()
-const snapshot = () => ({ ...state, shells, naturalScroll, deskOnly: desk.only, tabs: state.tabs.map(live), agentTabs: state.agentTabs.map(live) })
+const snapshot = () => ({ ...state, shells, naturalScroll, safeMode, splitBounds, browserData: browserData?.snapshot(), deskOnly: desk.only, tabs: state.tabs.map(live), agentTabs: state.agentTabs.map(live) })
 const sseFrame = (snap) => `event: state\ndata: ${JSON.stringify(snap)}\n\n`
 
 // Frames hear about state only while shown, so a push costs the shown windows; catchUpFrames serves one that shows again.
@@ -152,17 +193,19 @@ function pushState() {
   // ponytail: full snapshot per change; send patches if state grows past a few hundred tabs
   const snap = snapshot()
   pushed++
-  for (const wc of [win?.webContents, ...[...overlays.values()].map((o) => o.host.webContents), ...chatContents()]) wc?.send('skiff:event', 'state', snap)
+  for (const wc of [win?.webContents, ...[...overlays.values()].map((o) => o.host.webContents), ...chatContents()]) sendEvent(wc, 'state', snap)
   for (const view of shown) {
     if (!seen.has(view)) continue
-    view.webContents.send('skiff:event', 'state', snap)
+    sendEvent(view.webContents, 'state', snap)
     seen.set(view, pushed)
   }
   for (const res of streams) res.write(sseFrame(snap))
+  components?.emit('state', snap)
 }
 
 function changed() {
   save()
+  if (installingShell) return
   syncView()
   pushState()
   if (deskMode) warmTimer ??= setTimeout(prewarm, 500)
@@ -179,7 +222,7 @@ function catchUpFrames() {
   if (!late.length) return
   const snap = snapshot()
   for (const view of late) {
-    view.webContents.send('skiff:event', 'state', snap)
+    sendEvent(view.webContents, 'state', snap)
     seen.set(view, pushed)
   }
 }
@@ -193,7 +236,9 @@ function unshow(view) {
 }
 
 function destroyView(id) {
+  pageFeatures?.beforeDestroy(id)
   const view = views.get(id)
+  if (!view) return
   views.delete(id)
   runtime.delete(id)
   unshow(view)
@@ -232,7 +277,7 @@ function floatWindow() {
 
 function createFrame(id) {
   const view = shellView()
-  view.webContents.loadFile(path.join(shellDir, frameSpec.file), { query: { tab: id } }).catch(() => {})
+  loadSurface(view.webContents, roleFile('frame', path.join(shellRoot(), frameSpec.file), S.findTab(state, id)?.spaceId), { query: { tab: id } })
   frames.set(id, view)
   // It asks for the state itself once loaded.
   seen.set(view, pushed)
@@ -241,7 +286,7 @@ function createFrame(id) {
 
 function readFrame(shellJson) {
   const f = shellJson?.frame
-  if (!S.isObject(f) || typeof f.file !== 'string' || f.file !== path.basename(f.file) || !fs.statSync(path.join(shellDir, f.file), { throwIfNoEntry: false })?.isFile()) return null
+  if (!S.isObject(f) || typeof f.file !== 'string' || f.file !== path.basename(f.file) || !fs.statSync(path.join(shellRoot(), f.file), { throwIfNoEntry: false })?.isFile()) return null
   const inset = (key) => (Number.isFinite(f[key]) && f[key] >= 0 ? f[key] : 0)
   return { file: f.file, top: inset('top'), right: inset('right'), bottom: inset('bottom'), left: inset('left') }
 }
@@ -252,9 +297,9 @@ function createChatView(tab) {
   const wc = view.webContents
   guardShell(wc)
   wc.on('before-mouse-event', (_e, mouse) => {
-    if (deskMode && mouse.type === 'mouseDown' && views.get(tab.id) === view && state.peek !== tab.id && (state.peek || S.activeTab(state)?.id !== tab.id)) commands['tabs.activate'].run({ id: tab.id })
+    if (deskMode && mouse.type === 'mouseDown' && views.get(tab.id) === view && state.peek !== tab.id && (state.peek || S.activeTab(state)?.id !== tab.id)) call('tabs.activate', { id: tab.id }).catch(console.error)
   })
-  wc.loadFile(path.join(chatDir, 'chat.html'), { query: { id: tab.url.slice('skiff://chat/'.length) } }).catch(() => {})
+  loadSurface(wc, roleFile('chat', path.join(chatDir, 'chat.html'), tab.spaceId), { query: { id: tab.url.slice('skiff://chat/'.length) } })
   chatViews.add(view)
   views.set(tab.id, view)
   return view
@@ -272,6 +317,9 @@ function createView(tab) {
   }
   const wc = view.webContents
   wc.setUserAgent(identityForTab(tab) === 'native' ? nativeUserAgent : compatibleUserAgent)
+  browserData?.applyZoom(wc, tab)
+  views.set(id, view)
+  pageFeatures?.attach(tab, view)
   extensions.watchTab(wc)
   const update = (fields, live) => {
     const t = S.findTab(state, id)
@@ -311,14 +359,40 @@ function createView(tab) {
     const next = F.originOf(wc.getURL())
     navigated(next === origin ? {} : { favicon: '' })
     origin = next
+    browserData?.applyZoom(wc, tab)
   })
-  wc.on('did-navigate-in-page', (_e, _url, isMainFrame) => isMainFrame && navigated())
+  wc.on('did-navigate-in-page', (_e, _url, isMainFrame) => {
+    if (!isMainFrame) return
+    navigated()
+    const current = S.findTab(state, id)
+    if (current) browserData?.recordVisit(current, { url: wc.getURL(), title: wc.getTitle() })
+  })
   // A page view takes its own clicks, so the shell never sees a click on a desk window behind the active one; a click on any window but the peeked one ends a peek.
   wc.on('before-mouse-event', (_e, mouse) => {
-    if (deskMode && mouse.type === 'mouseDown' && views.get(id) === view && state.peek !== id && (state.peek || S.activeTab(state)?.id !== id)) commands['tabs.activate'].run({ id })
+    if (mouse.type === 'mouseDown' && views.get(id) === view && state.peek !== id && (state.peek || S.activeTab(state)?.id !== id)) call('tabs.activate', { id }).catch(console.error)
   })
   wc.on('did-start-loading', () => update({}, { loading: true }))
   wc.on('did-stop-loading', () => update({}, { loading: false }))
+  wc.on('did-finish-load', () => {
+    const current = S.findTab(state, id)
+    if (current) browserData?.recordVisit(current, { url: wc.getURL(), title: wc.getTitle() })
+  })
+  wc.on('context-menu', (_event, info) => {
+    const menu = [
+      { label: 'Find in Page', click: () => rpc('ui.openFind', { id }) },
+      { label: 'Read Article', click: () => rpc('ui.openReader', { id }) },
+      { label: 'Site Controls', click: () => rpc('ui.openTools', { section: 'sites', id }) },
+      ...(info.linkURL && /^https?:/.test(info.linkURL) ? [
+        { label: 'Peek Link', click: () => rpc('peek.open', { url: info.linkURL, sourceId: id }) },
+        { label: 'Open Link in Split', click: async () => {
+          const other = S.createTab(state, { url: info.linkURL, spaceId: tab.spaceId, activate: false })
+          other.sessionPartition = tab.sessionPartition
+          await rpc('split.set', { ids: [id, other.id] })
+        } }
+      ] : [])
+    ]
+    Menu.buildFromTemplate(menu).popup({ window: win })
+  })
   wc.on('will-navigate', (e) => {
     if (!/^(https?|chrome-extension):/.test(e.url)) e.preventDefault()
   })
@@ -337,34 +411,21 @@ function createView(tab) {
   })
   // The first page of a session waits for its extensions, so a blocker is in place before anything loads.
   extensions.ready(ses).then(() => { if (!wc.isDestroyed()) wc.loadURL(tab.url).catch(() => {}) })
-  views.set(id, view)
   return view
 }
 
-const PAGE_JS = `(() => ({ title: document.title, url: location.href, selection: String(getSelection() || ''), text: document.body ? document.body.innerText.slice(0, 20000) : '' }))()`
 
 // The agent reads a tab's page; one that is not loaded gets a view in the background, as prewarm does, and is read once it stops loading.
-async function readTab(tab) {
-  const wc = (views.get(tab.id) || createView(tab)).webContents
-  await new Promise((resolve) => {
-    const done = () => {
-      if (!wc.isDestroyed() && (wc.isLoading() || !/^https?:/.test(wc.getURL()))) return
-      wc.off('did-stop-loading', done)
-      resolve()
-    }
-    wc.on('did-stop-loading', done)
-    done()
-  })
-  return wc.executeJavaScript(PAGE_JS)
+async function readTab(tab, options) {
+  return pageFeatures.read(tab, options)
 }
 
 function pageText(tabId) {
   const tab = tabId === undefined ? S.activeTab(state) : S.findTab(state, tabId)
   const wc = tab && !S.isIncognito(state, tab.spaceId) && views.get(tab.id)?.webContents
-  return wc && !wc.isDestroyed() && /^https?:/.test(wc.getURL()) ? wc.executeJavaScript(PAGE_JS) : null
+  return wc && !wc.isDestroyed() && /^https?:/.test(wc.getURL()) ? pageFeatures.read(tab) : null
 }
 
-const mcpTools = browserTools({ state: () => state, call, readTab })
 
 function pushAi(name, data) {
   if (name === 'chat') {
@@ -374,11 +435,12 @@ function pushAi(name, data) {
       changedSoon()
     }
     const view = views.get(data.tabId)
-    if (view && chatViews.has(view)) view.webContents.send('skiff:event', 'chat', data)
+    if (view && chatViews.has(view)) sendEvent(view.webContents, 'chat', data)
   } else {
-    for (const wc of [...shellContents(), ...chatContents()]) wc.send('skiff:event', name, data)
+    for (const wc of [...shellContents(), ...chatContents()]) sendEvent(wc, name, data)
   }
   for (const res of streams) res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`)
+  components?.emit(name, data)
 }
 
 const ZOOMS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5]
@@ -386,6 +448,8 @@ function zoomStep(wc, delta) {
   const now = wc.getZoomFactor()
   const factor = delta === 0 ? 1 : delta > 0 ? ZOOMS.find((z) => z > now + 1e-3) ?? now : ZOOMS.findLast((z) => z < now - 1e-3) ?? now
   wc.setZoomFactor(factor)
+  const tab = S.findTab(state, tabOfContents(wc.id))
+  if (tab) browserData?.rememberZoom(wc, tab)
   return factor
 }
 
@@ -439,6 +503,10 @@ function trimOnly() {
 
 // Page views sit below every other child, back to front, each desk window's frame just under its page, so overlays and popups stay on top.
 function syncView() {
+  if (roleSpace !== state.activeSpaceId) {
+    roleSpace = state.activeSpaceId
+    queueMicrotask(() => replaceSurfaces({ roles: ['shell', 'launcher', 'frame', 'tablist', 'spaces', 'overview', 'chat', ...toolSections] }).catch(console.error))
+  }
   for (const id of [...views.keys()]) if (!S.findTab(state, id)) destroyView(id)
   for (const id of [...frames.keys()]) if (!S.findTab(state, id)) destroyFrame(id)
   if (!win) return parkAgents()
@@ -459,12 +527,31 @@ function syncView() {
   // A drag belongs to the space it started in, so a switch ends it where it is.
   if (switched && desk.preview) {
     desk.preview = null
-    for (const wc of shellContents()) wc.send('skiff:event', 'drag-cancel', null)
+    for (const wc of shellContents()) sendEvent(wc, 'drag-cancel', null)
   }
   if (deskMode && desk.only) trimOnly()
-  const tab = S.findTab(state, state.peek) || S.activeTab(state)
-  const placed = deskMode ? deskLayout() : tab && pageBounds && pageVisible ? [{ tab, bounds: pageBounds, radius: pageBounds.radius }] : []
-  // ponytail: hidden tabs stay live in memory; discard idle hidden views when memory matters
+  const tab = S.findTab(state, state.userPeek || state.peek) || S.activeTab(state)
+  let placed = deskMode ? deskLayout() : tab && pageBounds && pageVisible ? [{ tab, bounds: pageBounds, radius: pageBounds.radius }] : []
+  const saved = state.splitBySpace?.[state.activeSpaceId]
+  const split = saved?.ids.every((id) => S.onDesktop(state, S.findTab(state, id))) ? saved : null
+  splitBounds = null
+  if (split && pageVisible) {
+    const zoom = win.webContents.getZoomFactor()
+    const [width, height] = win.getContentSize()
+    const area = deskMode ? { x: 12, y: 48, width: width - 24, height: height - 72 } : pageBounds
+    if (area) {
+      const first = Math.round((area.width - 8) * split.ratio)
+      const pair = split.ids.map((id, i) => ({ tab: S.findTab(state, id), bounds: { x: area.x + (i ? first + 8 : 0), y: area.y, width: i ? area.width - first - 8 : first, height: area.height }, radius: 8 })).filter((p) => p.tab)
+      placed = [...placed.filter((p) => !split.ids.includes(p.tab.id)), ...pair]
+      splitBounds = { spaceId: state.activeSpaceId, x: area.x / zoom, y: area.y / zoom, width: area.width / zoom, height: area.height / zoom, dividerX: (area.x + first) / zoom, ratio: split.ratio }
+    }
+  }
+  const peek = S.findTab(state, state.userPeek)
+  if (peek && pageVisible) {
+    const [width, height] = win.getContentSize()
+    placed = placed.filter((p) => p.tab.id !== peek.id)
+    placed.push({ tab: peek, bounds: { x: Math.round(width * .15), y: 72, width: Math.round(width * .7), height: Math.max(160, height - 144) }, radius: 12 })
+  }
   const items = placed.flatMap((p) => [
     ...(p.frame ? [{ tab: p.tab, view: frames.get(p.tab.id) || createFrame(p.tab.id), bounds: p.frame }] : []),
     { tab: p.tab, view: views.get(p.tab.id) || createView(p.tab), bounds: p.bounds, radius: p.radius }
@@ -496,6 +583,7 @@ function syncView() {
     if (view) extensions.activated(view.webContents)
   }
   parkAgents()
+  syncDivider()
 }
 
 function parkAgents() {
@@ -570,7 +658,7 @@ function prewarm() {
   clearTimeout(warmTimer)
   warmTimer = null
   if (!win || !deskMode) return
-  const cold = state.spaces.flatMap((space) => S.shownTabs(state, space.id)).filter((t) => !views.has(t.id) || (frameSpec && !frames.has(t.id)))
+  const cold = state.spaces.flatMap((space) => S.shownTabs(state, space.id)).filter((t) => runtime.get(t.id)?.lifecycle !== 'sleeping' && (!views.has(t.id) || (frameSpec && !frames.has(t.id))))
   for (const t of cold.slice(0, 3)) {
     if (!views.has(t.id)) createView(t)
     if (frameSpec && !frames.has(t.id)) createFrame(t.id)
@@ -585,46 +673,225 @@ function inDir(dir, url) {
     return false
   }
 }
-const inShell = (url) => inDir(shellDir, url)
+const inShell = (url) => inDir(shellRoot(), url)
 
 const shellContents = () => [win?.webContents, ...[...overlays.values()].map((o) => o.host.webContents), ...[...frames.values()].map((view) => view.webContents)].filter(Boolean)
 const chatContents = () => [...views.values()].filter((view) => chatViews.has(view)).map((view) => view.webContents)
-const shellWebPreferences = { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false }
+const shellWebPreferences = { preload: path.join(__dirname, 'preload.js'), get additionalArguments() { return [`--skiff-tools-url=${pathToFileURL(toolsDir + path.sep).href}`, `--skiff-icons-url=${pathToFileURL(faviconDir + path.sep).href}`, `--skiff-shell-url=${pathToFileURL(shellRoot() + path.sep).href}`] }, contextIsolation: true, sandbox: true, nodeIntegration: false }
 
 function guardShell(wc) {
+  wc.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.key !== 'Escape') return
+    const entry = [...overlays].find(([, overlay]) => overlay.shown && overlay.host.webContents === wc)
+    if (!entry) return
+    event.preventDefault()
+    const [name, overlay] = entry
+    const id = overlay.loadOptions?.query?.id
+    hideOverlay(name)
+    if (['find', 'reader'].includes(name) && id && S.findTab(state, id)) call(`${name}.close`, { id }).catch(console.error)
+  })
   wc.on('will-navigate', (e) => {
-    if (!inShell(e.url)) e.preventDefault()
+    if (!trustedFiles.has(wc) || filePath(e.url) !== trustedFiles.get(wc).file) e.preventDefault()
   })
   wc.setWindowOpenHandler(() => ({ action: 'deny' }))
 }
 
+function filePath(url) {
+  try { return fileURLToPath(url) } catch { return '' }
+}
+
+function roleFile(role, fallback, spaceId = state.activeSpaceId) {
+  return (!safeMode && components?.resolve(role, { spaceId }))?.file || fallback
+}
+
+function stockShellRoot(name = state?.settings.shell) {
+  return !safeMode && name !== 'default' && shells.includes(name) ? path.join(bundledShells, name) : bundledShell
+}
+
+function shellRoot() {
+  return (!safeMode && components?.resolve('shell', { spaceId: state.activeSpaceId }))?.path || stockShellRoot()
+}
+
+function loadSurface(wc, file, options) {
+  const previous = surfaceLoads.get(wc)
+  const entry = {}
+  surfaceLoads.set(wc, entry)
+  const start = () => {
+    if (surfaceLoads.get(wc) !== entry) return null
+    if (wc.isDestroyed()) throw S.err('cancelled', 'Surface closed before navigation')
+    const owner = components?.ownerForFile(file) || 'host'
+    trustedFiles.set(wc, { file: path.resolve(file), owner, bridge: owner === 'host' ? null : components.bridge(owner), grants: new Set(owner === 'host' ? [] : components.inspect({ id: owner }).grants) })
+    return wc.loadFile(file, options)
+  }
+  // Electron's load promises share navigation events. Let the cancelled load
+  // settle before installing the next one's listeners, or its abort can reject
+  // the new load even though the new document successfully reaches the renderer.
+  if (previous && !wc.isDestroyed()) wc.stop()
+  const ready = entry.ready = (previous ? previous.ready.catch(() => {}) : Promise.resolve()).then(start)
+  const settled = () => { if (surfaceLoads.get(wc) === entry) surfaceLoads.delete(wc) }
+  ready.then(settled, settled)
+  if (wc === win?.webContents) windowReady = ready
+  return ready
+}
+
+function sendEvent(wc, name, data) {
+  if (!wc || wc.isDestroyed()) return
+  const source = trustedFiles.get(wc)
+  if (!source || source.invalid) return
+  if (source.owner !== 'host' && !source.grants.has('events:*') && !source.grants.has(`events:${name}`) && !(name === 'settings.changed' && source.owner === data?.owner && source.grants.has('storage'))) return
+  wc.send('skiff:event', name, data)
+}
+
+function notifyHostSettings({ owner, key, spaceId } = {}) {
+  for (const wc of [...shellContents(), ...chatContents()]) {
+    const source = trustedFiles.get(wc)
+    if (source?.owner === 'host' || source?.grants.has('host.manage')) sendEvent(wc, 'component-settings-changed', { owner, key, spaceId })
+  }
+}
+
+async function replaceSurfaces({ roles = [], owner, action } = {}) {
+  if (!win || installingShell) return
+  const retiredOwners = new Set(action !== 'bind' && owner ? [owner] : [])
+  notifyHostSettings({ owner })
+  if (owner && action !== 'bind') for (const wc of [...shellContents(), ...chatContents()]) {
+    const source = trustedFiles.get(wc)
+    if (source?.owner === owner) source.invalid = true
+  }
+  const shellFile = roles.includes('shell') ? roleFile('shell', path.join(shellRoot(), 'index.html')) : null
+  const shellSource = trustedFiles.get(win.webContents)
+  if (shellFile && shellSource && (shellSource.invalid || shellSource.file !== path.resolve(shellFile))) retiredOwners.add(shellSource.owner)
+  // A space switch can resolve to the same surface. Retire only a real source
+  // transition, and never a replacement auxiliary created while its shell loads.
+  const retiredAuxiliaries = new Map()
+  for (const overlay of overlays.values()) {
+    const source = trustedFiles.get(overlay.host.webContents)
+    if (!overlay.role && !overlay.component && retiredOwners.has(source?.owner)) retiredAuxiliaries.set(overlay, source)
+  }
+  const loadChanged = (wc, file, options) => !trustedFiles.get(wc)?.invalid && trustedFiles.get(wc)?.file === path.resolve(file) ? Promise.resolve() : loadSurface(wc, file, options)
+  if (roles.includes('shell')) {
+    watchShell()
+    if (shellIsDesk() !== deskMode) {
+      closeShellViews()
+      await recreateWindow()
+      syncView()
+      pushState()
+      return
+    }
+    frameSpec = deskMode ? readFrame(manifest()) : null
+    await loadChanged(win.webContents, shellFile)
+  }
+  if (roles.includes('frame')) {
+    for (const [id, view] of frames) await loadChanged(view.webContents, roleFile('frame', path.join(shellRoot(), frameSpec.file), S.findTab(state, id)?.spaceId), { query: { tab: id } })
+  }
+  if (roles.includes('chat')) {
+    for (const [id, view] of views) if (chatViews.has(view)) {
+      const tab = S.findTab(state, id)
+      await loadChanged(view.webContents, roleFile('chat', path.join(chatDir, 'chat.html'), tab.spaceId), { query: { id: tab.url.slice('skiff://chat/'.length) } })
+    }
+  }
+  for (const [name, overlay] of overlays) {
+    if (overlay.role && roles.includes(overlay.role)) {
+      const file = roleFile(overlay.role, overlay.fallback)
+      await loadChanged(overlay.host.webContents, file, overlay.loadOptions)
+    } else if (owner && overlay.component?.id === owner) {
+      try {
+        const next = components.surface(overlay.component)
+        await loadChanged(overlay.host.webContents, next.file, overlay.loadOptions)
+      } catch { hideOverlay(name) }
+    } else if (retiredAuxiliaries.has(overlay) && retiredAuxiliaries.get(overlay) === trustedFiles.get(overlay.host.webContents)) {
+      hideOverlay(name)
+    }
+  }
+  syncView()
+  pushState()
+}
+
+async function showHostSurface(file, { name = 'tools', query = {}, bounds, focus = true, role, fallback = file, component } = {}, context = {}) {
+  context.signal?.throwIfAborted()
+  if (!win) throw S.err('not_found', 'No window is open')
+  let overlay = overlays.get(name)
+  const created = !overlay
+  if (!overlay) overlays.set(name, overlay = { host: shellView(), float: false, bounds: null, hit: null, shown: false, ignoring: false })
+  const request = overlay.request = {}
+  overlay.component = component
+  overlay.role = role
+  overlay.fallback = fallback
+  overlay.loadOptions = { query: Object.fromEntries(Object.entries(query).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)])) }
+  const target = pathToFileURL(file)
+  target.search = new URLSearchParams(overlay.loadOptions.query).toString()
+  try {
+    if (overlay.host.webContents.getURL() !== target.href) await loadSurface(overlay.host.webContents, file, overlay.loadOptions)
+    context.signal?.throwIfAborted()
+  } catch (error) {
+    if (created && overlays.get(name) === overlay && overlay.request === request) {
+      overlays.delete(name)
+      if (!overlay.host.webContents.isDestroyed()) overlay.host.webContents.close()
+    }
+    throw error
+  }
+  if (!win || overlays.get(name) !== overlay || overlay.request !== request) return null
+  overlay.bounds = bounds ? cssBounds(bounds) : null
+  overlay.shown = true
+  win.contentView.addChildView(overlay.host)
+  fitOverlay(overlay)
+  if (focus) focusShell(overlay)
+  if (name === 'tools') sendEvent(overlay.host.webContents, 'tools-open', query)
+  return { name }
+}
+
+let dividerPending = false
+function syncDivider() {
+  if (!splitBounds) { if (overlays.get('split-divider')?.shown) hideOverlay('split-divider'); return }
+  const b = splitBounds
+  const overlay = overlays.get('split-divider')
+  if (overlay?.shown) {
+    overlay.bounds = cssBounds({ x: b.dividerX, y: b.y, width: 8, height: b.height })
+    fitOverlay(overlay)
+    sendEvent(overlay.host.webContents, 'split-bounds', b)
+  } else if (!dividerPending) {
+    dividerPending = true
+    showHostSurface(roleFile('split', path.join(toolsDir, 'split.html')), { name: 'split-divider', role: 'split', fallback: path.join(toolsDir, 'split.html'), bounds: { x: b.dividerX, y: b.y, width: 8, height: b.height }, focus: false }).then(() => {
+      sendEvent(overlays.get('split-divider')?.host.webContents, 'split-bounds', splitBounds)
+    }).catch(console.error).finally(() => { dividerPending = false })
+  }
+}
+
 function reloadShell() {
-  for (const id of [...frames.keys()]) destroyFrame(id)
-  for (const [name, o] of [...overlays]) if (o.float) hideOverlay(name)
   frameSpec = deskMode ? readFrame(manifest()) : null
-  for (const wc of shellContents()) wc.reloadIgnoringCache()
+  for (const wc of shellContents()) if (inShell(wc.getURL())) wc.reloadIgnoringCache()
+  syncView()
 }
 
 function watchShell() {
   watcher?.close()
-  watcher = watchShellFiles(shellDir, reloadShell)
+  watcher = watchShellFiles(shellRoot(), reloadShell)
 }
 
-// Copies over the live folder so the watcher keeps its handle; overlays and frames are dropped because their pages may not exist in the new shell.
-function installShell(name) {
-  const source = name === 'default' ? bundledShell : path.join(bundledShells, name)
-  const wanted = new Set(fs.readdirSync(source, { recursive: true }).map(String))
-  for (const entry of fs.readdirSync(shellDir, { recursive: true }).map(String).sort((a, b) => b.length - a.length)) {
-    if (!wanted.has(entry)) fs.rmSync(path.join(shellDir, entry), { recursive: true, force: true })
-  }
-  fs.cpSync(source, shellDir, { recursive: true, force: true })
+// Stock sources always remain bundled. Switching selects them without rewriting owned copies.
+async function installShell(name) {
+  await windowReady
+  const source = stockShellRoot(name)
+  watcher?.close()
+  installingShell = true
+  try {
+    await components.refreshStock({ id: 'stock.shell', root: source, manifest: stockShellManifest(source) })
+    for (const role of ['shell', 'launcher', 'frame', 'tablist', 'spaces', 'overview']) {
+      const selected = components.inspect().bindings.global[role]
+      if (selected && !selected.startsWith('stock.') && selected !== 'legacy.shell') continue
+      const id = stockShellManifest(source).surfaces[role] ? 'stock.shell' : `stock.${role}`
+      if (components.list().some((item) => item.id === id)) await components.bind({ role, id })
+    }
+  } finally { installingShell = false }
   state.settings.shell = name
   save()
   closeShellViews()
   setWindowButtons(true)
   watchShell()
-  if (win && shellIsDesk() !== deskMode) recreateWindow()
-  else reloadShell()
+  if (win && shellIsDesk() !== deskMode) await recreateWindow()
+  else if (win) {
+    frameSpec = deskMode ? readFrame(manifest()) : null
+    await loadSurface(win.webContents, roleFile('shell', path.join(shellRoot(), 'index.html')))
+  }
   buildMenu()
   changed()
 }
@@ -638,16 +905,16 @@ function closeShellViews() {
 
 function manifest() {
   try {
-    return JSON.parse(fs.readFileSync(path.join(shellDir, 'shell.json'), 'utf8'))
+    return JSON.parse(fs.readFileSync(path.join(shellRoot(), 'shell.json'), 'utf8'))
   } catch {
     return null
   }
 }
 
-const shellIsDesk = () => manifest()?.window === 'desk'
+const shellIsDesk = () => !safeMode && manifest()?.window === 'desk'
 
 // The new window opens before the old one goes, or the app would quit with no window left.
-function recreateWindow() {
+async function recreateWindow() {
   const old = win
   if (!deskMode) state.window = old.getNormalBounds()
   extensions.closePopup()
@@ -655,8 +922,8 @@ function recreateWindow() {
   for (const view of shown) old.contentView.removeChildView(view)
   shown = []
   attached = null
-  createWindow(old.getBounds())
-  old.destroy()
+  try { await createWindow(old.getBounds()) }
+  finally { if (!old.isDestroyed()) old.destroy() }
 }
 
 // Bounds in DIP; a negative x or y measures from the right or bottom edge, so a corner view follows resizes.
@@ -688,7 +955,10 @@ function setWindowButtons(visible) {
 }
 
 function hideOverlay(name = 'main') {
+  pageToolRequests.delete(name)
   const o = overlays.get(name)
+  if (o) o.request = null
+  if (name === 'tools' && o?.shown) sendEvent(o.host.webContents, 'tools-hidden', null)
   if (o?.float) {
     overlays.delete(name)
     if (!o.host.isDestroyed()) o.host.destroy()
@@ -724,7 +994,7 @@ function focusLeft() {
 function deskFocused() {
   extensions.windowFocus(true)
   if (deskMode && !inFront && Date.now() - raisedAt > 400 && !overDesk(screen.getCursorScreenPoint())) {
-    for (const wc of shellContents()) wc.send('skiff:event', 'desk-activated', null)
+    for (const wc of shellContents()) sendEvent(wc, 'desk-activated', null)
   }
   inFront = true
 }
@@ -735,8 +1005,27 @@ function refitDesk() {
   if (win && deskMode) win.setBounds(deskArea(win.getBounds()))
 }
 
+// Whether the desk window feature is on: a desk shell on a Mac whose desktops can be read; reports whether anything it keeps changed.
+function readDesktops() {
+  const before = JSON.stringify([state.desktops, state.tabs.map((t) => t.desktopId), state.activeTabBySpace])
+  let info = null
+  const list = deskMode && desktops ? desktops.list() : []
+  if (list.length) {
+    const now = desktops.current()
+    const ids = list.map((d) => d.id)
+    info = { list, current: ids.includes(now) ? now : ids.includes(state.desktops?.current) ? state.desktops.current : ids[0] }
+  }
+  S.setDesktops(state, info, Date.now())
+  return JSON.stringify([state.desktops, state.tabs.map((t) => t.desktopId), state.activeTabBySpace]) !== before
+}
+
+function desktopsChanged() {
+  if (readDesktops()) changed()
+}
+
 function createWindow(near = state.window) {
   deskMode = shellIsDesk()
+  readDesktops()
   frameSpec = deskMode ? readFrame(manifest()) : null
   for (const view of views.values()) view.webContents.send('skiff:desk-page', deskMode)
   laidOutSpace = null
@@ -745,7 +1034,9 @@ function createWindow(near = state.window) {
     : { ...state.window, minWidth: 560, minHeight: 360, titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default', webPreferences: shellWebPreferences })
   ignoring = false
   guardShell(win.webContents)
+  if (state.desktops) w.setVisibleOnAllWorkspaces(true, { skipTransformProcessType: true })
   win.webContents.on('did-start-loading', () => {
+    if (win !== w) return
     pageVisible = true
     pageBounds = null
     shellLoads++
@@ -756,19 +1047,22 @@ function createWindow(near = state.window) {
     syncView()
   })
   win.webContents.on('did-finish-load', () => {
+    if (win !== w) return
     clearTimeout(warmTimer)
     warmTimer = setTimeout(prewarm, 500)
   })
-  const fitOverlays = () => { for (const o of overlays.values()) if (o.shown) fitOverlay(o) }
+  const fitOverlays = () => { if (win === w) for (const o of overlays.values()) if (o.shown) fitOverlay(o) }
   win.on('move', fitOverlays)
   win.on('resize', () => {
+    if (win !== w) return
     fitOverlays()
     const popup = extensions.popupView()
     if (popup) popup.setBounds(edgeBounds(popupBounds))
     if (deskMode) syncView()
   })
-  win.on('focus', () => { if (win === w) deskFocused() })
+  win.on('focus', () => { if (win === w) { deskFocused(); if (deskMode) desktopsChanged() } })
   win.on('blur', () => {
+    if (win !== w) return
     extensions.windowFocus(false)
     focusLeft()
   })
@@ -798,8 +1092,10 @@ function createWindow(near = state.window) {
     // The hidden agent window would keep window-all-closed from firing.
     if (process.platform !== 'darwin') app.quit()
   })
-  win.loadFile(path.join(shellDir, 'index.html'))
+  const ready = loadSurface(w.webContents, roleFile('shell', path.join(shellRoot(), 'index.html')))
+  ready.catch(console.error)
   watchPointer()
+  return ready
 }
 
 function watchPointer() {
@@ -905,10 +1201,8 @@ async function fillPassword() {
   }
 }
 
-const commands = {}
-const def = (name, params, description, run) => {
-  commands[name] = { description, params, run }
-}
+const toolNames = { 'tabs.list': 'browser_list_tabs', 'tabs.read': 'browser_read_page', 'tabs.create': 'browser_open_tab', 'tabs.navigate': 'browser_navigate', 'tabs.activate': 'browser_activate_tab', 'tabs.close': 'browser_close_tab' }
+const def = (name, params, description, run) => registry.register('core', { name, description, params, inputSchema: schemaFor(name), tool: toolNames[name] ? { name: toolNames[name] } : false, run })
 const mutate = (fn) => (p) => {
   const result = fn(state, p, Date.now())
   changed()
@@ -920,7 +1214,7 @@ const page = (fn) => (p) => {
   return null
 }
 
-def('commands.list', '', 'Every command with its description and params', () => Object.entries(commands).map(([name, c]) => ({ name, params: c.params, description: c.description })))
+def('commands.list', '', 'Every command with its description and params', () => registry.list())
 def('state.get', '', 'The full current state', snapshot)
 
 def('spaces.create', '{name, color?}', 'Create a space; color is #rrggbb', mutate(S.createSpace))
@@ -933,6 +1227,7 @@ def('spaces.remove', '{id}', 'Remove a space and archive its tabs; the last norm
   if (space.incognito) {
     const ses = session.fromPartition(space.sessionPartition)
     await Promise.all([ses.clearStorageData(), ses.clearCache()])
+    browserData.forgetPartition(space.sessionPartition)
   }
   return null
 })
@@ -946,27 +1241,36 @@ def('spaces.cycle', '{delta}', 'Switch to the next (1) or previous (-1) space; i
 def('incognito.open', '', 'Open the temporary incognito space, creating it if needed, and focus the address bar; nothing in it is saved', () => {
   const space = S.openIncognito(state)
   changed()
-  commands['ui.emit'].run({ name: 'focus-address' })
+  call('ui.emit', { name: 'focus-address' }).catch(console.error)
   return space
 })
 
-def('tabs.create', '{url, spaceId?, parentId?, activate?, agent?}', 'Open a tab; url may be an address or search text; activate defaults to true; parentId nests it under a plain tab of the same space; in a desk window it gets the rect last used for its host, else the largest free part of the desk; agent (a name of at most 40 characters) opens a hidden agent tab instead: listed in agentTabs, never saved, archived or activated, loading at once in the session of spaceId (default the active space, or the first normal one when that is incognito; the incognito space is refused)', mutate(S.createTab))
+def('tabs.create', '{url, spaceId?, parentId?, activate?, agent?}', 'Open a tab using the selected search behavior', async (p, context) => {
+  // Scoped agents supply explicit HTTP URLs; replaceable search must not acquire their browser authority.
+  const url = context.accessContext ? S.webUrl(p.url) : (await call('search.resolve', { text: p.url }, context)).url
+  context.signal?.throwIfAborted()
+  if (context.accessContext) access.assert(context.accessContext, { command: 'tabs.create', params: { ...p, url } })
+  return mutate(S.createTab)({ ...p, url })
+})
 def('tabs.close', '{id?}', 'Close a tab into the archive; favorites and pinned tabs are unloaded and kept; incognito and agent tabs are dropped', (p) => {
   const result = S.closeTab(state, p, Date.now())
   if (views.has(result.unloaded)) destroyView(result.unloaded)
   changed()
   return result
 })
-def('tabs.activate', '{id}', 'Show a tab, switching to its space; an agent tab is peeked instead: shown in front over the current space until another tab or space is shown, desk.hide or tabs.close', mutate(S.activateTab))
-def('tabs.read', '{id?}', "A tab's page as {title, url, selection, text}; an unloaded tab loads in the background first", (p) => {
+def('tabs.activate', '{id}', 'Show a tab, switching to its space; a tab on another macOS desktop moves to the current one; an agent tab is peeked instead: shown in front over the current space until another tab or space is shown, desk.hide or tabs.close', mutate(S.activateTab))
+def('tabs.read', '{id?}', "A tab's page as {title, url, selection, text}", (p, context) => {
   const tab = S.getTab(state, p.id)
   if (tab.chat) throw S.err('bad_params', 'That tab is a conversation, not a web page.')
-  return readTab(tab)
+  return readTab(tab, { signal: context.signal })
 })
-def('tabs.navigate', '{id?, url, browserIdentity?}', 'Load an address or search text in a tab; browserIdentity (native, compatible or null for profile default) changes this tab only and applies before loading the requested URL; changing identity recreates the view and starts fresh history. A conversation tab becomes a web tab', (p) => {
+def('tabs.navigate', '{id?, url, browserIdentity?}', 'Navigate a tab using its existing profile and selected search behavior', async (p, context) => {
   const before = S.getTab(state, p.id)
   const wasChat = Boolean(before.chat)
   const previousIdentity = identityForTab(before)
+  p = { ...p, url: context.accessContext ? S.webUrl(p.url) : (await call('search.resolve', { text: p.url }, context)).url }
+  context.signal?.throwIfAborted()
+  if (context.accessContext) access.assert(context.accessContext, { command: 'tabs.navigate', params: p })
   const tab = S.navigateTab(state, p, Date.now())
   const identityChanged = identityForTab(tab) !== previousIdentity
   if ((wasChat || identityChanged) && views.has(tab.id)) destroyView(tab.id)
@@ -988,21 +1292,21 @@ def('tabs.copyUrl', '{id?}', 'Copy the address of a tab to the clipboard and sho
   const tab = S.getTab(state, p.id)
   const url = views.get(tab.id)?.webContents.getURL() || tab.url
   clipboard.writeText(url)
-  for (const wc of shellContents()) wc.send('skiff:event', 'url-copied', { url })
+  for (const wc of shellContents()) sendEvent(wc, 'url-copied', { url })
   return { url }
 })
 def('tabs.move', '{id, index?, spaceId?}', 'Reorder a tab among its siblings or move it to another space as a root; not into or out of the incognito space; not an agent tab', mutate(S.moveTab))
 def('tabs.setFavorite', '{id?, favorite}', 'Make a tab a favorite of its space, or turn it back into a plain tab there; not an agent tab', mutate(S.setFavorite))
 def('tabs.setPinned', '{id?, pinned, folder?}', 'Pin a tab to its space, optionally in a folder, or unpin it; not an agent tab', mutate(S.setPinned))
 def('tabs.cycle', '{delta}', 'Show the next (1) or previous (-1) tab of the active space', mutate(S.cycleTab))
-def('tabs.select', '{index}', 'Show the index-th unpinned tab of the active space in Ctrl+Tab order; negative counts from the end; null past the end', mutate(S.selectTab))
+def('tabs.select', '{index}', 'Show the index-th unpinned tab of the active space (and current macOS desktop) in Ctrl+Tab order; negative counts from the end; null past the end', mutate(S.selectTab))
 def('tabs.thumbnails', '{ids, width?}', 'Pictures of up to 24 tabs as [{id, image}] in the order of ids, image a JPEG data URL at most width pixels wide (default 480, at most 3840; a page narrower on screen keeps its own size) at the page\'s aspect, or null when the tab is not on screen (hidden, in another space or not loaded), cannot be captured or is incognito while another space shows', async (p) => {
   const { tabs, width } = S.thumbnailTabs(state, p)
   return Promise.all(tabs.map(async (tab, i) => {
     const view = tab && views.get(tab.id)
     // A view that is not in the window draws no frames, so its capturePage never settles.
     const wc = view && shown.includes(view) && !view.webContents.isDestroyed() ? view.webContents : null
-    const shot = wc ? await wc.capturePage().catch(() => null) : null
+    const shot = wc ? await pageFeatures.capture(tab).catch(() => null) : null
     if (!shot || shot.isEmpty()) return { id: p.ids[i], image: null }
     const fit = shot.getSize(Math.max(1, ...shot.getScaleFactors())).width > width ? shot.resize({ width, quality: 'good' }) : shot
     return { id: p.ids[i], image: `data:image/jpeg;base64,${fit.toJPEG(80).toString('base64')}` }
@@ -1012,19 +1316,15 @@ def('tabs.thumbnails', '{ids, width?}', 'Pictures of up to 24 tabs as [{id, imag
 def('folders.setCollapsed', '{spaceId?, folder, collapsed}', 'Collapse or expand a folder of pinned tabs; spaceId defaults to the active space', mutate(S.setCollapsed))
 
 def('desk.place', '{id?, x, y, width, height}', 'Put a tab on the desk of a desk shell or move or resize it there, in window CSS pixels, at least 240 by 160, show it if hidden and bring it to the front; the rect is remembered for the host of the tab, so its next new window opens there', mutate(S.placeDesk))
-def('desk.layouts', '', 'The window rects of the named desk layouts for the current desk, in window CSS pixels: fill, center, left, right, top, bottom, left-third, center-third, right-third, left-two-thirds, right-two-thirds, top-left, top-right, bottom-left, bottom-right; 8px from the desk edges and each other, with the frame\'s top inset free above each', () => S.deskLayouts(state))
-def('desk.tile', '{id?, layout}', 'Place a tab at one of the desk.layouts rects as desk.place does; not_found without a desk window', mutate(S.tileDesk))
+def('desk.layouts', '', 'Get layouts from the selected layout component', (_p, context) => behavior('layout', { op: 'layouts' }, context))
+def('desk.tile', '{id?, layout}', 'Place a tab using the selected layout component', (p, context) => behavior('layout', { ...p, op: 'tile' }, context))
 def('desk.hide', '{id?}', 'Hide a desk window; the tab stays in its space and keeps its rect (the default one if it had none); if it was the active tab, the frontmost window left in the space becomes active, or none; on a peeked agent tab it ends the peek', mutate(S.hideDesk))
 def('desk.show', '{id}', 'Show a hidden desk window in front and make it the active tab; an agent tab is peeked', mutate(S.showDesk))
 
 def('archive.restore', '{id?}', 'Reopen an archived tab; without id, the most recent', mutate(S.restore))
 def('archive.remove', '{id}', 'Delete one archive entry', mutate(S.removeArchived))
 def('archive.clear', '', 'Delete every archive entry', mutate(S.clearArchive))
-def('archive.sweep', '', 'Run auto-archive now', () => {
-  const result = S.sweep(state, {}, Date.now())
-  if (result.archived.length) changed()
-  return result
-})
+def('archive.sweep', '', 'Run the selected archive policy', (_p, context) => behavior('archive', {}, context))
 
 def('import.arc.preview', '{profileId?}', 'List Arc profiles and tab counts without opening protected data', (p) => importer.preview(p))
 def('import.arc', '{profileIds: string[], categories:{tabs,openTabs,passwords,logins}, keepSpaces}', 'Import any selected Arc profiles; passwords and sign-ins require one native confirmation', (p) => importer.run(p).finally(() => {
@@ -1032,9 +1332,18 @@ def('import.arc', '{profileIds: string[], categories:{tabs,openTabs,passwords,lo
 }))
 def('passwords.fill', '', 'Ask which saved account to fill on the active site; never returns credentials', fillPassword)
 
+const defaultBrowserStatus = () => ({ supported: app.isPackaged && process.platform === 'darwin', default: app.isDefaultProtocolClient('http') && app.isDefaultProtocolClient('https') })
+def('browser.isDefault', '', 'Whether Skiff is the default web browser; supported is false unless this is the packaged macOS app', defaultBrowserStatus)
+def('browser.setDefault', '', 'Ask macOS to make Skiff the default web browser (the system shows its own confirmation) and return the new status; only works in the packaged macOS app', () => {
+  if (!defaultBrowserStatus().supported) throw S.err('bad_params', 'Skiff can only become the default browser as the packaged macOS app')
+  app.setAsDefaultProtocolClient('http')
+  app.setAsDefaultProtocolClient('https')
+  return defaultBrowserStatus()
+})
+
 def('settings.set', '{autoArchiveHours?, searchUrl?, shortcuts?, ai?, browserIdentity?}', 'Change settings; browserIdentity merges {persistentPartition: "native"|"compatible"} and applies only after restarting Skiff, without changing profile storage; compatible is the default. shortcuts replaces the whole map of accelerator to {method, params?}; autoArchiveHours 0 turns auto-archive off; ai {agents?, agent?, model?, effort?} merges into the agent settings: agents [{name, command}] (at most 10, unique names of at most 40 characters, commands of at most 500 run in the login shell), agent the default one, model and effort the last choices; an agent removed or whose command changed is stopped', (p) => {
   for (const s of Object.values(S.isObject(p.shortcuts) ? p.shortcuts : {})) {
-    if (!Object.hasOwn(commands, s?.method)) throw S.err('bad_params', `Unknown method in shortcuts: ${s?.method}`)
+    if (!registry.has(s?.method)) throw S.err('bad_params', `Unknown method in shortcuts: ${s?.method}`)
   }
   const settings = S.setSettings(state, p)
   if (p.shortcuts) buildMenu()
@@ -1090,9 +1399,12 @@ def('ui.setDesk', '{hit?, capture?, preview?, animate?, only?}', "Desk shells on
   if (win) pollPointer()
   return null
 })
-def('ui.showOverlay', '{file, bounds?, name?, focus?, float?, hit?, under?}', "Shell only: show one of the shell files as a transparent page over the live page until ui.hideOverlay; bounds {x, y, width, height} in shell CSS pixels confines it to that rectangle, a negative x or y measuring from the right or bottom edge; name (default 'main') keeps several overlays at once, 'main' above the others; under: the name of another overlay to stay below while that one is shown; showing the same file again only moves it; focus: false never takes keyboard focus, true always does, by default only when first shown; float: true (desk windows only) shows it in a window of its own at bounds on the desk window's display, above other apps, on every desktop, and hit [{x, y, width, height}] in its own CSS pixels lists where it takes clicks, the rest passing them to whatever is below", async (p) => {
-  const file = typeof p.file === 'string' && p.file === path.basename(p.file) ? path.join(shellDir, p.file) : ''
-  if (!file || !fs.statSync(file, { throwIfNoEntry: false })?.isFile()) throw S.err('bad_params', 'file must name a file in the shell folder')
+def('ui.showOverlay', '{file, bounds?, name?, focus?, float?, hit?, under?}', 'Show a shell overlay, resolving independently bound component roles', async (p, context) => {
+  context.signal?.throwIfAborted()
+  const role = ({ 'palette.html': 'launcher', 'tablist.html': 'tablist', 'panel.html': 'spaces', 'spaces.html': 'spaces', 'expose.html': 'overview', 'settings.html': 'settings' })[p.file]
+  const fallback = typeof p.file === 'string' && p.file === path.basename(p.file) ? path.join(shellRoot(), p.file) : ''
+  const file = role ? roleFile(role, fallback) : fallback
+  if (!file || !fs.statSync(file, { throwIfNoEntry: false })?.isFile()) throw S.err('bad_params', 'file must name a shell file or a bound component surface')
   const name = p.name ?? 'main'
   if (typeof name !== 'string' || !name) throw S.err('bad_params', 'name must be a non-empty string')
   for (const key of ['focus', 'float']) if (p[key] !== undefined && typeof p[key] !== 'boolean') throw S.err('bad_params', `${key} must be true or false`)
@@ -1114,12 +1426,16 @@ def('ui.showOverlay', '{file, bounds?, name?, focus?, float?, hit?, under?}', "S
     overlays.set(name, o = { host: float ? floatWindow() : shellView(), float, bounds: null, hit: null, shown: false, ignoring: false })
     if (float) o.host.on('closed', () => overlays.get(name) === o && overlays.delete(name))
   }
+  const request = o.request = {}
   // The file loads before the view shows, so an event emitted right after reaches the loaded page.
   const same = o.host.webContents.getURL() === pathToFileURL(file).href
   const loads = shellLoads
-  if (!same) await o.host.webContents.loadFile(file).catch((e) => { if (overlays.get(name) === o) throw e })
-  // A shell that reloaded meanwhile no longer wants it.
-  if (!win || overlays.get(name) !== o || loads !== shellLoads) return null
+  o.role = role
+  o.fallback = fallback
+  if (!same) await loadSurface(o.host.webContents, file).catch((e) => { if (overlays.get(name) === o && o.request === request) throw e })
+  context.signal?.throwIfAborted()
+  // Only the latest request in this slot may publish geometry or take focus.
+  if (!win || overlays.get(name) !== o || o.request !== request || loads !== shellLoads) return null
   const wasShown = o.shown
   o.bounds = bounds
   o.hit = hit
@@ -1163,7 +1479,7 @@ def('ui.emit', '{name, data?, focus?}', 'Send every shell page a custom event, s
   if (p.focus !== undefined && typeof p.focus !== 'boolean') throw S.err('bad_params', 'focus must be true or false')
   const main = overlays.get('main')
   if (p.focus !== false && win) focusShell(main?.shown ? main : null)
-  for (const wc of shellContents()) wc.send('skiff:event', p.name, p.data)
+  for (const wc of shellContents()) sendEvent(wc, p.name, p.data)
   return null
 })
 def('ui.focusPage', '', 'Give keyboard focus to the active page', () => {
@@ -1187,46 +1503,299 @@ def('ui.reloadShell', '', 'Reload the shell from disk', () => {
   reloadShell()
   return null
 })
-def('ui.resetShell', '', 'Move the live shell to shell.bak-<timestamp> and restore the default shell', () => {
-  const backup = path.join(dataDir, `shell.bak-${Date.now()}`)
-  fs.renameSync(shellDir, backup)
-  fs.mkdirSync(shellDir)
-  installShell('default')
+def('ui.resetShell', '', 'Back up the live shell and restore the default shell', async () => {
+  const backup = fs.existsSync(shellDir) ? path.join(dataDir, `shell.bak-${Date.now()}`) : null
+  if (backup) fs.renameSync(shellDir, backup)
+  await installShell('default')
   return { backup }
 })
-def('ui.setShell', '{name}', 'Replace the live shell with one of state.shells; the window reloads it in place and tabs stay as they are; a switch between an app shell and a desk shell (shell.json {"window": "desk"}) opens a new window of that kind with the same pages', (p) => {
+def('ui.setShell', '{name}', 'Replace the live shell while preserving native pages and custom role bindings', async (p) => {
   if (!shells.includes(p.name)) throw S.err('not_found', `No shell named ${p.name}. Shells: ${shells.join(', ')}`)
-  installShell(p.name)
+  await installShell(p.name)
   return { shell: p.name }
 })
-def('ui.shellPath', '', 'Directory of the live shell files', () => ({ path: shellDir }))
-def('ui.capture', "{target: 'shell'|'page', id?}", 'Screenshot the shell, the active page, or with id the page of that tab, hidden agent tabs included, as a base64 PNG', async (p) => {
-  const wc = targetContents(p)
-  // A page attached moments ago has no frame yet, and capturePage rejects until it paints.
-  for (let tries = 0; ; tries++) {
-    try {
-      const image = await wc.capturePage()
-      return { ...image.getSize(), png: image.toPNG().toString('base64') }
-    } catch (e) {
-      if (tries === 9) throw e
-      await new Promise((resolve) => setTimeout(resolve, 150))
-    }
+def('ui.shellPath', '', 'Source directory and ownership of the selected shell', () => {
+  const selected = components.resolve('shell', { spaceId: state.activeSpaceId })
+  const source = selected && components.inspect({ id: selected.owner })
+  return { path: source?.path || shellRoot(), owner: source?.id || 'stock.shell', readOnly: !source || source.kind === 'stock' }
+})
+def('ui.capture', "{target: 'shell'|'page', id?}", 'Capture a native surface with a bounded deadline', async (p, context) => {
+  let image
+  if (p.target === 'page') {
+    const tab = S.getTab(state, tabOfContents(targetContents(p).id))
+    if (context.accessContext) access.assert(context.accessContext, { command: 'tabs.capture', params: { id: tab.id } })
+    image = await pageFeatures.capture(tab, { signal: context.signal })
+    if (context.accessContext) access.assert(context.accessContext, { command: 'tabs.capture', params: { id: tab.id }, after: true })
+  } else {
+    if (context.accessContext) throw S.err('forbidden', 'Scoped agents cannot capture the host interface')
+    const wc = targetContents(p)
+    let timer
+    try { image = await Promise.race([wc.capturePage(), new Promise((_resolve, reject) => { timer = setTimeout(() => reject(S.err('timeout', 'Capture timed out')), 5000) })]) }
+    finally { clearTimeout(timer) }
   }
+  return { ...image.getSize(), png: image.toPNG().toString('base64') }
 })
 def('ui.devtools', "{target: 'shell'|'page'}", 'Open devtools for the shell or the active page', (p) => {
   targetContents(p).openDevTools({ mode: 'detach' })
   return null
 })
 
-async function call(method, params = {}) {
-  if (typeof method !== 'string' || !Object.hasOwn(commands, method)) throw S.err('unknown_method', `Unknown method: ${method}`)
-  if (!S.isObject(params)) throw S.err('bad_params', 'params must be an object')
-  return commands[method].run(params)
+const string = { type: 'string' }, boolean = { type: 'boolean' }, number = { type: 'number' }
+const strings = { type: 'array', items: string }
+function command(name, description, properties, required, run) {
+  registry.register('core', { name, description, inputSchema: { type: 'object', properties, required, additionalProperties: false }, tool: toolNames[name] ? { name: toolNames[name] } : false, run })
+}
+const ids = { id: string }, space = { spaceId: string }
+for (const [name, fn, fields, required] of [
+  ['folders.create', S.createFolder, { name: string, ...space, parentId: { type: ['string', 'null'] } }, ['name']],
+  ['folders.update', S.updateFolder, { ...ids, name: string, collapsed: boolean }, ['id']],
+  ['folders.move', S.moveFolder, { ...ids, ...space, parentId: { type: ['string', 'null'] }, index: { type: 'integer' } }, ['id']],
+  ['folders.remove', S.removeFolder, ids, ['id']],
+  ['tabs.setTrailCollapsed', S.setTrailCollapsed, { ...ids, collapsed: boolean }, ['collapsed']],
+  ['profiles.create', S.createProfile, { name: string }, ['name']],
+  ['profiles.update', S.updateProfile, { ...ids, name: string }, ['id', 'name']],
+  ['profiles.remove', S.removeProfile, ids, ['id']],
+  ['profiles.assign', S.assignProfile, { ...space, profileId: string }, ['profileId']],
+  ['links.setRule', S.setLinkRule, { ...ids, host: string, ...space, profileId: string }, ['host', 'spaceId']],
+  ['links.removeRule', S.removeLinkRule, ids, ['id']],
+  ['split.set', S.setSplit, { ids: { type: 'array', items: string, minItems: 2, maxItems: 2 }, ratio: number, activeId: string }, ['ids']],
+  ['split.resize', S.resizeSplit, { ...space, ratio: number }, ['ratio']],
+  ['split.clear', S.clearSplit, space, []],
+  ['peek.open', S.createPeek, { url: string, sourceId: string }, ['url']],
+  ['peek.promote', S.promotePeek, ids, []],
+  ['peek.dismiss', S.dismissPeek, ids, []]
+]) command(name, name.replaceAll('.', ' '), fields, required, mutate(fn))
+command('tabs.list', 'List normal browser tabs', {}, [], () => {
+  const tabs = access.listNormalTabs().map((tab) => (state.desktops ? { ...tab, desktop: S.desktopNumber(state, tab.desktopId) } : tab))
+  const active = S.activeTab(state)
+  return { tabs, activeTabId: tabs.some((tab) => tab.id === active?.id) ? active.id : null }
+})
+command('profiles.list', 'List browsing profiles', {}, [], () => state.profiles)
+command('links.rules', 'List external link routing rules', {}, [], () => state.linkRules)
+command('links.route', 'Resolve an external link profile', { url: string }, ['url'], (p) => S.routeLink(state, p))
+command('links.open', 'Open an external link in its routed profile', { url: string }, ['url'], (p) => openProfileTab(S.routeLink(state, p)))
+command('settings.catalog', 'Search core and owned component settings metadata', { query: string, section: string, spaceId: string, owner: string, scope: { enum: ['global', 'space', 'tab', 'profile'] } }, [], async (p) => settingsCatalog.searchEntries([...settingsCatalog.list(), ...await registry.call('components.settings.list', { spaceId: p.spaceId })], p.query || '', p))
+command('grants.list', 'List scoped agent grants without credentials', {}, [], () => access.list())
+command('grants.issue', 'Approve explicit browser, customization, and component-tool scopes', { owner: string, sessionId: string, tabIds: strings, spaceIds: strings, read: boolean, mutate: boolean, commands: strings, tools: strings, components: strings }, ['owner'], (p) => access.issue(p))
+command('grants.revoke', 'Revoke a grant and its session credentials', { ...ids, owner: string, sessionId: string }, [], (p) => access.revoke(p))
+command('grants.select', 'Select exactly one approved root grant for an agent or chat', { ...ids, sessionId: string }, ['id'], (p) => access.select(p))
+command('ui.assets', 'Stable local UI asset roots', {}, [], () => ({ browserTools: pathToFileURL(toolsDir + path.sep).href, favicons: pathToFileURL(faviconDir + path.sep).href, shell: pathToFileURL(shellRoot() + path.sep).href }))
+command('ui.openTools', 'Open independently replaceable browser tools', { section: string, query: string, ...ids }, [], (p, context) => {
+  const role = toolSections.includes(p.section) ? p.section : 'settings'
+  return showHostSurface(roleFile(role, path.join(toolsDir, 'index.html')), { query: p, role, fallback: path.join(toolsDir, 'index.html') }, context)
+})
+command('ui.closeTools', 'Close browser tools and their native page-feature state', {}, [], async () => {
+  const failures = []
+  for (const name of ['tools', 'find', 'reader']) {
+    const id = overlays.get(name)?.loadOptions?.query?.id
+    try {
+      if (id && name !== 'tools' && S.findTab(state, id)) await call(`${name}.close`, { id })
+    } catch (error) { failures.push(error) } finally { hideOverlay(name) }
+  }
+  if (failures.length) throw new AggregateError(failures, 'Browser tool cleanup failed')
+  return null
+})
+command('ui.openFind', 'Find text in the focused page', ids, [], async (p, context) => {
+  const id = S.getTab(state, p.id).id
+  return openPageTool('find', id, { x: -420, y: 50, width: 410, height: 100 }, context)
+})
+command('ui.openReader', 'Read the current article without navigation', ids, [], async (p, context) => {
+  const id = S.getTab(state, p.id).id
+  return openPageTool('reader', id, undefined, context)
+})
+
+async function openPageTool(name, id, bounds, context) {
+  const request = {}
+  pageToolRequests.set(name, request)
+  try {
+    await call(`${name}.open`, { id }, context)
+    context.signal?.throwIfAborted()
+    if (pageToolRequests.get(name) !== request) throw S.err('cancelled', 'A newer browser tool request replaced this one')
+    const fallback = path.join(toolsDir, `${name}.html`)
+    return await showHostSurface(roleFile(name, fallback), { name, role: name, fallback, query: { id, tabId: id }, bounds }, context)
+  } catch (error) {
+    // Tear down only an unshown feature this request opened, never a newer visible tool.
+    if (pageToolRequests.get(name) === request && !overlays.get(name)?.shown && S.findTab(state, id)) await registry.call(`${name}.close`, { id }).catch((cleanupError) => console.error(`Failed to close cancelled ${name}`, cleanupError))
+    throw error
+  } finally {
+    if (pageToolRequests.get(name) === request) pageToolRequests.delete(name)
+  }
+}
+command('ui.showSurface', 'Show an arbitrary declared component surface', { ...ids, surface: string, name: string, bounds: { type: 'object', properties: { x: number, y: number, width: number, height: number }, required: ['x', 'y', 'width', 'height'], additionalProperties: false }, focus: boolean }, ['id', 'surface'], (p, context) => {
+  const source = components.surface({ id: p.id, name: p.surface })
+  return showHostSurface(source.file, { name: p.name || `component:${p.id}:${p.surface}`, bounds: p.bounds, focus: p.focus !== false, component: { id: p.id, name: p.surface } }, context)
+})
+command('ui.closeSurface', 'Close a custom surface', { name: string }, ['name'], (p) => { hideOverlay(p.name); return null })
+command('ui.inspectSource', 'Inspect the actual source and binding for a component role', { role: string, ...ids, spaceId: { type: ['string', 'null'] } }, [], (p) => {
+  const spaceId = p.spaceId === undefined ? state.activeSpaceId : p.spaceId ?? undefined
+  const selected = p.id ? { id: p.id } : components.resolve(p.role || 'launcher', { spaceId })
+  if (!selected) throw S.err('not_found', 'No component provides that role')
+  return { ...components.inspect({ id: selected.id }), ...(!p.id && { resolution: { role: selected.role, source: selected.source, owner: selected.owner, id: selected.id, file: selected.file, spaceId: spaceId ?? null } }) }
+})
+command('ui.customize', 'Create an owned copy of the selected UI source', { role: string, ...ids, spaceId: { type: ['string', 'null'] } }, [], async (p, context) => {
+  const selected = p.id ? { id: p.id } : components.resolve(p.role || 'launcher', { spaceId: p.spaceId === undefined ? state.activeSpaceId : p.spaceId ?? undefined })
+  if (!selected) throw S.err('not_found', 'No component provides that role')
+  const id = `custom.${crypto.randomBytes(5).toString('hex')}`
+  const copy = await components.create({ id, from: selected.id, role: p.role }, context)
+  context.signal?.throwIfAborted()
+  await call('ui.openTools', { section: 'components', id }, context)
+  return copy
+})
+command('ui.safeMode', 'Disable custom execution and recover the stock UI without closing pages', {}, [], async () => {
+  safeMode = true
+  await components.start({ safeMode: true })
+  // Recovery renders the bundled default, so stock source discovery must name
+  // that same source rather than the previously selected skin.
+  installingShell = true
+  try { await components.refreshStock({ id: 'stock.shell', root: bundledShell, manifest: stockShellManifest(bundledShell) }) }
+  finally { installingShell = false }
+  closeShellViews()
+  if (deskMode) await recreateWindow()
+  else await loadSurface(win.webContents, path.join(bundledShell, 'index.html'))
+  changed()
+  return { safeMode: true }
+})
+command('host.layout', 'Native layout primitives', { op: { enum: ['layouts', 'tile'] }, ...ids, layout: string }, ['op'], (p) => p.op === 'layouts' ? S.deskLayouts(state) : mutate(S.tileDesk)({ id: p.id, layout: p.layout }))
+command('host.search', 'Resolve a destination with the configured search URL', { text: string }, ['text'], (p) => ({ url: S.resolveInput(p.text, state.settings.searchUrl) }))
+command('host.archive', 'Apply native archive rules', {}, [], () => { const result = S.sweep(state, {}, Date.now()); if (result.archived.length) changed(); return result })
+command('search.resolve', 'Resolve input using the selected search component', { text: string }, ['text'], (p, context) => behavior('search', p, context))
+
+function behavior(role, params, context) {
+  const selected = !safeMode && components?.resolve(role, { spaceId: state.activeSpaceId })
+  return call(selected?.command || `host.${role}`, params, context)
 }
 
-async function rpc(method, params) {
+function openProfileTab({ url, spaceId, sessionPartition, activate = true }) {
+  const tab = S.createTab(state, { url, spaceId, activate }, Date.now())
+  if (sessionPartition) tab.sessionPartition = sessionPartition
+  changed()
+  return tab
+}
+
+function dataEvent(name, payload) {
+  const data = browserData?.snapshot()
+  if (data && pageFeatures) for (const [id] of views) {
+    pageFeatures.protect(id, 'downloads', data.activeDownloads.includes(id))
+    pageFeatures.protect(id, 'permissions', data.pendingPermissions.some((p) => p.tabId === id))
+  }
+  if (name === 'browser-permission-granted' && ['media', 'display-capture'].includes(payload?.permission)) pageFeatures?.protect(payload.tabId, 'calls', true)
+  pushAi(name, payload)
+}
+
+function syncChanged() {
+  for (const [id, view] of views) {
+    const tab = S.findTab(state, id)
+    if (tab && !tab.chat && /^https?:/.test(view.webContents.getURL()) && tab.url !== view.webContents.getURL()) view.webContents.loadURL(tab.url).catch(console.error)
+  }
+  changed()
+}
+
+function agentApi({ agent, chatId }) {
+  if (!api) return null
+  const parent = access.selected({ owner: agent, sessionId: chatId })
+  if (!parent) return null
+  const grant = access.issue({ owner: parent.owner, tabIds: parent.tabIds, spaceIds: parent.spaceIds, read: parent.read, mutate: parent.mutate, tools: parent.tools, components: parent.components, ...(parent.commands && { commands: parent.commands }), parentId: parent.id, sessionId: chatId })
+  return { port: api.port, token: grant.token, revoke: () => access.revoke({ id: grant.id }) }
+}
+
+function stockShellManifest(root = stockShellRoot()) {
+  const surfaces = { shell: 'index.html', launcher: 'palette.html' }
+  for (const [role, file] of Object.entries({ frame: 'frame.html', tablist: 'tablist.html', spaces: 'panel.html', overview: 'expose.html' })) if (fs.existsSync(path.join(root, file))) surfaces[role] = file
+  return { apiVersion: 1, id: 'stock.shell', version: '1.0.0', surfaces, capabilities: ['ui', 'host.manage', 'call:*', 'events:*'] }
+}
+
+function registerStockComponents() {
+  const register = (id, root, surfaces) => components.registerStock({ root, manifest: { apiVersion: 1, id, version: '1.0.0', surfaces, capabilities: ['ui', 'host.manage', 'call:*', 'events:*'] } })
+  register('stock.shell', stockShellRoot(), stockShellManifest().surfaces)
+  for (const [role, file] of Object.entries({ frame: 'frame.html', tablist: 'tablist.html', spaces: 'panel.html', overview: 'expose.html' })) {
+    register(`stock.${role}`, path.join(bundledShells, 'layer'), { [role]: file })
+  }
+  register('stock.chat', chatDir, { chat: 'chat.html' })
+  register('stock.browser-tools', toolsDir, { ...Object.fromEntries(toolSections.map((role) => [role, 'index.html'])), find: 'find.html', reader: 'reader.html', split: 'split.html' })
+  for (const name of ['layout', 'search', 'archive']) {
+    const root = path.join(__dirname, '..', 'components', name)
+    components.registerStock({ root, manifest: JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8')) })
+  }
+}
+
+async function previewComponent({ id, path: source, manifest: componentManifest, backend = false }, context = {}) {
+  context.signal?.throwIfAborted()
+  if (backend) throw S.err('forbidden', 'Preview does not run component backends')
+  const root = fs.mkdtempSync(path.join(app.getPath('temp'), 'skiff-preview-'))
+  const staged = path.join(root, 'source')
+  fs.cpSync(source, staged, { recursive: true })
+  const clean = { ...componentManifest, id: `preview.${crypto.randomBytes(5).toString('hex')}` }
+  delete clean.backend
+  delete clean.commands
+  clean.capabilities = ['ui', 'call:*', 'events:state']
+  fs.writeFileSync(path.join(staged, 'manifest.json'), JSON.stringify(clean))
+  const home = path.join(root, 'home')
+  fs.mkdirSync(home)
+  const environment = Object.fromEntries(['PATH', 'DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'LANG', 'LC_ALL', 'TMPDIR', 'SystemRoot'].filter((key) => process.env[key]).map((key) => [key, process.env[key]]))
+  Object.assign(environment, { HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache'), SKIFF_DATA: path.join(root, 'data'), SKIFF_PREVIEW_SOURCE: staged, SKIFF_BUILTIN_EXTENSIONS: '[]' })
+  const child = spawn(process.execPath, [...(app.isPackaged ? [] : [path.join(__dirname, '..')]), '--component-preview'], { env: environment, stdio: 'ignore' })
+  previews.set(child.pid, child)
+  child.once('exit', () => { previews.delete(child.pid); fs.rmSync(root, { recursive: true, force: true }) })
+  child.once('error', () => { previews.delete(child.pid); fs.rmSync(root, { recursive: true, force: true }) })
   try {
-    return { ok: true, result: (await call(method, params)) ?? null }
+    const deadline = Date.now() + 15000
+    while (!fs.existsSync(path.join(root, 'data', 'api.json'))) {
+      context.signal?.throwIfAborted()
+      if (child.exitCode !== null || child.signalCode !== null) throw S.err('component_error', 'Preview exited before becoming ready')
+      if (Date.now() >= deadline) throw S.err('timeout', 'Preview did not become ready')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    context.signal?.throwIfAborted()
+  } catch (error) { await closePreview(child.pid); throw error }
+  return { id, pid: child.pid, profile: path.join(root, 'data'), disposable: true, backend: false }
+}
+
+command('components.preview.stop', 'Close an owned disposable preview', { pid: { type: 'integer', minimum: 1 } }, ['pid'], (p) => closePreview(p.pid))
+command('components.preview.list', 'List owned disposable previews', {}, [], () => [...previews.keys()].map((pid) => ({ pid })))
+function closePreview(pid) {
+  const child = previews.get(pid)
+  if (!child) return Promise.resolve({ closed: false })
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => child.kill('SIGKILL'), 2000)
+    child.once('exit', () => { clearTimeout(timer); resolve({ closed: true }) })
+    child.kill('SIGTERM')
+  })
+}
+
+async function call(method, params = {}, context = {}) {
+  if (previewMode && /^(?:components\.(?:apply|enable|revert|stage|create|bind|preview)|ui\.customize|ai\.|grants\.|sync\.|extensions\.|import\.|passwords\.|browser\.setDefault|settings\.set$)/.test(method)) throw S.err('forbidden', 'Disposable previews cannot activate executable code or credentials')
+  if (context.component && !context.hostManagement && /^(?:grants\.|sync\.|import\.|passwords\.|components\.(?:apply|enable|revert|bind|stage|create|remove|disable)|ui\.customize)/.test(method)) throw S.err('forbidden', 'This operation requires the explicitly granted host.manage capability')
+  if (['components.apply', 'components.enable', 'components.revert'].includes(method)) {
+    if (context.accessContext) access.assert(context.accessContext, { command: method, params })
+    else if (!context.trusted && !context.hostManagement) throw S.err('forbidden', 'Component activation requires a trusted local surface or explicit customization grant')
+    let info = components.inspect({ id: params.id })
+    const revisionKey = method === 'components.apply' ? 'staged' : method === 'components.revert' ? 'previous' : 'revision'
+    if (method === 'components.apply' && !info.staged) info = await components.stage({ path: info.path }, context)
+    context.signal?.throwIfAborted()
+    if (context.accessContext) access.assert(context.accessContext, { command: method, params })
+    const revision = info[revisionKey]
+    if (!revision) throw S.err('bad_params', 'No component revision is available')
+    const source = path.join(dataDir, 'components', 'revisions', params.id, revision)
+    const checked = components.check({ path: source })
+    if (!checked.ok) throw S.err('bad_params', checked.error)
+    const { response } = await dialog.showMessageBox(win, { type: 'warning', message: `Trust component ${params.id}?`, detail: `Local component code may run with the capabilities you approve.\n${JSON.stringify(checked.manifest?.capabilities || [])}`, buttons: ['Cancel', 'Trust and activate'], defaultId: 0, cancelId: 0 })
+    if (response !== 1) throw S.err('forbidden', 'Component activation cancelled')
+    context.signal?.throwIfAborted()
+    if (context.accessContext) access.assert(context.accessContext, { command: method, params })
+    if (components.inspect({ id: params.id })[revisionKey] !== revision || components.check({ path: source }).revision !== checked.revision) throw S.err('cancelled', 'Component source changed during consent; review it again')
+    params = { ...params, expectedRevision: revision, ...(method === 'components.apply' && { grants: params.grants || checked.manifest.capabilities }) }
+  }
+  if (context.accessContext) {
+    const [permitted] = access.tools(context.accessContext, [{ name: method, command: method, run: (boundedParams) => registry.call(method, boundedParams, context) }])
+    if (!permitted) throw S.err('forbidden', 'The originating agent did not grant this command')
+    return permitted.run(params)
+  }
+  return registry.call(method, params, context)
+}
+
+async function rpc(method, params, context = {}) {
+  try {
+    return { ok: true, result: (await call(method, params, context)) ?? null }
   } catch (e) {
     if (!CODES.includes(e.code)) console.error(e)
     return { ok: false, error: { code: CODES.includes(e.code) ? e.code : 'internal', message: String(e.message || e) } }
@@ -1251,11 +1820,21 @@ function buildMenu() {
     { role: 'editMenu' },
     // Page zoom owns CmdOrCtrl+0/+/-; these size the shell itself, by the step the zoom roles used.
     { label: 'View', submenu: [
+      { label: 'Find in Page', accelerator: 'CmdOrCtrl+F', click: () => rpc('ui.openFind') },
+      { label: 'Browser Tools', accelerator: 'CmdOrCtrl+,', click: () => rpc('ui.openTools') },
+      { label: 'History', accelerator: 'CmdOrCtrl+Y', click: () => rpc('ui.openTools', { section: 'history' }) },
+      { label: 'Downloads', click: () => rpc('ui.openTools', { section: 'downloads' }) },
       { label: 'Make Interface Larger', click: () => zoomShell(win.webContents.getZoomLevel() + 0.5) },
       { label: 'Make Interface Smaller', click: () => zoomShell(win.webContents.getZoomLevel() - 0.5) },
       { label: 'Interface Actual Size', click: () => zoomShell(0) }
     ] },
     { label: 'Shell', submenu: shells.map((name) => ({ label: name, type: 'radio', checked: name === state.settings.shell, click: () => rpc('ui.setShell', { name }) })) },
+    { label: 'Recovery', submenu: [
+      { label: 'Use Safe Mode (keep tabs)', click: () => rpc('ui.safeMode', {}, { trusted: true }) },
+      { label: 'Manage Components', click: () => showHostSurface(path.join(toolsDir, 'index.html'), { query: { section: 'components' } }) },
+      { label: 'Reload Selected UI', click: reloadShell },
+      { label: 'Open Component Sources', click: () => shell.openPath(path.join(dataDir, 'components')) }
+    ] },
     { label: 'Commands', submenu: items },
     // Off macOS the windowMenu role carries Close on CmdOrCtrl+W, which would close the window instead of the tab.
     mac ? { role: 'windowMenu' } : { label: 'Window', submenu: [{ role: 'minimize' }] }
@@ -1270,27 +1849,7 @@ function getSession(partition) {
   if (browserIdentity[partition] === 'native') ses.setUserAgent(nativeUserAgent)
   extensions.attach(ses, partition)
   ses.registerPreloadScript({ type: 'frame', filePath: path.join(__dirname, 'preload-page.js') })
-  const always = ['fullscreen', 'pointerLock', 'clipboard-sanitized-write']
-  const ask = { media: 'use your camera or microphone', geolocation: 'know your location', notifications: 'show notifications' }
-  const originOf = (url) => (URL.canParse(url) ? new URL(url).origin : '')
-  const granted = new Set()
-  ses.setPermissionCheckHandler((_wc, permission, origin) => always.includes(permission) || granted.has(`${permission} ${originOf(origin)}`))
-  ses.setPermissionRequestHandler(async (_wc, permission, callback, details) => {
-    const origin = originOf(details.requestingUrl)
-    const key = `${permission} ${origin}`
-    if (always.includes(permission) || granted.has(key)) return callback(true)
-    if (!ask[permission] || !origin || !win) return callback(false)
-    const { response } = await dialog.showMessageBox(win, {
-      type: 'question',
-      message: `${origin} wants to ${ask[permission]}`,
-      buttons: ['Deny', 'Allow'],
-      defaultId: 0,
-      cancelId: 0
-    })
-    // ponytail: grants last until quit and are not listed anywhere; persist and show them when a settings surface exists
-    if (response === 1) granted.add(key)
-    callback(response === 1)
-  })
+  browserData.attachSession(ses, partition)
   return ses
 }
 
@@ -1307,7 +1866,13 @@ function startApi() {
     const got = Buffer.from(req.headers.authorization || '')
     if (req.headers.origin !== undefined) return refuse(res, 403, 'forbidden', 'Requests with an Origin header are refused')
     if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(req.headers.host)) return refuse(res, 403, 'forbidden', 'Unexpected Host header')
-    if (got.length !== want.length || !crypto.timingSafeEqual(got, want)) return refuse(res, 401, 'unauthorized', 'Missing or wrong bearer token')
+    const owner = got.length === want.length && crypto.timingSafeEqual(got, want)
+    let context
+    if (!owner) {
+      try { context = access.authorize(String(req.headers.authorization || '').replace(/^Bearer /, ''), { route: '/mcp', method: 'POST' }) }
+      catch (error) { return refuse(res, 401, 'unauthorized', error.message) }
+      if (req.url !== '/mcp' || req.method !== 'POST') return refuse(res, 403, 'forbidden', 'Browser credentials are only valid for POST /mcp')
+    }
     if (req.method === 'GET' && req.url === '/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
       res.write(sseFrame(snapshot()))
@@ -1335,12 +1900,18 @@ function startApi() {
         return refuse(res, 400, 'bad_params', 'Body must be JSON: {method, params}')
       }
       if (req.url === '/mcp') {
-        const out = await handleMcp(body, { tools: mcpTools, version: app.getVersion() })
-        if (out) return reply(res, 200, out)
+        try {
+          if (context) context = access.authorize(String(req.headers.authorization || '').replace(/^Bearer /, ''), { route: req.url, method: req.method, params: body })
+          const browserContext = context || access.ownerBrowserContext()
+          const tools = browserTools({ call: (method, params, toolContext) => call(method, params, { ...toolContext, trusted: false, accessContext: browserContext }), registry })
+          const out = await handleMcp(body, { tools: access.tools(browserContext, tools), version: app.getVersion() })
+          access.assert(browserContext)
+          if (out) return reply(res, 200, out)
+        } catch (error) { return refuse(res, 403, error.code || 'forbidden', error.message) }
         res.writeHead(202)
         return res.end()
       }
-      const out = await rpc(body?.method, body?.params ?? undefined)
+      const out = await rpc(body?.method, body?.params ?? undefined, { trusted: true })
       reply(res, out.ok ? 200 : 400, out)
     })
   })
@@ -1352,12 +1923,36 @@ function startApi() {
   })
 }
 
-function start() {
+async function start() {
   fs.mkdirSync(dataDir, { recursive: true })
   state = loadState()
   // settings.set replaces this map; every session keeps the identity selected at startup.
   browserIdentity = state.settings.browserIdentity
-  if (!fs.existsSync(shellDir)) fs.cpSync(bundledShell, shellDir, { recursive: true })
+  const legacyShell = fs.existsSync(shellDir) ? shellDir : undefined
+  access = createAccess({ state: () => state, changed, emit: pushAi, registry })
+  transcripts = createTranscripts({ dir: path.join(dataDir, 'transcripts'), state: () => state, changed, emit: pushAi })
+  transcripts.register(registry)
+  browserData = createBrowserData({ dir: dataDir, state: () => state, changed, emit: dataEvent, openTab: openProfileTab, dialog, shell, getWindow: () => win, getDownloadDirectory: () => app.getPath('downloads') })
+  browserData.register(registry)
+  pageFeatures = createPageFeatures({ state: () => state, views, runtime, changed: changedSoon, emit: pushAi, createView, destroyView, getWindow: (tab) => tab?.agent ? agentWin : win, isShown: (view) => shown.includes(view), call, registry })
+  pageFeatures.register(registry)
+  sync = createSync({ dir: path.join(dataDir, 'sync'), state: () => state, changed: syncChanged, safeStorage, emit: pushAi })
+  sync.register(registry)
+  await sync.start()
+  components = createComponents({ dir: path.join(dataDir, 'components'), bundledRoot: path.join(__dirname, '..'), legacyShellDir: legacyShell, registry, call, state: () => state, changed, onReplace: replaceSurfaces, onSettingsChanged: (entry) => {
+    for (const wc of [...shellContents(), ...chatContents()]) if (trustedFiles.get(wc)?.owner === entry.owner) sendEvent(wc, 'settings.changed', entry)
+    notifyHostSettings(entry)
+  }, preview: previewComponent, safeMode })
+  registerStockComponents()
+  components.register(registry)
+  await components.start()
+  if (process.argv.includes('--component-preview') && process.env.SKIFF_PREVIEW_SOURCE) {
+    const staged = await components.stage({ path: process.env.SKIFF_PREVIEW_SOURCE })
+    const id = staged.id || staged.manifest.id
+    await components.apply({ id })
+    const checked = components.check({ id })
+    for (const role of Object.keys(checked.manifest.surfaces)) await components.bind({ role, id })
+  }
   watchShell()
   vault = createVault({ file: path.join(dataDir, 'passwords.enc'), safeStorage })
   importer = createImporter({
@@ -1374,15 +1969,46 @@ function start() {
     }
   })
   getSession('persist:main')
-  ai = createAi({ dir: path.join(dataDir, 'ai'), version: app.getVersion(), state: () => state, changed, favicon: F.storeIcon(faviconDir, 'https://skiff.invalid/agent.svg', Buffer.from(SPARKLE)), api: () => api, pageText, push: pushAi })
+  ai = createAi({ dir: path.join(dataDir, 'ai'), version: app.getVersion(), state: () => state, changed, favicon: F.storeIcon(faviconDir, 'https://skiff.invalid/agent.svg', Buffer.from(SPARKLE)), api: agentApi, revokeAccess: (selector) => access.revoke(selector), transcripts, pageText, pageGeneration: (id) => runtime.get(id)?.generation, push: pushAi })
   extensions.start()
-  ipcMain.handle('skiff:call', (e, method, params) => {
-    const shell = shellContents().includes(e.sender) && inShell(e.senderFrame?.url)
-    const chat = chatContents().includes(e.sender) && inDir(chatDir, e.senderFrame?.url)
-    if (!win || !(shell || chat)) return { ok: false, error: { code: 'forbidden', message: 'Only the shell may call' } }
-    return rpc(method, params ?? undefined)
+  ipcMain.handle('skiff:call', async (e, method, params) => {
+    const source = trustedFiles.get(e.sender)
+    if (!win || !source || source.invalid || e.senderFrame?.parent || filePath(e.senderFrame?.url) !== source.file) return { ok: false, error: { code: 'forbidden', message: 'Only a current registered local surface may call' } }
+    if (source.owner !== 'host') {
+      try {
+        if (components.ownerForFile(source.file) !== source.owner) throw S.err('forbidden', 'This surface generation has been replaced')
+        if (/^components\.(?:storage\.(?:read|write|remove)|source\.(?:read|write)|settings\.(?:list|get|set|reset))$/.test(method)) {
+          const p = params || {}
+          if (p.id !== undefined && source.bridge.hasCapability('host.manage')) return { ok: true, result: (await source.bridge.call(method, p)) ?? null }
+          if (p.id !== undefined && p.id !== source.owner) throw S.err('forbidden', 'Component data belongs to its owner')
+          const bridge = source.bridge
+          const [, group, operation] = method.split('.')
+          let result
+          if (group === 'source') result = await bridge.source[operation](p.file, p.content)
+          else if (group === 'settings') {
+            const options = { spaceId: p.spaceId, query: p.query }
+            result = operation === 'list' ? await bridge.settings.list(options)
+              : operation === 'set' ? await bridge.settings.set(p.key, p.value, options)
+                : await bridge.settings[operation](p.key, options)
+          } else result = operation === 'write' ? await bridge.storage.write(p.key, p.value, { version: p.version, spaceId: p.spaceId, private: p.private })
+            : await bridge.storage[operation](p.key, { version: p.version, spaceId: p.spaceId, private: p.private })
+          return { ok: true, result: result ?? null }
+        }
+        const result = await source.bridge.call(method, params || {})
+        return { ok: true, result: result ?? null }
+      } catch (error) { return { ok: false, error: { code: error.code || 'forbidden', message: error.message } } }
+    }
+    return rpc(method, params ?? undefined, { owner: source.owner, trusted: true })
   })
   const pageTab = (e) => e.senderFrame && !e.senderFrame.parent && tabOfContents(e.sender.id)
+  ipcMain.on('skiff:page-state', (e, payload) => {
+    const id = tabOfContents(e.sender.id)
+    if (id) pageFeatures.report(id, payload, e)
+  })
+  ipcMain.on('skiff:link-peek', (e, payload) => {
+    const id = pageTab(e)
+    if (id && typeof payload?.url === 'string' && /^https?:/.test(payload.url)) rpc('peek.open', { url: payload.url, sourceId: id })
+  })
   // A tab's page swipes back or forward. The time of its last swipe lets the page that swipe opens ignore the momentum tail.
   const swipedAt = new WeakMap()
   const canGo = (wc, way) => (way === 'back' ? wc.navigationHistory.canGoBack() : way === 'forward' && wc.navigationHistory.canGoForward())
@@ -1399,7 +2025,7 @@ function start() {
   ipcMain.on('skiff:page-drag', (e, phase, screenX, screenY) => {
     const id = deskPage(e)
     if (!id || !['start', 'move', 'end', 'cancel'].includes(phase) || ![screenX, screenY].every(Number.isFinite)) return
-    frames.get(id)?.webContents.send('skiff:event', 'page-drag', { tab: id, phase, screenX, screenY })
+    sendEvent(frames.get(id)?.webContents, 'page-drag', { tab: id, phase, screenX, screenY })
   })
   // A desk window's page reports a vertical swipe that had nothing to scroll; fingers up (by the Mac's scroll setting) opens exposé, and its start (warm) lets exposé take its pictures meanwhile.
   ipcMain.on('skiff:page-expose', (e, dir, warm) => {
@@ -1409,25 +2035,58 @@ function start() {
   startApi()
   screen.on('display-metrics-changed', refitDesk)
   screen.on('display-removed', refitDesk)
-  createWindow()
+  desktops = D.open({ systemPreferences })
+  await createWindow()
+  desktops?.subscribe(desktopsChanged)
   prefetchIcons()
-  app.on('activate', () => win || createWindow())
-  app.on('second-instance', () => {
-    if (!win) return createWindow()
+  app.on('activate', () => { if (!win) createWindow().catch(console.error) })
+  for (const url of pendingUrls.splice(0)) rpc('links.open', { url })
+  app.on('second-instance', (_event, argv) => {
+    if (!win) createWindow().catch(console.error)
+    for (const url of argv.filter((arg) => /^https?:\/\//i.test(arg))) rpc('links.open', { url })
     if (win.isMinimized()) win.restore()
     win.focus()
   })
   rpc('archive.sweep')
   setInterval(() => rpc('archive.sweep'), 60e3)
+  startUpdates()
+}
+
+function startUpdates() {
+  if (!app.isPackaged || process.platform !== 'darwin' || previewMode) return
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.on('error', (error) => console.error('update failed:', error))
+  const check = () => autoUpdater.checkForUpdates().catch((error) => console.error('update check failed:', error))
+  check()
+  setInterval(check, 6 * 3600e3)
 }
 
 if (app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => process.platform === 'darwin' || app.quit())
-  app.on('will-quit', () => {
-    ai?.stop()
-    if (state) flush()
+  let quitting = false
+  app.on('before-quit', (event) => {
+    if (quitting) return
+    event.preventDefault()
+    quitting = true
+    Promise.resolve().then(async () => {
+      const results = await Promise.allSettled([
+        async () => { try { await ai?.stop() } finally { transcripts?.stop() } },
+        () => browserData?.stop(),
+        () => pageFeatures?.stop(),
+        () => access?.stop(),
+        () => sync?.stop(),
+        () => components?.stop(),
+        async () => {
+          const previewsStopped = await Promise.allSettled([...previews.keys()].map(closePreview))
+          for (const result of previewsStopped) if (result.status === 'rejected') console.error(result.reason)
+        }
+      ].map((stop) => Promise.resolve().then(stop)))
+      try { if (state) flush() }
+      finally { for (const result of results) if (result.status === 'rejected') console.error(result.reason) }
+    }).catch(console.error).finally(() => app.quit())
   })
-  app.whenReady().then(start)
+  app.whenReady().then(start).catch(console.error)
 } else {
   app.quit()
 }

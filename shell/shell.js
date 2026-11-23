@@ -8,7 +8,7 @@ const relative = new Intl.RelativeTimeFormat(undefined, { style: 'narrow' })
 
 let state = null
 let lastBounds = ''
-const ui = { archive: false, settings: false, renaming: false, imported: '', filling: false, extensions: [], agents: [], agentForm: null, agentError: '', warmed: '' }
+const ui = { archive: false, settings: false, renaming: false, imported: '', filling: false, defaultBrowser: null, extensions: [], agents: [], agentForm: null, agentError: '', warmed: '' }
 const drawn = {}
 const importDialog = $('arc-import')
 let importer = null
@@ -111,6 +111,12 @@ function trail(plain) {
   return [...depths]
 }
 
+function folderRow(space, folder, open, count, toggle = () => call('folders.setCollapsed', { spaceId: space.id, folder, collapsed: open })) {
+  return h('li', { class: 'row', 'data-folder-head': folder },
+    h('button', { class: 'row-main', title: folder, 'aria-expanded': String(open), onclick: toggle },
+      icon('chevron'), h('span', { class: 'label' }, folder), h('span', { class: 'when' }, String(count))))
+}
+
 function tabRows(space, tabs, row) {
   const pinned = tabs.filter((t) => t.pinned)
   const folders = [...new Set(pinned.map((t) => t.folder).filter(Boolean))]
@@ -120,9 +126,7 @@ function tabRows(space, tabs, row) {
       const inside = pinned.filter((t) => t.folder === folder)
       const open = !state.collapsed[`${space.id}/${folder}`]
       return [
-        h('li', { class: 'row', 'data-folder-head': folder },
-          h('button', { class: 'row-main', title: folder, 'aria-expanded': String(open), onclick: () => call('folders.setCollapsed', { spaceId: space.id, folder, collapsed: open }) },
-            icon('chevron'), h('span', { class: 'label' }, folder), h('span', { class: 'when' }, String(inside.length)))),
+        folderRow(space, folder, open, inside.length),
         open ? inside.map((t) => row(t)) : []
       ]
     }),
@@ -460,6 +464,18 @@ async function advanceImport(event) {
   renderImport()
 }
 
+function refreshDefaultBrowser() {
+  return Promise.resolve(skiff.call('browser.isDefault', {})).then((result) => {
+    ui.defaultBrowser = result || null
+    render()
+  }).catch(() => {})
+}
+
+async function makeDefaultBrowser() {
+  try { ui.defaultBrowser = await skiff.call('browser.setDefault', {}) } catch { await refreshDefaultBrowser() }
+  render()
+}
+
 async function fillSavedPassword() {
   if (ui.filling || importer) return
   ui.filling = true
@@ -478,6 +494,17 @@ async function fillSavedPassword() {
   ui.filling = false
   render()
   $('fill-password')?.focus()
+}
+
+function defaultBrowserRow() {
+  const info = ui.defaultBrowser
+  if (!info?.supported) return null
+  return [
+    h('div', { class: 'field-label', id: 'default-browser-label' }, 'Default browser'),
+    info.default
+      ? h('p', { class: 'hint', id: 'default-browser-status' }, 'Skiff is your default browser.')
+      : h('button', { id: 'default-browser', class: 'text-btn', onclick: makeDefaultBrowser }, 'Make Skiff your default browser')
+  ]
 }
 
 async function refreshExtensions() {
@@ -683,6 +710,7 @@ function panel(space) {
     h('p', { class: 'hint' }, 'Switches the whole interface in place. Tabs stay as they are.'),
     h('label', { class: 'field', for: 'search-engine' }, 'Search engine', search),
     agentRows(),
+    defaultBrowserRow(),
     extensionRows(),
     h('div', { class: 'settings-actions' },
       h('button', { id: 'import-arc', class: 'text-btn', onclick: importArc }, 'Import from Arc'),
@@ -1188,7 +1216,7 @@ function render() {
     const travel = `translateX(${state.spaces.indexOf(space) > from ? 24 : -24}px)`
     if (from >= 0 && !still.matches) for (const id of ['favorites', 'space-head', 'list']) $(id).animate([{ transform: travel, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 130, easing: 'ease-out' })
   }
-  section('panel', ui.settings && [space, state.spaces.length, state.settings.autoArchiveHours, state.settings.searchUrl, state.settings.ai, ui.imported, ui.filling, Boolean(tab), ui.extensions, ui.agents, ui.agentError], () => (ui.settings ? panel(space) : []))
+  section('panel', ui.settings && [space, state.spaces.length, state.settings.autoArchiveHours, state.settings.searchUrl, state.settings.ai, ui.imported, ui.filling, Boolean(tab), ui.extensions, ui.agents, ui.agentError, ui.defaultBrowser], () => (ui.settings ? panel(space) : []))
   if (ui.settings) warmDefault()
   if (!holds) section('list', ui.archive ? [state.archive] : [tabs, tab?.id, state.collapsed], () => (ui.archive ? archiveRows() : [
     tabRows(space, tabs, (t, depth) => tabRow(t, t.id === tab?.id, depth)),
@@ -1233,7 +1261,7 @@ function toggleSettings(data) {
   render()
   if (!ui.settings) return
   if (agents) showAgents()
-  Promise.all([refreshExtensions(), refreshAgents()]).then(() => { if (agents) showAgents() })
+  Promise.all([refreshExtensions(), refreshAgents(), refreshDefaultBrowser()]).then(() => { if (agents) showAgents() })
 }
 
 $('archive-toggle').addEventListener('click', toggleArchive)

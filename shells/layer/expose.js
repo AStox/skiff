@@ -14,6 +14,10 @@ const PAD = { top: 56, side: 48, bottom: 48 }
 // Hidden windows sit this tall in their row along the bottom.
 const SHELF = 72
 const SHELF_GAP = 18
+// Windows of other macOS desktops sit in the tray apart from each other, each group under its label.
+const GROUP_GAP = 36
+const TAG = 26
+const groups = $('groups')
 // Kept clear around the Buoy and the open panel, which stay above exposé.
 const CLEAR = 12
 const MS = 280
@@ -70,14 +74,18 @@ function arrange(list, box) {
   })
 }
 
-// One row along the bottom of the box, SHELF tall unless that is too wide.
+// One row along the bottom of the box, SHELF tall unless that is too wide; a window's group (its desktop, none for the current one) sits apart from the next.
 function shelve(list, box) {
   if (!list.length) return []
-  const h = Math.min(SHELF, (box.width - (list.length - 1) * SHELF_GAP) / list.reduce((sum, w) => sum + w.rect.width / w.rect.height, 0))
-  let x = box.x + (box.width - list.reduce((sum, w) => sum + w.rect.width / w.rect.height * h + SHELF_GAP, -SHELF_GAP)) / 2
-  return list.map((w) => {
+  const gap = (i) => (list[i].group === list[i - 1].group ? SHELF_GAP : GROUP_GAP)
+  const gaps = list.slice(1).reduce((sum, _, i) => sum + gap(i + 1), 0)
+  const aspect = list.reduce((sum, w) => sum + w.rect.width / w.rect.height, 0)
+  const h = Math.min(SHELF, (box.width - gaps) / aspect)
+  let x = box.x + (box.width - aspect * h - gaps) / 2
+  return list.map((w, i) => {
+    if (i) x += gap(i)
     const to = { x: Math.round(x), y: Math.round(box.y + box.height - LABEL - h), width: Math.round(w.rect.width / w.rect.height * h), height: Math.round(h) }
-    x += to.width + SHELF_GAP
+    x += to.width
     return { ...w, to }
   })
 }
@@ -124,7 +132,7 @@ function card(c, image) {
     h('span', { class: 'card' }, image ? h('img', { class: 'shot', src: image, alt: '', draggable: 'false' }) : h('span', { class: 'blank' }, favicon(c.tab), h('span', { class: 'blank-title' }, title))))
   Object.assign(win.style, { left: px(at.x - c.to.x), top: px(at.y - c.to.y), width: px(at.width), height: px(at.height), transform: over(at, c.to) })
   win.style.setProperty('--k', 1 / scale)
-  const el = h('button', { class: `slot${c.hidden ? ' shelved' : ''}`, type: 'button', 'data-tab-id': c.tab.id, 'aria-label': c.hidden ? `${title}, hidden` : title, onclick: () => pick(c) },
+  const el = h('button', { class: `slot${c.hidden ? ' shelved' : ''}`, type: 'button', 'data-tab-id': c.tab.id, 'aria-label': c.group ? `${title}, Desktop ${c.group.number}` : c.hidden ? `${title}, hidden` : title, onclick: () => pick(c) },
     win, h('span', { class: 'label' }, favicon(c.tab), h('span', { class: 'label-title' }, title)))
   Object.assign(el.style, { left: px(c.to.x), top: px(c.to.y), width: px(c.to.width), height: px(c.to.height), zIndex: c.z })
   el.style.setProperty('--r', px(c.hidden ? 7 : RADIUS * scale))
@@ -155,17 +163,20 @@ function prepare() {
   return prepared
 }
 // layer.js ends a foreground set before exposé shows, so every window of the space is laid out.
-const deskKey = (st) => JSON.stringify([st.activeSpaceId, deskWindows({ ...st, deskOnly: null }).map((w) => [w.tab.id, w.rect, w.active])])
+const deskKey = (st) => JSON.stringify([st.activeSpaceId, st.desktops?.current, deskWindows({ ...st, deskOnly: null }).map((w) => [w.tab.id, w.rect, w.active])])
 
 async function plan() {
   const st = state ||= await skiff.call('state.get').catch(() => null)
   if (!st) return null
   const active = activeTabOf(st)
   const wins = deskWindows({ ...st, deskOnly: null }).map((w, z) => ({ tab: w.tab, rect: w.rect, z, hidden: false, active: w.active }))
-  const hidden = visibleTabs(st, st.activeSpaceId).filter((t) => t !== active && t.desk?.hidden).map((tab) => ({ tab, rect: rectOf(st, tab), z: 0, hidden: true }))
-  const room = hidden.length ? SHELF + LABEL + CARD_GAP : 0
+  const hidden = visibleTabs(st, st.activeSpaceId).filter((t) => t !== active && onDesktop(st, t) && t.desk?.hidden).map((tab) => ({ tab, rect: rectOf(st, tab), z: 0, hidden: true }))
+  // Pictures of other desktops' tabs are never to be had (they are not on screen), so their cards show no picture.
+  const elsewhere = visibleTabs(st, st.activeSpaceId).filter((t) => !t.userPeek && !onDesktop(st, t) && desktopOf(st, t)).map((tab) => ({ tab, rect: rectOf(st, tab), z: 0, hidden: true, group: desktopOf(st, tab) })).sort((a, b) => a.group.number - b.group.number)
+  const shelf = [...hidden, ...elsewhere]
+  const room = shelf.length ? SHELF + LABEL + CARD_GAP + (elsewhere.length ? TAG : 0) : 0
   const box = clearOf({ x: PAD.side, y: PAD.top, width: innerWidth - 2 * PAD.side, height: innerHeight - PAD.top - PAD.bottom }, [buoyRect(st), panelRect].filter(Boolean))
-  const cards = [...arrange(wins, { ...box, height: box.height - room }), ...shelve(hidden, box)]
+  const cards = [...arrange(wins, { ...box, height: box.height - room }), ...shelve(shelf, box)]
   const slots = placeEars(wins)
   const holes = wins.flatMap((c) => [{ ...c.rect, rx: RADIUS }, ...(slots[c.tab.id] ? [{ ...slots[c.tab.id], y: c.rect.y - EAR_HEIGHT, height: EAR_HEIGHT }] : [])])
   return { st, active, cards, holes }
@@ -177,8 +188,9 @@ async function pictures(layout) {
   const { cards } = layout
   const images = new Map()
   const width = clamp(Math.ceil(Math.max(0, ...cards.filter((c) => !c.hidden).map((c) => c.rect.width)) * devicePixelRatio), 160, 3840)
-  for (let i = 0; i < cards.length; i += 24) {
-    const shots = await skiff.call('tabs.thumbnails', { ids: cards.slice(i, i + 24).map((c) => c.tab.id), width }).catch(() => null)
+  const live = cards.filter((c) => !c.group)
+  for (let i = 0; i < live.length; i += 24) {
+    const shots = await skiff.call('tabs.thumbnails', { ids: live.slice(i, i + 24).map((c) => c.tab.id), width }).catch(() => null)
     for (const s of shots || []) images.set(s.id, s.image)
   }
   for (const c of cards) c.el = card(c, images.get(c.tab.id))
@@ -202,11 +214,11 @@ async function openExpose() {
   dim(layout.holes)
   await pending.ready
   if (shown !== token) return
-  Object.assign(token, { space: st.activeSpaceId, active: active?.id, cards })
+  Object.assign(token, { space: st.activeSpaceId, active: active?.id, desktop: st.desktops?.current, cards })
   $('empty').hidden = cards.length > 0
   const glide = !still()
   const motion = glide ? { duration: MS, easing: EASE, fill: 'backwards' } : { duration: 150, easing: 'ease-out', fill: 'backwards' }
-  const anims = [tray.animate([{ opacity: 0 }, { opacity: 1 }], motion), $('empty').animate([{ opacity: 0 }, { opacity: 1 }], motion)]
+  const anims = [tray.animate([{ opacity: 0 }, { opacity: 1 }], motion), groups.animate([{ opacity: 0 }, { opacity: 1 }], motion), $('empty').animate([{ opacity: 0 }, { opacity: 1 }], motion)]
   for (const c of cards) {
     const win = c.el.firstChild
     if (c.hidden || !glide) {
@@ -237,13 +249,23 @@ async function openExpose() {
   Promise.all(anims.map((a) => a.finished)).then(() => { if (shown === token && !closing) root.classList.add('settled') }, () => {})
 }
 
-// Snug around the hidden windows' tiles; a tile's title shows under it, past the tray, while it is pointed at.
+// Snug around the hidden windows' tiles; a tile's title shows under it, past the tray, while it is pointed at. Other desktops' tiles each get a tray with its label on top.
 function placeTray(shelf) {
-  tray.hidden = !shelf.length
-  if (!shelf.length) return
-  const x = Math.min(...shelf.map((c) => c.to.x)) - 10
-  const y = shelf[0].to.y - 10
-  Object.assign(tray.style, { left: px(x), top: px(y), width: px(Math.max(...shelf.map((c) => c.to.x + c.to.width)) + 10 - x), height: px(shelf[0].to.height + 20) })
+  const own = shelf.filter((c) => !c.group)
+  tray.hidden = !own.length
+  if (own.length) {
+    const x = Math.min(...own.map((c) => c.to.x)) - 10
+    const y = own[0].to.y - 10
+    Object.assign(tray.style, { left: px(x), top: px(y), width: px(Math.max(...own.map((c) => c.to.x + c.to.width)) + 10 - x), height: px(own[0].to.height + 20) })
+  }
+  groups.replaceChildren(...[...new Set(shelf.map((c) => c.group).filter(Boolean))].map((group) => {
+    const list = shelf.filter((c) => c.group === group)
+    const x = Math.min(...list.map((c) => c.to.x)) - 10
+    const y = list[0].to.y - 10 - TAG
+    const el = h('div', { class: 'tray-group', 'data-desktop': String(group.number) }, h('span', { class: 'tray-label' }, `Desktop ${group.number}`))
+    Object.assign(el.style, { left: px(x), top: px(y), width: px(Math.max(...list.map((c) => c.to.x + c.to.width)) + 10 - x), height: px(list[0].to.height + 20 + TAG) })
+    return el
+  }))
 }
 
 const pick = (c) => closeExpose(c)
@@ -274,6 +296,7 @@ async function closeExpose(chosen) {
   const motion = glide ? { duration: MS, easing: EASE, fill: 'forwards' } : { duration: 150, easing: 'ease-in', fill: 'forwards' }
   move(veil, 'opacity', 0, motion)
   move(tray, 'opacity', 0, motion)
+  move(groups, 'opacity', 0, motion)
   move($('empty'), 'opacity', 0, motion)
   for (const c of cards) {
     const win = c.el.firstChild
@@ -302,6 +325,7 @@ async function finish() {
   stage.replaceChildren()
   holes.replaceChildren()
   tray.hidden = true
+  groups.replaceChildren()
   $('empty').hidden = true
   for (const a of document.getAnimations()) a.cancel()
   veil.style.opacity = 0
@@ -360,7 +384,7 @@ skiff.on('panel-moved', (rect) => { panelRect = rect || null })
 skiff.on('state', (next) => {
   state = next
   if (!shown?.space || closing) return
-  if (next.activeSpaceId !== shown.space) return closeExpose()
+  if (next.activeSpaceId !== shown.space || next.desktops?.current !== shown.desktop) return closeExpose()
   const id = next.activeTabBySpace[next.activeSpaceId]
   if (id !== shown.active) closeExpose(shown.cards.find((c) => c.tab.id === id))
 })

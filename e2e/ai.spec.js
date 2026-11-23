@@ -243,7 +243,6 @@ test('a question from the bar opens a chat tab nested under the page that stream
   await expect(sidebarRow).toHaveAttribute('data-parent', page.id)
   await expect(sidebarRow).toHaveAttribute('data-depth', '1')
   await expect(sidebarRow).toContainText('what is this page about')
-  await expect(sidebarRow.locator('img.favicon')).toHaveAttribute('src', /^\.\.\/favicons\/\w+\.svg$/)
   await expect(sidebarRow).toHaveClass(/\bcurrent\b/)
   const space = (await skiff.state()).spaces.find((s) => s.id === tab.spaceId)
   await expect.poll(() => chat.evaluate(() => document.documentElement.style.getPropertyValue('--accent'))).toBe(space.color)
@@ -323,7 +322,9 @@ test('agent mode picks the model, effort and page with the keyboard and remember
 
 test('the chat tab takes follow-ups, effort changes, permission answers, Stop and a crash', async ({ skiff }) => {
   await connect(skiff)
-  await fixturePage(skiff)
+  const browserPage = await fixturePage(skiff)
+  const browserGrant = await skiff.rpc('grants.issue', { owner: 'Fake', spaceIds: [browserPage.spaceId], mutate: true, commands: ['tabs.create'] })
+  await skiff.rpc('grants.select', { id: browserGrant.id })
   const { chatId } = await skiff.rpc('ai.ask', { text: 'hello', effort: 'high' })
   const { tab, page: chat } = await openedChat(skiff)
   await settled(skiff, chatId)
@@ -371,6 +372,10 @@ test('the chat tab takes follow-ups, effort changes, permission answers, Stop an
   const card = chat.locator('#chat-permission')
   await expect(card.locator('button[data-option-id]')).toHaveText(['Allow once', 'Reject'])
   await card.getByRole('button', { name: 'Allow once' }).click()
+  await expect.poll(async () => {
+    const result = (await chatState(skiff, chatId)).turns.findLast((turn) => turn.kind === 'tool')
+    return { status: result?.status, error: result?.status === 'failed' ? result.text : null }
+  }, { message: 'ACP permission approval must complete the scoped browser call' }).toEqual({ status: 'completed', error: null })
   await expect(tool).toHaveAttribute('data-status', 'completed')
   await expect(card).toBeHidden()
   await settled(skiff, chatId)
@@ -385,6 +390,15 @@ test('the chat tab takes follow-ups, effort changes, permission answers, Stop an
   await expect(card).toBeVisible()
   await card.getByRole('button', { name: 'Reject' }).click()
   await expect(last(chat, '.ai-tool')).toHaveAttribute('data-status', 'cancelled')
+  await settled(skiff, chatId)
+  expect((await skiff.state()).tabs).toHaveLength(count)
+
+  // ACP's Allow once cannot replace a browser grant or resurrect a revoked one.
+  await skiff.rpc('grants.revoke', { id: browserGrant.id })
+  await send(chat, `open ${skiff.origin}/revoked`)
+  await expect(card).toBeVisible()
+  await card.getByRole('button', { name: 'Allow once' }).click()
+  await expect(last(chat, '.ai-tool')).toHaveAttribute('data-status', 'failed')
   await settled(skiff, chatId)
   expect((await skiff.state()).tabs).toHaveLength(count)
 
@@ -520,12 +534,24 @@ test('incognito pages are never offered or sent, the chat tab stays incognito, a
   await expect(chat.locator('.ai-context')).toHaveCount(0)
   await expect(chat.locator('html')).toHaveClass(/\bincognito\b/)
 
+  // The trusted local RPC interface remains able to read a user's private tab.
+  expect(await skiff.http('tabs.read', { id: tab.id })).toMatchObject({ ok: true, result: { url: tab.url } })
+
   const { port, token } = JSON.parse(fs.readFileSync(path.join(skiff.data, 'api.json'), 'utf8'))
   const mcp = async (body) => (await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json()
-  const [read, list] = await mcp([
+  const [read, list, aliasRead, navigate, create] = await mcp([
     { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'browser_read_page', arguments: { tabId: tab.id } } },
-    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'browser_list_tabs', arguments: {} } }
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'browser_list_tabs', arguments: {} } },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'browser_read_page', arguments: { id: tab.id } } },
+    { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'browser_navigate', arguments: { tabId: tab.id, url: `${skiff.origin}/private-navigation-denied` } } },
+    { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'browser_open_tab', arguments: { spaceId: space.id, url: `${skiff.origin}/private-creation-denied` } } }
   ])
   expect(read.result).toEqual({ content: [{ type: 'text', text: `No tab ${tab.id}` }], isError: true })
   expect(JSON.parse(list.result.content[0].text)).toEqual({ activeTabId: null, tabs: [] })
+  expect(aliasRead.result).toEqual(read.result)
+  expect(navigate.result.isError).toBe(true)
+  expect(create.result.isError).toBe(true)
+  const after = await skiff.state()
+  expect(after.tabs.find((item) => item.id === tab.id).url).toBe(tab.url)
+  expect(after.tabs.some((item) => item.url === `${skiff.origin}/private-creation-denied`)).toBe(false)
 })

@@ -20,6 +20,9 @@ const test = base.extend({
     fs.mkdirSync(data)
     fs.mkdirSync(path.join(home, 'app-data'))
     fs.writeFileSync(path.join(root, '.skiff-visual-fixture'), 'owned by this test')
+    // A supplied source-only legacy shell exercises the same startup migration
+    // as an installed custom UI, inside this fixture's disposable profile.
+    if (fixtureOptions.legacyShell) fs.cpSync(fixtureOptions.legacyShell, path.join(data, 'shell'), { recursive: true })
     const requests = []
     const identities = new Map()
     const cookied = []
@@ -47,6 +50,20 @@ const test = base.extend({
         return
       }
       const route = request.url.split('?')[0]
+      if (['/pointer-fixture', '/drag-region-fixture', '/scroll-fixture'].includes(route)) {
+        response.setHeader('Content-Type', 'text/html; charset=utf-8')
+        return response.end(fs.readFileSync(path.join(__dirname, route.slice(1) + '.html')))
+      }
+      if (route === '/download') {
+        response.setHeader('Content-Type', 'text/plain')
+        response.setHeader('Content-Disposition', 'attachment; filename="skiff-fixture.txt"')
+        return response.end('A real isolated fixture download.\n')
+      }
+      if (route === '/article') {
+        response.setHeader('Content-Type', 'text/html; charset=utf-8')
+        response.setHeader('Set-Cookie', 'fixture-session=signed-in; Path=/; SameSite=Lax')
+        return response.end(`<!doctype html><html lang="en"><head><title>Local Reading Article</title></head><body><nav>Fixture navigation</nav><article><h1>A useful local article</h1>${Array.from({ length: 12 }, (_, i) => `<p>Chapter ${i + 1}. Skiff keeps live pages and their sign-in sessions intact while browser tools change around them. This readable article contains enough real sentences for article extraction, native find, and reader tests. Needle appears in this paragraph.</p>`).join('')}</article><a href="/second" id="peek-link">Peek this link</a><a href="/download" id="download-link">Download fixture</a><input aria-label="Draft"></body></html>`)
+      }
       if (route === '/identity/redirect') {
         response.writeHead(302, { Location: '/identity/target' })
         return response.end()
@@ -86,8 +103,10 @@ const test = base.extend({
     let child
     let shell
     let stopping = null
+    let closing = false
     const close = async () => {
       if (!app) return
+      closing = true
       const owned = app
       const groupExists = () => {
         return execFileSync('ps', ['-axo', 'pgid=,stat='], { encoding: 'utf8' }).trim().split('\n').some((line) => {
@@ -125,43 +144,89 @@ const test = base.extend({
       const port = server.address().port
       const origin = `http://127.0.0.1:${port}`
       writeArc(home, origin, fixtureOptions)
-      // Every webContents counts as a window here; with extensions loaded, a background page can come first.
-      const isShell = (page) => page.url().endsWith('/shell/index.html') && !page.isClosed()
+      // Identify the main native window, not a particular bundled or owned source filename.
+      let shellUrl = ''
+      const isShell = (page) => page.url() === shellUrl && !page.isClosed()
+      const discoverShell = async () => {
+        const url = await app.evaluate(({ BrowserWindow }) => {
+          const candidates = global.__skiffVisualAudit.windows.filter((entry) => !entry.skipTaskbar)
+          return candidates.map((entry) => BrowserWindow.fromId(entry.id)).filter(Boolean).findLast((window) => window.webContents.getURL().startsWith('file:'))?.webContents.getURL()
+        })
+        if (url) shellUrl = url
+        return app.windows().some(isShell)
+      }
       const useShell = (page) => {
         shell = page
         shell.setDefaultTimeout(8000)
         shell.setDefaultNavigationTimeout(15_000)
       }
-      const launch = async () => {
+      const launch = async (extraArgs = []) => {
+        closing = false
         const env = { ...process.env, HOME: home, USERPROFILE: home, SKIFF_DATA: data, SKIFF_VISUAL_ROOT: root,
           SKIFF_VISUAL_PORT: String(port), SKIFF_VISUAL_CONSENT: String(fixtureOptions.consent || 0), SKIFF_VISUAL_THEME: fixtureOptions.theme || 'light',
           SKIFF_VISUAL_EXTENSIONS: fixtureOptions.extensions ? '1' : '0',
           // Built-ins are off unless a test asks for the fixture one, so no run contacts GitHub.
           SKIFF_BUILTIN_EXTENSIONS: fixtureOptions.builtin ? JSON.stringify([{ name: 'Skiff test extension', release: `${origin}/ext/release` }]) : '[]',
           LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8', TZ: 'UTC', XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache') }
+        delete env.SKIFF_VISUAL_COMPONENT_CONSENT
+        delete env.SKIFF_VISUAL_PERMISSION_CONSENT
+        delete env.SKIFF_VISUAL_STOP_FAILURE
+        delete env.SKIFF_VISUAL_DESKTOPS
+        if (fixtureOptions.desktops) env.SKIFF_VISUAL_DESKTOPS = fixtureOptions.desktops.join(',')
+        if (fixtureOptions.stopFailure) env.SKIFF_VISUAL_STOP_FAILURE = '1'
+        if (fixtureOptions.componentConsent !== undefined) env.SKIFF_VISUAL_COMPONENT_CONSENT = String(fixtureOptions.componentConsent)
+        if (fixtureOptions.permissionConsent !== undefined) env.SKIFF_VISUAL_PERMISSION_CONSENT = String(fixtureOptions.permissionConsent)
         delete env.ELECTRON_RUN_AS_NODE
-        app = await _electron.launch({ args: [path.join(__dirname, 'electron-entry.js'), '--force-device-scale-factor=1'], env, chromiumSandbox: true, timeout: 20_000 })
+        app = await _electron.launch({ args: [path.join(__dirname, 'electron-entry.js'), ...(fixtureOptions.nativeScale ? [] : ['--force-device-scale-factor=1']), ...extraArgs], env, chromiumSandbox: true, timeout: 20_000 })
+        app.on('window', (page) => page.on('domcontentloaded', () => {
+          if (!closing && app && child?.exitCode === null) void discoverShell().catch((error) => { if (!closing) console.error('Unable to refresh fixture shell identity', error) })
+        }))
         child = app.process()
         await app.firstWindow({ timeout: 15_000 })
-        await expect.poll(() => app.windows().some(isShell), { timeout: 15_000 }).toBe(true)
+        shellUrl = ''
+        await expect.poll(discoverShell, { timeout: 15_000 }).toBe(true)
         useShell(app.windows().find(isShell))
+        await shell.waitForLoadState('load')
         await shell.emulateMedia({ colorScheme: fixtureOptions.theme || 'light' })
         await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1280, 800))
-        await expect(shell.locator('#dots .dot').first()).toBeVisible()
+        await expect.poll(async () => Boolean(await shell.evaluate(() => window.skiff?.call('state.get')))).toBe(true)
       }
       await launch()
       const driver = {
         get app() { return app }, root,
         // A switch between app and desk shells replaces the window, and with it the shell page.
         get shell() {
-          const next = shell.isClosed() && app.windows().find(isShell)
+          const next = !isShell(shell) && app.windows().find(isShell)
           if (next) useShell(next)
           return shell
         }, home, data, origin, requests, identities, cookied, release,
-        rpc: (method, params) => driver.shell.evaluate(({ method, params }) => window.skiff.call(method, params), { method, params }),
+        rpc: async (method, params) => {
+          // Source activation can replace the invoking renderer before IPC resolves.
+          if (['ui.setShell', 'ui.resetShell', 'ui.safeMode', 'components.apply', 'components.enable', 'components.revert', 'components.bind'].includes(method)) {
+            const out = await driver.http(method, params)
+            if (!out.ok) throw new Error(`${method} [${out.error?.code || 'unknown'}]: ${out.error?.message || JSON.stringify(out.error)}`)
+            await expect.poll(discoverShell, { timeout: 15_000 }).toBe(true)
+            return out.result
+          }
+          return driver.shell.evaluate(async ({ method, params }) => {
+            try { return await window.skiff.call(method, params) }
+            catch (error) { throw new Error(`${method} [${error?.code || 'unknown'}]: ${error?.message || JSON.stringify(error)}`) }
+          }, { method, params })
+        },
         state: () => driver.rpc('state.get'),
+        api: () => JSON.parse(fs.readFileSync(path.join(data, 'api.json'), 'utf8')),
+        http: async (method, params = {}, token) => {
+          const api = driver.api()
+          const response = await fetch(`http://127.0.0.1:${api.port}/rpc`, { method: 'POST', headers: { Authorization: `Bearer ${token || api.token}` }, body: JSON.stringify({ method, params }) })
+          return response.json()
+        },
         audit: () => app.evaluate(() => global.__skiffVisualAudit),
-        restart: async () => { await close(); await launch() },
+        close,
+        restart: async ({ safeMode = false, beforeLaunch } = {}) => {
+          await close()
+          await beforeLaunch?.({ data, root })
+          await launch(safeMode ? ['--safe-mode'] : [])
+        },
         resize: (width, height) => app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(...size), [width, height]),
         attached: () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].contentView.children.length),
         page: async (path = '') => {
@@ -187,6 +252,23 @@ const test = base.extend({
           await page.emulateMedia({ colorScheme: fixtureOptions.theme || 'light' })
           return page
         },
+        nativeKey: (page, key) => app.evaluate(({ webContents }, { url, key }) => {
+          const wc = webContents.getAllWebContents().find((contents) => contents.getURL() === url)
+          if (!wc) throw new Error(`No native surface for ${url}`)
+          return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => { wc.removeListener('before-input-event', received); reject(new Error(`Native ${key} did not reach before-input-event`)) }, 5000)
+            const received = (event, input) => {
+              if (input.type !== 'keyDown') return
+              clearTimeout(timer)
+              wc.removeListener('before-input-event', received)
+              resolve({ key: input.key, prevented: event.defaultPrevented })
+            }
+            wc.on('before-input-event', received)
+            wc.focus()
+            wc.sendInputEvent({ type: 'keyDown', keyCode: key })
+            wc.sendInputEvent({ type: 'keyUp', keyCode: key })
+          })
+        }, { url: page.url(), key }),
         // Clicking the menu item is what the accelerator does; synthetic key events never reach the native menu.
         shortcut: (accelerator) => app.evaluate(({ Menu }, accelerator) => Menu.getApplicationMenu().items.flatMap((menu) => menu.submenu?.items || []).find((item) => item.accelerator === accelerator).click(), accelerator),
         repairArc: (options = {}) => writeArc(home, origin, options)

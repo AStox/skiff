@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Native scrolling fixture</title>
+<style>
+  html { overflow-y: scroll; scroll-behavior: auto }
+  body { margin: 0; height: 2400px; background: #e8edf2 }
+  #nested { position: fixed; left: 40px; top: 64px; width: 300px; height: 240px; overflow-y: scroll; background: #c4d5e3 }
+  #nested > div { height: 1200px }
+  /* Browser scrollbars, not HTML sliders. Fixed width makes thumb hits measurable
+     without changing the OS scrollbar preference or guessing overlay hit areas. */
+  ::-webkit-scrollbar { width: 16px; height: 16px }
+  ::-webkit-scrollbar-track { background: #a1aab3 }
+  ::-webkit-scrollbar-thumb { background: #364958 }
+  ::-webkit-scrollbar-button { display: none }
+</style>
+<div id="nested"><div></div></div>
+<script>
+  window.nativeScrollEvents = []
+  for (const type of ['wheel', 'mousedown', 'mousemove', 'mouseup']) addEventListener(type, (event) => {
+    window.nativeScrollEvents.push({ type, target: event.target.id || event.target.tagName, x: event.clientX, y: event.clientY, screenX: event.screenX, screenY: event.screenY, buttons: event.buttons, deltaY: event.deltaY, deltaMode: event.deltaMode, trusted: event.isTrusted })
+  }, { capture: true, passive: true })
+</script>
+</html>

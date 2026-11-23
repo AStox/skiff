@@ -1,0 +1,10 @@
+{
+  "apiVersion": 1,
+  "id": "stock.archive",
+  "version": "1.0.0",
+  "surfaces": {},
+  "backend": "backend.js",
+  "roles": ["archive"],
+  "commands": { "archive": "stock.archive.run" },
+  "capabilities": ["backend", "commands.register", "storage", "call:host.archive", "call:state.get", "call:tabs.close", "call:archive.restore"]
+}

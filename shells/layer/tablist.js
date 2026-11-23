@@ -17,20 +17,41 @@ const close = () => {
 }
 
 function row(tab, current) {
-  return h('li', { class: `row${current ? ' current' : ''}${isShown(state, tab) ? '' : ' hidden-win'}`, 'data-tab-id': tab.id },
+  const children = state.tabs.some((t) => t.parentId === tab.id)
+  const item = h('li', { class: `row${current ? ' current' : ''}${isShown(state, tab) ? '' : ' hidden-win'}`, 'data-tab-id': tab.id },
     h('button', { class: 'row-main', type: 'button', title: tab.url, 'aria-current': current ? 'true' : null, onclick: () => pick(tab) },
-      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url)))
+      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url)),
+    children && h('button', { id: `trail-toggle-${tab.id}`, class: 'skiff-trail', type: 'button', 'aria-expanded': String(!tab.trailCollapsed), 'aria-label': `${tab.trailCollapsed ? 'Expand' : 'Collapse'} trail for ${tab.title || tab.url}`, onclick: () => skiff.call('tabs.setTrailCollapsed', { id: tab.id, collapsed: !tab.trailCollapsed }).catch((error) => rows.prepend(h('li', { role: 'alert', class: 'empty' }, error.message))) }))
+  const seen = new Set()
+  for (let parent = state.tabs.find((t) => t.id === tab.parentId); parent && !seen.has(parent.id); parent = state.tabs.find((t) => t.id === parent.parentId)) seen.add(parent.id)
+  item.style.paddingInlineStart = `${Math.min(seen.size, 8) * 12}px`
+  return item
 }
 
 function render() {
   if (!state) return
   paintSpace(state)
   const active = state.activeTabBySpace[state.activeSpaceId]
-  const tabs = visibleTabs(state, state.activeSpaceId).filter(isPlain)
-  const key = JSON.stringify([tabs.map((t) => [t.id, t.title, t.url, t.favicon, isShown(state, t)]), active])
+  // List collapse never changes the desk's independent live windows.
+  const tabs = visibleTabs(state, state.activeSpaceId).filter((tab) => {
+    if (!isPlain(tab) || tab.userPeek) return false
+    const seen = new Set()
+    for (let parent = state.tabs.find((t) => t.id === tab.parentId); parent && !seen.has(parent.id); parent = state.tabs.find((t) => t.id === parent.parentId)) {
+      if (parent.trailCollapsed) return false
+      seen.add(parent.id)
+    }
+    return true
+  })
+  // Every desktop's tabs, grouped under its heading in desktop order, where there are two or more desktops.
+  const desktops = state.desktops?.list.length > 1 ? state.desktops : null
+  const key = JSON.stringify([tabs.map((t) => [t.id, t.title, t.url, t.favicon, t.parentId, t.trailCollapsed, isShown(state, t), desktops && t.desktopId]), active, desktops])
   if (key !== drawn) {
     drawn = key
-    rows.replaceChildren(...(tabs.length ? tabs.map((t) => row(t, t.id === active)) : [h('li', { class: 'empty' }, 'No tabs in this space')]))
+    const focusId = rows.contains(document.activeElement) ? document.activeElement.id : ''
+    const group = (d) => [h('li', { class: 'desk-head', 'data-desktop': String(d.number) }, `Desktop ${d.number}${d.id === desktops.current ? ' · this desktop' : ''}`), ...tabs.filter((t) => t.desktopId === d.id).map((t) => row(t, t.id === active))]
+    const items = desktops ? desktops.list.filter((d) => tabs.some((t) => t.desktopId === d.id)).flatMap(group) : tabs.map((t) => row(t, t.id === active))
+    rows.replaceChildren(...(tabs.length ? items : [h('li', { class: 'empty' }, 'No tabs in this space')]))
+    if (focusId) document.getElementById(focusId)?.focus({ preventScroll: true })
   }
   fit()
 }

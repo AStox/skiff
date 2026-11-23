@@ -4,6 +4,7 @@ const $ = (id) => document.getElementById(id)
 const pageEl = $('page')
 let state = null
 let lastBounds = ''
+let surfaceRequested = false
 
 const call = (method, params) => skiff.call(method, params).catch(() => {})
 const activeSpace = () => state.spaces.find((s) => s.id === state.activeSpaceId)
@@ -11,12 +12,14 @@ const activeTab = () => state.tabs.find((t) => t.id === state.activeTabBySpace[s
 
 function openPalette(mode) {
   if (!state) return
+  surfaceRequested = true
   call('ui.showOverlay', { file: 'palette.html' }).then(() => call('ui.emit', { name: 'palette', data: { mode } }))
 }
 
 // The panel is shown first, then the event is sent again marked as forwarded, which the panel acts on and this page ignores.
 function summon(name) {
   if (!state) return
+  surfaceRequested = true
   const shown = call('ui.showOverlay', { file: 'panel.html' })
   if (name) shown.then(() => call('ui.emit', { name, data: { forwarded: true } }))
 }
@@ -69,4 +72,8 @@ skiff.call('state.get').then((first) => {
   render()
 }).catch(() => { $('empty-text').textContent = 'Skiff could not load your spaces. Reload the shell or restart Skiff.' })
 // At rest only the pill floats over the page, and the page keeps the keyboard.
-call('ui.setWindowButtons', { visible: false }).then(() => showPill().catch(() => {})).then(() => call('ui.focusPage'))
+call('ui.setWindowButtons', { visible: false }).then(async () => {
+  if (surfaceRequested) return
+  await showPill().catch(() => {})
+  if (!surfaceRequested) await call('ui.focusPage')
+})

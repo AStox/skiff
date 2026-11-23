@@ -51,18 +51,22 @@ const findSpace = (s, id) => s.spaces.find((x) => x.id === id)
 const findTab = (s, id) => s.tabs.find((x) => x.id === id) || s.agentTabs.find((x) => x.id === id)
 const activeTab = (s) => findTab(s, s.activeTabBySpace[s.activeSpaceId])
 const isPlain = (t) => !t.favorite && !t.pinned
-// ponytail: quadratic in a space's plain tabs and no collapsing of trails; index children by parent or add a collapsed flag per tab when asked
+// Trails affect list visibility, not independently live Layer windows.
 const visibleTabs = (s, spaceId = s.activeSpaceId) => {
-  const tabs = s.tabs.filter((t) => t.spaceId === spaceId)
-  const trail = (parentId) => tabs.filter((t) => isPlain(t) && t.parentId === parentId).flatMap((t) => [t, ...trail(t.id)])
+  const tabs = s.tabs.filter((t) => t.spaceId === spaceId && !t.userPeek)
+  const trail = (parentId) => tabs.filter((t) => isPlain(t) && t.parentId === parentId).flatMap((t) => [t, ...(t.trailCollapsed ? [] : trail(t.id))])
   return [...tabs.filter((t) => t.favorite), ...tabs.filter((t) => t.pinned && !t.favorite), ...trail(undefined)]
 }
 const isIncognito = (s, spaceId) => !!findSpace(s, spaceId)?.incognito
 const deskTabs = (s, spaceId = s.activeSpaceId) => s.tabs.filter((t) => t.spaceId === spaceId && t.desk).sort((a, b) => a.desk.z - b.desk.z)
 const isShown = (s, tab) => s.activeTabBySpace[tab.spaceId] === tab.id || (tab.desk ? !tab.desk.hidden : isPlain(tab))
+// s.desktops {current, list: [{id, number}]} is runtime state, set only where macOS desktops are known; without it every tab is on the one desktop.
+const onDesktop = (s, tab) => !s.desktops || tab.desktopId === s.desktops.current
+const here = (s) => (s.desktops ? { desktopId: s.desktops.current } : {})
+const desktopNumber = (s, id) => s.desktops?.list.find((d) => d.id === id)?.number ?? null
 // Back to front: unplaced ordinary tabs in tab order, then placed ones by z, the active tab last.
 function shownTabs(s, spaceId = s.activeSpaceId) {
-  const tabs = visibleTabs(s, spaceId).filter((t) => isShown(s, t))
+  const tabs = s.tabs.filter((t) => t.spaceId === spaceId && !t.userPeek && onDesktop(s, t) && isShown(s, t))
   const active = tabs.find((t) => s.activeTabBySpace[spaceId] === t.id)
   return [...tabs.filter((t) => !t.desk), ...tabs.filter((t) => t.desk).sort((a, b) => a.desk.z - b.desk.z)].filter((t) => t !== active).concat(active || [])
 }
@@ -140,13 +144,18 @@ function load(raw = {}) {
   const s = {
     agentTabs: [],
     peek: null,
+    userPeek: null,
+    folders: [],
+    profiles: [],
+    linkRules: [],
+    splitBySpace: {},
     spaces: (Array.isArray(raw.spaces) ? raw.spaces : []).filter((x) => !x.incognito),
     activeSpaceId: raw.activeSpaceId,
-    tabs: Array.isArray(raw.tabs) ? raw.tabs : [],
+    tabs: (Array.isArray(raw.tabs) ? raw.tabs : []).filter((t) => !t.userPeek),
     activeTabBySpace: { ...raw.activeTabBySpace },
     archive: Array.isArray(raw.archive) ? raw.archive : [],
     collapsed: { ...raw.collapsed },
-    settings: { autoArchiveHours: 12, searchUrl: GOOGLE, shell: 'default', ...raw.settings, browserIdentity: loadBrowserIdentity(raw.settings?.browserIdentity), ai: loadAi(raw.settings?.ai), shortcuts: { ...SHORTCUTS, ...raw.settings?.shortcuts } },
+    settings: { autoArchiveHours: 12, searchUrl: GOOGLE, shell: 'default', historyRetentionDays: 90, downloadAskWhere: true, downloadDirectory: '', memorySaver: false, memorySaverMinutes: 30, transcriptRecovery: false, transcriptRetentionDays: 30, ...raw.settings, browserIdentity: loadBrowserIdentity(raw.settings?.browserIdentity), ai: loadAi(raw.settings?.ai), shortcuts: { ...SHORTCUTS, ...raw.settings?.shortcuts } },
     window: { width: 1280, height: 800, ...raw.window },
     deskHosts: Object.fromEntries(Object.entries(isObject(raw.deskHosts) ? raw.deskHosts : {}).map(([host, rect]) => [host, deskRect(rect)]).filter(([, rect]) => rect).slice(-HOSTS))
   }
@@ -160,6 +169,7 @@ function load(raw = {}) {
     if (space.background !== undefined) space.background = background(space.background) || null
   }
   if (!findSpace(s, s.activeSpaceId)) s.activeSpaceId = s.spaces[0].id
+  for (const tab of s.tabs) if (!Number.isSafeInteger(tab.desktopId)) delete tab.desktopId
   for (const item of [...s.tabs, ...s.archive]) {
     const chat = chatOf(item)
     if (chat) item.chat = chat
@@ -172,6 +182,7 @@ function load(raw = {}) {
   s.tabs = s.tabs.filter((t) => findSpace(s, t.spaceId) && (/^https?:/.test(t.url) || t.chat))
   s.archive = s.archive.filter((a) => !/^skiff:/.test(a.url) || a.chat)
   for (const tab of s.tabs) tab.sessionPartition ||= findSpace(s, tab.spaceId)?.sessionPartition || 'persist:main'
+  loadOrganization(s, raw)
   for (const tab of s.tabs) {
     if (tab.desk === undefined) continue
     const d = isObject(tab.desk) && deskRect(tab.desk)
@@ -191,14 +202,19 @@ function load(raw = {}) {
     }
   }
   for (const [spaceId, tabId] of Object.entries(s.activeTabBySpace)) {
-    if (!findSpace(s, spaceId) || !visibleTabs(s, spaceId).some((t) => t.id === tabId)) delete s.activeTabBySpace[spaceId]
+    if (!s.tabs.some((t) => t.spaceId === spaceId && t.id === tabId)) delete s.activeTabBySpace[spaceId]
+  }
+  for (const [spaceId, split] of Object.entries(isObject(raw.splitBySpace) ? raw.splitBySpace : {})) {
+    try {
+      if (split.ids?.every((id) => findTab(s, id)?.spaceId === spaceId)) setSplit(s, split)
+    } catch { /* Invalid saved pairs must not hide otherwise valid tabs. */ }
   }
   return s
 }
 
 function release(s, tab) {
   if (s.activeTabBySpace[tab.spaceId] !== tab.id) return
-  const list = visibleTabs(s, tab.spaceId).filter((t) => !t.pinned || t === tab)
+  const list = visibleTabs(s, tab.spaceId).filter((t) => (!t.pinned || t === tab) && (!s.desktops || t.desktopId === tab.desktopId))
   const next = list[list.indexOf(tab) + 1] || list[list.indexOf(tab) - 1]
   if (next) s.activeTabBySpace[tab.spaceId] = next.id
   else delete s.activeTabBySpace[tab.spaceId]
@@ -213,6 +229,8 @@ function detach(s, tab) {
 }
 
 function dropTab(s, tab) {
+  cleanupSplit(s, tab.id)
+  if (s.userPeek === tab.id) s.userPeek = null
   release(s, tab)
   detach(s, tab)
   s.tabs.splice(s.tabs.indexOf(tab), 1)
@@ -220,7 +238,7 @@ function dropTab(s, tab) {
 
 function archiveTab(s, tab, now) {
   dropTab(s, tab)
-  s.archive.unshift({ id: tab.id, spaceId: tab.spaceId, url: tab.url, title: tab.title, favicon: tab.favicon, sessionPartition: tab.sessionPartition, ...(tab.browserIdentity !== undefined && { browserIdentity: tab.browserIdentity }), arcSourceId: tab.arcSourceId, arcSourceKind: tab.arcSourceKind, chat: tab.chat, archivedAt: now })
+  s.archive.unshift({ id: tab.id, spaceId: tab.spaceId, url: tab.url, title: tab.title, favicon: tab.favicon, sessionPartition: tab.sessionPartition, ...(tab.profileId && { profileId: tab.profileId }), ...(tab.browserIdentity !== undefined && { browserIdentity: tab.browserIdentity }), arcSourceId: tab.arcSourceId, arcSourceKind: tab.arcSourceKind, chat: tab.chat, archivedAt: now })
   // ponytail: flat cap of 500, oldest entries dropped; page or cap per space if the archive becomes a real history
   s.archive.length = Math.min(s.archive.length, 500)
 }
@@ -255,10 +273,367 @@ function name(value) {
   return value.trim().slice(0, 60)
 }
 
-// ponytail: flat folders, an empty folder disappears; real folder records if nesting or empty folders matter
 function folder(value = '') {
   if (typeof value !== 'string') throw bad('folder must be a string')
   return value.trim().slice(0, 80)
+}
+
+function getFolder(s, id) {
+  const value = s.folders.find((x) => x.id === id)
+  if (!value) throw err('not_found', `No folder ${id}`)
+  return value
+}
+
+function folderPath(s, value) {
+  const parts = [value.name]
+  for (let parent = s.folders.find((x) => x.id === value.parentId); parent; parent = s.folders.find((x) => x.id === parent.parentId)) parts.unshift(parent.name)
+  return parts.join(' / ')
+}
+
+function refreshFolderLabels(s) {
+  s.collapsed = {}
+  for (const value of s.folders) if (value.collapsed) s.collapsed[`${value.spaceId}/${folderPath(s, value)}`] = true
+  for (const tab of s.tabs) {
+    const value = s.folders.find((x) => x.id === tab.folderId && x.spaceId === tab.spaceId)
+    if (value) tab.folder = folderPath(s, value)
+    else if (tab.folderId) { delete tab.folderId; tab.folder = '' }
+  }
+}
+
+function ensureFolder(s, spaceId, label) {
+  if (!label) return null
+  return s.folders.find((x) => x.spaceId === spaceId && folderPath(s, x) === label) || createFolder(s, { spaceId, name: label })
+}
+
+function createFolder(s, p) {
+  const parent = p.parentId ? getFolder(s, p.parentId) : null
+  const spaceId = getSpace(s, p.spaceId ?? parent?.spaceId ?? s.activeSpaceId).id
+  if (parent && parent.spaceId !== spaceId) throw bad('Parent folder must be in the same space')
+  const label = folder(p.name)
+  if (!label) throw bad('Folder name must not be empty')
+  const value = { id: newId('f'), name: label, spaceId, parentId: parent?.id || null, collapsed: false }
+  s.folders.push(value)
+  return value
+}
+
+function updateFolder(s, p) {
+  const value = getFolder(s, p.id)
+  const next = {}
+  if (p.name !== undefined) {
+    next.name = folder(p.name)
+    if (!next.name) throw bad('Folder name must not be empty')
+  }
+  if (p.collapsed !== undefined) {
+    if (typeof p.collapsed !== 'boolean') throw bad('collapsed must be true or false')
+    next.collapsed = p.collapsed
+  }
+  Object.assign(value, next)
+  refreshFolderLabels(s)
+  return value
+}
+
+function moveFolder(s, p) {
+  const value = getFolder(s, p.id)
+  const parent = p.parentId === undefined ? (p.spaceId && p.spaceId !== value.spaceId ? null : s.folders.find((x) => x.id === value.parentId)) : p.parentId === null ? null : getFolder(s, p.parentId)
+  const spaceId = getSpace(s, p.spaceId ?? parent?.spaceId ?? value.spaceId).id
+  if (parent && parent.spaceId !== spaceId) throw bad('Parent folder must be in the destination space')
+  for (let item = parent; item; item = s.folders.find((x) => x.id === item.parentId)) if (item.id === value.id) throw bad('Folders cannot contain themselves')
+  if (p.index !== undefined && (!Number.isInteger(p.index) || p.index < 0)) throw bad('index must be a non-negative integer')
+  if (isIncognito(s, spaceId) !== isIncognito(s, value.spaceId)) throw bad('Folders cannot move into or out of incognito')
+  const descendants = new Set([value.id])
+  for (let size = -1; size !== descendants.size;) {
+    size = descendants.size
+    for (const item of s.folders) if (descendants.has(item.parentId)) descendants.add(item.id)
+  }
+  if (spaceId !== value.spaceId) {
+    for (const tab of s.tabs.filter((t) => descendants.has(t.folderId))) {
+      cleanupSplit(s, tab.id)
+      release(s, tab)
+      detach(s, tab)
+      tab.spaceId = spaceId
+    }
+    for (const item of s.folders) if (descendants.has(item.id)) item.spaceId = spaceId
+  }
+  value.parentId = parent?.id || null
+  if (p.index !== undefined) {
+    s.folders.splice(s.folders.indexOf(value), 1)
+    const peers = s.folders.filter((x) => x.spaceId === spaceId && x.parentId === value.parentId)
+    const before = peers[p.index]
+    s.folders.splice(before ? s.folders.indexOf(before) : s.folders.length, 0, value)
+    // Lists place populated folders at their first tab, preserving legacy mixed pin order.
+    const moving = s.tabs.filter((tab) => descendants.has(tab.folderId))
+    const remaining = s.tabs.filter((tab) => !descendants.has(tab.folderId))
+    const positions = new Map()
+    remaining.forEach((tab, index) => {
+      let group = s.folders.find((f) => f.id === tab.folderId && f.spaceId === spaceId)
+      while (group && group.parentId !== value.parentId) group = s.folders.find((f) => f.id === group.parentId)
+      if (!group) return
+      const position = positions.get(group.id)
+      if (position) position.last = index
+      else positions.set(group.id, { first: index, last: index })
+    })
+    const next = peers.slice(p.index).find((f) => positions.has(f.id))
+    const previous = peers.slice(0, p.index).reverse().find((f) => positions.has(f.id))
+    if (moving.length && (next || previous)) {
+      const at = next ? positions.get(next.id).first : positions.get(previous.id).last + 1
+      remaining.splice(at, 0, ...moving)
+      s.tabs.splice(0, s.tabs.length, ...remaining)
+    }
+  }
+  refreshFolderLabels(s)
+  return value
+}
+
+function removeFolder(s, p) {
+  const value = getFolder(s, p.id)
+  for (const item of s.folders) if (item.parentId === value.id) item.parentId = value.parentId
+  for (const tab of s.tabs.filter((t) => t.folderId === value.id)) {
+    if (value.parentId) tab.folderId = value.parentId
+    else { delete tab.folderId; tab.folder = '' }
+  }
+  s.folders.splice(s.folders.indexOf(value), 1)
+  refreshFolderLabels(s)
+  return null
+}
+
+function setTrailCollapsed(s, p) {
+  const tab = userTab(s, p.id)
+  if (!isPlain(tab)) throw bad('Only ordinary tabs have trails')
+  if (typeof p.collapsed !== 'boolean') throw bad('collapsed must be true or false')
+  if (p.collapsed) tab.trailCollapsed = true
+  else delete tab.trailCollapsed
+  return tab
+}
+
+function getProfile(s, id) {
+  const profile = s.profiles.find((x) => x.id === id)
+  if (!profile) throw err('not_found', `No profile ${id}`)
+  return profile
+}
+
+function ensureProfile(s, partition) {
+  if (!/^persist:[a-zA-Z0-9._-]+$/.test(partition)) throw bad('Profile partition must be persistent')
+  let profile = s.profiles.find((x) => x.partition === partition)
+  if (!profile) {
+    const id = partition === 'persist:main' ? 'main' : 'p' + crypto.createHash('sha256').update(partition).digest('hex').slice(0, 16)
+    profile = { id, name: partition === 'persist:main' ? 'Default' : partition.slice(8), partition }
+    s.profiles.push(profile)
+  }
+  return profile
+}
+
+function createProfile(s, p) {
+  const profile = { id: newId('p'), name: name(p.name), partition: `persist:${newId('profile-')}` }
+  s.profiles.push(profile)
+  return profile
+}
+
+function updateProfile(s, p) {
+  const profile = getProfile(s, p.id)
+  profile.name = name(p.name)
+  return profile
+}
+
+function assignProfile(s, p) {
+  const space = getSpace(s, p.spaceId ?? s.activeSpaceId)
+  const profile = getProfile(s, p.profileId)
+  if (space.incognito) throw bad('Incognito cannot use a persistent profile')
+  space.profileId = profile.id
+  space.sessionPartition = profile.partition
+  return space
+}
+
+function removeProfile(s, p) {
+  const profile = getProfile(s, p.id)
+  if (profile.partition === 'persist:main') throw bad('The default profile cannot be removed')
+  const fallback = ensureProfile(s, 'persist:main')
+  for (const space of s.spaces) if (space.profileId === profile.id) assignProfile(s, { spaceId: space.id, profileId: fallback.id })
+  for (const tab of [...s.tabs, ...s.archive, ...s.agentTabs]) if (tab.profileId === profile.id) delete tab.profileId
+  s.linkRules = s.linkRules.filter((x) => x.profileId !== profile.id)
+  s.profiles.splice(s.profiles.indexOf(profile), 1)
+  return null
+}
+
+function linkHost(value) {
+  if (typeof value !== 'string' || !value || value !== value.trim()) throw bad('host must be an exact hostname or *.suffix')
+  const wildcard = value.startsWith('*.')
+  const host = wildcard ? value.slice(2) : value
+  if (!wildcard && /^\[[0-9a-f:]+\]$/i.test(host)) {
+    try { return new URL(`https://${host}`).hostname } catch { throw bad('Invalid IPv6 hostname') }
+  }
+  if (!host || /[\\/:?#@\s*%]/.test(host)) throw bad('host must not include a scheme, port, path or credentials')
+  let normalized
+  try { normalized = new URL(`https://${host}`).hostname } catch { throw bad('Invalid hostname') }
+  if (!normalized || normalized.endsWith('.') || normalized.length > 253 || normalized.split('.').some((part) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(part))) throw bad('Invalid hostname')
+  if (wildcard && (!normalized.includes('.') || /^[0-9.]+$/.test(normalized))) throw bad('Wildcard must name a domain suffix')
+  return (wildcard ? '*.' : '') + normalized
+}
+
+function setLinkRule(s, p) {
+  const previous = p.id === undefined ? null : s.linkRules.find((x) => x.id === p.id)
+  if (p.id !== undefined && !previous) throw err('not_found', `No link rule ${p.id}`)
+  const host = linkHost(p.host)
+  const space = getSpace(s, p.spaceId)
+  if (space.incognito) throw bad('External links cannot target incognito')
+  const profile = p.profileId === undefined || p.profileId === null ? null : getProfile(s, p.profileId)
+  if (s.linkRules.some((x) => x !== previous && x.host === host)) throw bad('A rule for this host already exists')
+  const value = { id: previous?.id || newId('r'), host, spaceId: space.id, ...(profile && { profileId: profile.id }) }
+  if (previous) s.linkRules.splice(s.linkRules.indexOf(previous), 1, value)
+  else s.linkRules.push(value)
+  return value
+}
+
+function removeLinkRule(s, p) {
+  const index = s.linkRules.findIndex((x) => x.id === p.id)
+  if (index < 0) throw err('not_found', `No link rule ${p.id}`)
+  s.linkRules.splice(index, 1)
+  return null
+}
+
+function routeLink(s, p) {
+  const url = webUrl(p.url)
+  const parsed = new URL(url)
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw bad('External links must use http or https')
+  const host = parsed.hostname.toLowerCase()
+  const candidates = s.linkRules.filter((rule) => rule.host === host || rule.host.startsWith('*.') && host.endsWith(rule.host.slice(1)) && host !== rule.host.slice(2))
+  candidates.sort((a, b) => Number(a.host.startsWith('*.')) - Number(b.host.startsWith('*.')) || b.host.length - a.host.length)
+  const rule = candidates[0]
+  const space = rule ? getSpace(s, rule.spaceId) : normalSpace(s)
+  const profile = s.profiles.find((x) => x.id === (rule?.profileId || space.profileId))
+  return { url, spaceId: space.id, ...(profile && { profileId: profile.id }), sessionPartition: rule?.profileId ? profile.partition : space.sessionPartition || 'persist:main' }
+}
+
+function splitRatio(value = .5) {
+  if (!Number.isFinite(value) || value < .1 || value > .9) throw bad('ratio must be between 0.1 and 0.9')
+  return value
+}
+
+function setSplit(s, p, now) {
+  if (!Array.isArray(p.ids) || p.ids.length !== 2 || !p.ids.every((id) => typeof id === 'string' && id) || p.ids[0] === p.ids[1]) throw bad('Split needs two distinct tab IDs')
+  const tabs = p.ids.map((id) => getTab(s, id))
+  if (tabs.some((t) => t.agent || t.userPeek || t.chat || !/^https?:/.test(t.url)) || tabs[0].spaceId !== tabs[1].spaceId) throw bad('Split needs two web tabs in the same space')
+  const spaceId = tabs[0].spaceId
+  const activeId = p.activeId ?? (p.ids.includes(s.activeTabBySpace[spaceId]) ? s.activeTabBySpace[spaceId] : p.ids[0])
+  if (!p.ids.includes(activeId)) throw bad('activeId must belong to the split')
+  const split = { ids: [...p.ids], ratio: splitRatio(p.ratio), activeId }
+  s.splitBySpace[spaceId] = split
+  if (now !== undefined) activateTab(s, { id: activeId }, now)
+  return split
+}
+
+function resizeSplit(s, p) {
+  const spaceId = getSpace(s, p.spaceId ?? s.activeSpaceId).id
+  const split = s.splitBySpace[spaceId]
+  if (!split) throw err('not_found', 'No split in this space')
+  if (p.ratio === undefined) throw bad('ratio is required')
+  split.ratio = splitRatio(p.ratio)
+  return split
+}
+
+function clearSplit(s, p = {}) {
+  const spaceId = getSpace(s, p.spaceId ?? s.activeSpaceId).id
+  delete s.splitBySpace[spaceId]
+  return null
+}
+
+function cleanupSplit(s, id) {
+  for (const [spaceId, split] of Object.entries(s.splitBySpace)) if (split.ids.includes(id)) delete s.splitBySpace[spaceId]
+}
+
+function createPeek(s, p, now) {
+  const source = getTab(s, p.sourceId)
+  if (source.agent || source.userPeek || source.chat) throw bad('Peek source must be a user web tab')
+  if (source.spaceId !== s.activeSpaceId) throw bad('Peek source must be in the active space')
+  const url = webUrl(p.url)
+  if (!/^https?:/.test(url)) throw bad('Peek requires an http or https URL')
+  if (s.userPeek) dismissPeek(s, {})
+  const tab = { id: newId('t'), spaceId: source.spaceId, sourceId: source.id, sessionPartition: source.sessionPartition, ...(source.profileId && { profileId: source.profileId }), userPeek: true, url, title: url, favicon: '', favorite: false, createdAt: now, lastActiveAt: now, ...here(s), ...(source.browserIdentity !== undefined && { browserIdentity: source.browserIdentity }) }
+  s.tabs.push(tab)
+  s.userPeek = tab.id
+  s.peek = null
+  return tab
+}
+
+function promotePeek(s, p = {}, now) {
+  const tab = getTab(s, p.id ?? s.userPeek)
+  if (!tab.userPeek) throw bad('Tab is not a link peek')
+  delete tab.userPeek
+  delete tab.sourceId
+  s.userPeek = null
+  if (s.desktops) tab.desktopId = s.desktops.current
+  if (s.deskSize) tab.desk = { ...newDesk(s, tab), z: 0 }
+  return activateTab(s, { id: tab.id }, now)
+}
+
+function dismissPeek(s, p = {}) {
+  if (p.id === undefined && !s.userPeek) return null
+  const tab = getTab(s, p.id ?? s.userPeek)
+  if (!tab.userPeek) throw bad('Tab is not a link peek')
+  dropTab(s, tab)
+  return { closed: tab.id }
+}
+
+function loadOrganization(s, raw) {
+  const records = Array.isArray(raw.profiles) ? raw.profiles : []
+  for (const p of records) {
+    if (!isObject(p) || typeof p.id !== 'string' || !p.id || typeof p.name !== 'string' || !p.name.trim() || !/^persist:[a-zA-Z0-9._-]+$/.test(p.partition) || s.profiles.some((x) => x.id === p.id || x.partition === p.partition)) continue
+    s.profiles.push({ id: p.id, name: name(p.name), partition: p.partition })
+  }
+  ensureProfile(s, 'persist:main')
+  for (const space of s.spaces) {
+    const assigned = s.profiles.find((x) => x.id === space.profileId)
+    const profile = /^persist:[a-zA-Z0-9._-]+$/.test(space.sessionPartition) ? ensureProfile(s, space.sessionPartition) : assigned || ensureProfile(s, 'persist:main')
+    space.profileId = profile.id
+    space.sessionPartition = profile.partition
+  }
+  for (const tab of [...s.tabs, ...s.archive]) {
+    const partition = tab.sessionPartition || findSpace(s, tab.spaceId)?.sessionPartition || 'persist:main'
+    tab.sessionPartition = partition
+    const profile = s.profiles.find((x) => x.partition === partition) || (!Array.isArray(raw.profiles) && /^persist:[a-zA-Z0-9._-]+$/.test(partition) ? ensureProfile(s, partition) : null)
+    if (profile) tab.profileId = profile.id
+    else delete tab.profileId
+    if (tab.trailCollapsed !== true) delete tab.trailCollapsed
+  }
+  for (const f of Array.isArray(raw.folders) ? raw.folders : []) {
+    if (!isObject(f) || typeof f.id !== 'string' || !f.id || typeof f.name !== 'string' || !f.name || !findSpace(s, f.spaceId) || s.folders.some((x) => x.id === f.id)) continue
+    s.folders.push({ id: f.id, name: f.name, spaceId: f.spaceId, parentId: typeof f.parentId === 'string' ? f.parentId : null, collapsed: f.collapsed === true, ...(f.arcSourceId && { arcSourceId: f.arcSourceId }) })
+  }
+  for (const f of s.folders) {
+    const seen = new Set([f.id])
+    for (let id = f.parentId; id;) {
+      const parent = s.folders.find((x) => x.id === id)
+      if (!parent || parent.spaceId !== f.spaceId || seen.has(id)) { f.parentId = null; break }
+      seen.add(id)
+      id = parent.parentId
+    }
+  }
+  for (const tab of s.tabs) {
+    if (!tab.pinned || tab.favorite) { delete tab.folderId; continue }
+    let value = s.folders.find((x) => x.id === tab.folderId && x.spaceId === tab.spaceId)
+    if (!value && typeof tab.folder === 'string' && tab.folder) {
+      // A legacy label is one literal name, not a guessed hierarchy.
+      value = s.folders.find((x) => x.spaceId === tab.spaceId && folderPath(s, x) === tab.folder)
+      if (!value) { value = { id: newId('f'), name: tab.folder, spaceId: tab.spaceId, parentId: null, collapsed: false }; s.folders.push(value) }
+    }
+    if (value) tab.folderId = value.id
+    else delete tab.folderId
+  }
+  for (const [key, collapsed] of Object.entries(Array.isArray(raw.folders) ? {} : s.collapsed)) {
+    if (!collapsed) continue
+    const space = s.spaces.find((x) => key.startsWith(`${x.id}/`))
+    if (space) {
+      const value = ensureFolder(s, space.id, key.slice(space.id.length + 1))
+      if (value) value.collapsed = true
+    }
+  }
+  refreshFolderLabels(s)
+  for (const rule of Array.isArray(raw.linkRules) ? raw.linkRules : []) {
+    try {
+      if (!isObject(rule) || typeof rule.id !== 'string' || !rule.id || s.linkRules.some((x) => x.id === rule.id)) continue
+      const value = setLinkRule(s, { ...rule, id: undefined })
+      value.id = rule.id
+    } catch { /* Ignore invalid destinations rather than routing externally into private state. */ }
+  }
 }
 
 function delta(value) {
@@ -268,6 +643,8 @@ function delta(value) {
 
 function createSpace(s, p) {
   const space = { id: newId('s'), name: name(p.name), color: p.color === undefined ? COLORS[s.spaces.length % COLORS.length] : color(p.color) }
+  const profile = p.profileId === undefined ? s.profiles.find((x) => x.partition === 'persist:main') : getProfile(s, p.profileId)
+  if (profile) Object.assign(space, { profileId: profile.id, sessionPartition: profile.partition })
   s.spaces.push(space)
   return space
 }
@@ -296,18 +673,23 @@ function removeSpace(s, p, now) {
   const space = getSpace(s, p.id)
   if (!space.incognito && s.spaces.filter((x) => !x.incognito).length === 1) throw bad('The last space cannot be removed')
   const i = s.spaces.indexOf(space)
-  for (const tab of s.tabs.filter((t) => t.spaceId === space.id)) (space.incognito ? dropTab : archiveTab)(s, tab, now)
+  for (const tab of s.tabs.filter((t) => t.spaceId === space.id)) (space.incognito || tab.userPeek ? dropTab : archiveTab)(s, tab, now)
   s.agentTabs = s.agentTabs.filter((t) => t.spaceId !== space.id)
   if (!findTab(s, s.peek)) s.peek = null
   s.spaces.splice(i, 1)
   delete s.activeTabBySpace[space.id]
+  delete s.splitBySpace[space.id]
+  s.folders = s.folders.filter((x) => x.spaceId !== space.id)
+  s.linkRules = s.linkRules.filter((x) => x.spaceId !== space.id)
   for (const key of Object.keys(s.collapsed)) if (key.startsWith(`${space.id}/`)) delete s.collapsed[key]
   if (s.activeSpaceId === space.id) s.activeSpaceId = s.spaces[Math.max(0, i - 1)].id
   return null
 }
 
 function activateSpace(s, p) {
-  s.activeSpaceId = getSpace(s, p.id).id
+  const spaceId = getSpace(s, p.id).id
+  if (s.userPeek && getTab(s, s.userPeek).spaceId !== spaceId) dismissPeek(s, {})
+  s.activeSpaceId = spaceId
   s.peek = null
   return null
 }
@@ -315,24 +697,22 @@ function activateSpace(s, p) {
 function cycleSpace(s, p) {
   const n = s.spaces.length
   const i = s.spaces.findIndex((x) => x.id === s.activeSpaceId)
-  s.activeSpaceId = s.spaces[(((i + delta(p.delta)) % n) + n) % n].id
-  s.peek = null
+  activateSpace(s, { id: s.spaces[(((i + delta(p.delta)) % n) + n) % n].id })
   return null
 }
 
 function openIncognito(s) {
   let space = s.spaces.find((x) => x.incognito)
   if (!space) s.spaces.push(space = { id: newId('s'), name: 'Incognito', color: '#5f6b7a', incognito: true, sessionPartition: newId('incognito-') })
-  s.activeSpaceId = space.id
-  s.peek = null
+  activateSpace(s, { id: space.id })
   return space
 }
 
 function persistable(s) {
   const gone = new Set(s.spaces.filter((x) => x.incognito).map((x) => x.id))
   const keep = (map) => Object.fromEntries(Object.entries(map).filter(([key]) => !gone.has(key.split('/')[0])))
-  const { deskSize, deskTop, agentTabs, peek, ...rest } = s
-  return { ...rest, spaces: s.spaces.filter((x) => !x.incognito), tabs: s.tabs.filter((t) => !gone.has(t.spaceId)), activeSpaceId: normalSpace(s).id, activeTabBySpace: keep(s.activeTabBySpace), collapsed: keep(s.collapsed) }
+  const { deskSize, deskTop, desktops, agentTabs, peek, userPeek, ...rest } = s
+  return { ...rest, spaces: s.spaces.filter((x) => !x.incognito), tabs: s.tabs.filter((t) => !gone.has(t.spaceId) && !t.userPeek), folders: s.folders.filter((f) => !gone.has(f.spaceId)), splitBySpace: keep(s.splitBySpace), activeSpaceId: normalSpace(s).id, activeTabBySpace: keep(s.activeTabBySpace), collapsed: keep(s.collapsed) }
 }
 
 // In a desk window (s.deskSize set) a favorite or pinned tab becomes a window when activated and stays one until hidden.
@@ -341,12 +721,22 @@ function activateTab(s, p, now) {
   const tab = getTab(s, p.id)
   s.peek = tab.agent ? tab.id : null
   if (tab.agent) return tab
+  if (tab.userPeek) {
+    if (tab.spaceId !== s.activeSpaceId) throw bad('Peek must remain in the active space')
+    s.userPeek = tab.id
+    return tab
+  }
+  for (let parent = findTab(s, tab.parentId); parent; parent = findTab(s, parent.parentId)) delete parent.trailCollapsed
+  const split = s.splitBySpace[tab.spaceId]
+  if (split?.ids.includes(tab.id)) split.activeId = tab.id
   if (!tab.desk && !isPlain(tab) && s.deskSize) tab.desk = { ...defaultDesk(s, tab), z: 0 }
   if (tab.desk) {
     delete tab.desk.hidden
     front(s, tab)
   }
-  s.activeSpaceId = tab.spaceId
+  // macOS has no way to switch desktops, so a tab from another one comes here instead.
+  if (s.desktops) tab.desktopId = s.desktops.current
+  activateSpace(s, { id: tab.spaceId })
   const previous = activeTab(s)
   if (previous) previous.lastActiveAt = now
   s.activeTabBySpace[s.activeSpaceId] = tab.id
@@ -361,7 +751,11 @@ function createTab(s, p, now, chat) {
   if (p.agent !== undefined) return createAgentTab(s, p, url, now)
   const spaceId = p.spaceId === undefined ? s.activeSpaceId : getSpace(s, p.spaceId).id
   const parent = s.tabs.find((t) => t.id === p.parentId)
-  const tab = { id: newId('t'), spaceId, sessionPartition: getSpace(s, spaceId).sessionPartition || 'persist:main', url, title: chat ? chat.title : url, favicon: chat ? chat.favicon : '', favorite: false, lastActiveAt: now, createdAt: now, ...(whatsappURL(url) && { browserIdentity: 'compatible' }), ...(chat && { chat: { agent: chat.agent, sessionId: null } }) }
+  const space = getSpace(s, spaceId)
+  const profile = p.profileId === undefined ? s.profiles.find((x) => x.id === space.profileId) : getProfile(s, p.profileId)
+  if (space.incognito && p.profileId !== undefined) throw bad('Incognito tabs cannot use persistent profiles')
+  const partition = p.profileId !== undefined ? profile.partition : space.sessionPartition || profile?.partition || 'persist:main'
+  const tab = { id: newId('t'), spaceId, sessionPartition: partition, ...(profile?.partition === partition && { profileId: profile.id }), url, title: chat ? chat.title : url, favicon: chat ? chat.favicon : '', favorite: false, lastActiveAt: now, createdAt: now, ...here(s), ...(whatsappURL(url) && { browserIdentity: 'compatible' }), ...(chat && { chat: { agent: chat.agent, sessionId: null } }) }
   if (parent && parent.spaceId === spaceId && isPlain(parent)) tab.parentId = parent.id
   s.tabs.push(tab)
   if (s.deskSize) {
@@ -384,12 +778,13 @@ function createAgentTab(s, p, url, now) {
 
 const userTab = (s, id) => {
   const tab = getTab(s, id)
-  if (tab.agent) throw bad('Agent tabs cannot be moved, pinned or made favorites')
+  if (tab.agent || tab.userPeek) throw bad('Agent tabs and unpromoted peeks cannot be moved, pinned or made favorites')
   return tab
 }
 
 function closeTab(s, p, now) {
   const tab = getTab(s, p.id)
+  if (tab.userPeek) return dismissPeek(s, { id: tab.id })
   if (tab.agent) {
     s.agentTabs.splice(s.agentTabs.indexOf(tab), 1)
     if (s.peek === tab.id) s.peek = null
@@ -403,9 +798,10 @@ function closeTab(s, p, now) {
     archiveTab(s, tab, now)
     return { archived: tab.id }
   }
+  cleanupSplit(s, tab.id)
   if (tab.desk) tab.desk.hidden = true
   if (s.activeTabBySpace[tab.spaceId] === tab.id) {
-    const next = s.tabs.filter((t) => !t.favorite && !t.pinned && t.spaceId === tab.spaceId).sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]
+    const next = s.tabs.filter((t) => !t.favorite && !t.pinned && t.spaceId === tab.spaceId && (!s.desktops || t.desktopId === tab.desktopId)).sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]
     if (next) s.activeTabBySpace[tab.spaceId] = next.id
     else delete s.activeTabBySpace[tab.spaceId]
   }
@@ -426,9 +822,12 @@ function moveTab(s, p, now) {
   if (p.index !== undefined && !(Number.isInteger(p.index) && p.index >= 0)) throw bad('index must be a non-negative integer')
   if (p.spaceId !== undefined && getSpace(s, p.spaceId).id !== tab.spaceId) {
     if (isIncognito(s, p.spaceId) !== isIncognito(s, tab.spaceId)) throw bad('Tabs cannot move into or out of the incognito space')
+    const destinationFolder = tab.folderId ? ensureFolder(s, p.spaceId, tab.folder) : null
+    cleanupSplit(s, tab.id)
     release(s, tab)
     detach(s, tab)
     tab.spaceId = p.spaceId
+    if (destinationFolder) tab.folderId = destinationFolder.id
   }
   s.tabs.splice(s.tabs.indexOf(tab), 1)
   const peers = s.tabs.filter((t) => t.spaceId === tab.spaceId && t.favorite === tab.favorite && !t.pinned === !tab.pinned && (t.folder || '') === (tab.folder || '') && t.parentId === tab.parentId)
@@ -443,31 +842,34 @@ function setFavorite(s, p, now) {
   const tab = userTab(s, p.id)
   if (typeof p.favorite !== 'boolean') throw bad('favorite must be true or false')
   if (p.favorite) detach(s, tab)
+  if (p.favorite) delete tab.folderId
   return Object.assign(tab, { favorite: p.favorite, lastActiveAt: now }, p.favorite && { pinned: false, folder: '' })
 }
 
 function setPinned(s, p, now) {
   const tab = userTab(s, p.id)
   if (typeof p.pinned !== 'boolean') throw bad('pinned must be true or false')
-  const group = folder(p.folder)
+  const group = p.pinned ? (p.folderId ? getFolder(s, p.folderId) : ensureFolder(s, tab.spaceId, folder(p.folder))) : null
+  if (group && group.spaceId !== tab.spaceId) throw bad('Folder must be in the tab space')
   if (p.pinned) detach(s, tab)
   if (p.pinned && tab.favorite) setFavorite(s, { id: tab.id, favorite: false }, now)
-  return Object.assign(tab, { pinned: p.pinned, folder: p.pinned ? group : '', lastActiveAt: now })
+  if (group) tab.folderId = group.id
+  else delete tab.folderId
+  return Object.assign(tab, { pinned: p.pinned, folder: group ? folderPath(s, group) : '', lastActiveAt: now })
 }
 
 function setCollapsed(s, p) {
   const spaceId = p.spaceId === undefined ? s.activeSpaceId : getSpace(s, p.spaceId).id
-  const group = folder(p.folder)
-  if (!group) throw bad('folder must be a non-empty string')
   if (typeof p.collapsed !== 'boolean') throw bad('collapsed must be true or false')
-  const key = `${spaceId}/${group}`
-  if (p.collapsed) s.collapsed[key] = true
-  else delete s.collapsed[key]
+  const group = p.folderId ? getFolder(s, p.folderId) : ensureFolder(s, spaceId, folder(p.folder))
+  if (!group) throw bad('folder must be a non-empty string')
+  group.collapsed = p.collapsed
+  refreshFolderLabels(s)
   return null
 }
 
 // ponytail: pinned tabs are skipped because the state does not know which are loaded
-const cycleList = (s) => visibleTabs(s).filter((t) => !t.pinned)
+const cycleList = (s) => visibleTabs(s).filter((t) => !t.pinned && onDesktop(s, t))
 
 function cycleTab(s, p, now) {
   const d = delta(p.delta)
@@ -602,6 +1004,8 @@ function hideDesk(s, p) {
     if (s.peek === tab.id) s.peek = null
     return tab
   }
+  if (tab.userPeek) { dismissPeek(s, { id: tab.id }); return tab }
+  cleanupSplit(s, tab.id)
   tab.desk = { ...(tab.desk || { ...defaultDesk(s, tab), z: 0 }), hidden: true }
   if (s.activeTabBySpace[tab.spaceId] === tab.id) {
     delete s.activeTabBySpace[tab.spaceId]
@@ -639,13 +1043,31 @@ function defaultDesk(s, tab) {
   return { x: Math.round((width - w) / 2) + 28 * n, y: Math.round((height - h) / 2) + 28 * n, width: w, height: h }
 }
 
+// Adopt the desktop list {current, list} (null where there is none): a tab on a desktop that no longer exists joins the current one, and a space whose active tab is on another desktop shows the latest one here, or none.
+function setDesktops(s, info, now) {
+  if (!info?.list?.length) {
+    delete s.desktops
+    return
+  }
+  s.desktops = { current: info.current, list: info.list.map(({ id, number }) => ({ id, number })) }
+  for (const tab of s.tabs) if (!s.desktops.list.some((d) => d.id === tab.desktopId)) tab.desktopId = info.current
+  for (const [spaceId, id] of Object.entries(s.activeTabBySpace)) {
+    const active = s.tabs.find((t) => t.id === id)
+    if (!active || onDesktop(s, active)) continue
+    active.lastActiveAt = now
+    const next = s.tabs.filter((t) => t.spaceId === spaceId && !t.userPeek && onDesktop(s, t)).sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]
+    if (next) s.activeTabBySpace[spaceId] = next.id
+    else delete s.activeTabBySpace[spaceId]
+  }
+}
+
 function restore(s, p, now) {
   const i = p.id === undefined ? 0 : s.archive.findIndex((a) => a.id === p.id)
   const entry = s.archive[i]
   if (!entry) throw err('not_found', p.id === undefined ? 'The archive is empty' : `No archived tab ${p.id}`)
   s.archive.splice(i, 1)
   const spaceId = findSpace(s, entry.spaceId) ? entry.spaceId : normalSpace(s).id
-  const tab = { id: entry.id, spaceId, sessionPartition: entry.sessionPartition || 'persist:main', ...((entry.browserIdentity === null || validTabIdentity(entry.browserIdentity)) && { browserIdentity: entry.browserIdentity }), arcSourceId: entry.arcSourceId, arcSourceKind: entry.arcSourceKind, url: entry.url, title: entry.title, favicon: entry.favicon, favorite: false, lastActiveAt: now, createdAt: now, ...(entry.chat && { chat: entry.chat }) }
+  const tab = { id: entry.id, spaceId, sessionPartition: entry.sessionPartition || 'persist:main', ...(entry.profileId && { profileId: entry.profileId }), ...((entry.browserIdentity === null || validTabIdentity(entry.browserIdentity)) && { browserIdentity: entry.browserIdentity }), arcSourceId: entry.arcSourceId, arcSourceKind: entry.arcSourceKind, url: entry.url, title: entry.title, favicon: entry.favicon, favorite: false, lastActiveAt: now, createdAt: now, ...here(s), ...(entry.chat && { chat: entry.chat }) }
   s.tabs.push(tab)
   if (s.deskSize) tab.desk = { ...newDesk(s, tab), z: 0 }
   return activateTab(s, { id: tab.id }, now)
@@ -665,7 +1087,7 @@ function clearArchive(s) {
 
 function sweep(s, _p, now) {
   const limit = s.settings.autoArchiveHours * HOUR
-  const old = limit > 0 ? s.tabs.filter((t) => !t.favorite && !t.pinned && !isIncognito(s, t.spaceId) && s.activeTabBySpace[t.spaceId] !== t.id && now - t.lastActiveAt > limit) : []
+  const old = limit > 0 ? s.tabs.filter((t) => !t.favorite && !t.pinned && !t.userPeek && !s.splitBySpace[t.spaceId]?.ids.includes(t.id) && !isIncognito(s, t.spaceId) && s.activeTabBySpace[t.spaceId] !== t.id && now - t.lastActiveAt > limit) : []
   for (const tab of old) archiveTab(s, tab, now)
   return { archived: old.map((t) => t.id) }
 }
@@ -673,6 +1095,7 @@ function sweep(s, _p, now) {
 function importSetup(s, setup, now) {
   const added = { spaces: 0, favorites: 0, pinned: 0, tabs: 0 }
   const partition = setup.sessionPartition || 'persist:main'
+  const profile = ensureProfile(s, partition)
   const imported = (item, kind) => item.sourceId && s.tabs.some((t) => t.arcSourceId === item.sourceId && t.arcSourceKind === kind && t.sessionPartition === partition)
   const add = (kind, item, fields, same) => {
     if (imported(item, kind)) return false
@@ -683,7 +1106,7 @@ function importSetup(s, setup, now) {
       return false
     }
     if (s.tabs.some((t) => t.url === url && (t.sessionPartition || 'persist:main') === partition && same(t))) return false
-    s.tabs.push({ id: newId('t'), url, title: item.title, favicon: '', sessionPartition: partition, ...(whatsappURL(url) && { browserIdentity: 'compatible' }), ...(item.sourceId && { arcSourceId: item.sourceId, arcSourceKind: kind }), favorite: false, lastActiveAt: now, createdAt: now, ...fields })
+    s.tabs.push({ id: newId('t'), url, title: item.title, favicon: '', sessionPartition: partition, profileId: profile.id, ...(whatsappURL(url) && { browserIdentity: 'compatible' }), ...(item.sourceId && { arcSourceId: item.sourceId, arcSourceKind: kind }), favorite: false, lastActiveAt: now, createdAt: now, ...fields })
     added[kind]++
     return true
   }
@@ -695,6 +1118,7 @@ function importSetup(s, setup, now) {
       if (from.pinned.length + from.tabs.length > 0 && from.pinned.every((t) => imported(t, 'pinned')) && from.tabs.every((t) => imported(t, 'tabs'))) continue
       space = createSpace(s, from)
       space.sessionPartition = partition
+      space.profileId = profile.id
       if (from.sourceId) space.arcSourceId = from.sourceId
       const theme = background(from.background)
       if (theme) space.background = theme
@@ -708,12 +1132,32 @@ function importSetup(s, setup, now) {
       if (theme) space.background = theme
     }
     const here = (t) => !t.favorite && t.spaceId === space.id
-    const known = new Set(s.tabs.filter(here).map((t) => t.folder))
-    for (const item of from.pinned) {
-      const group = folder(item.folder)
-      const fresh = add('pinned', item, { spaceId: space.id, pinned: true, folder: group }, (t) => here(t) && t.pinned && (t.folder || '') === group)
-      if (fresh && group && !known.has(group)) s.collapsed[`${space.id}/${group}`] = true
+    const known = new Set(s.folders.map((f) => f.id))
+    const importedFolders = new Map()
+    // Arc emits parents before children, with identities independent of their display paths.
+    for (const item of from.folders || []) {
+      const parent = importedFolders.get(item.parentSourceId)
+      const label = parent ? `${folderPath(s, parent)} / ${item.name}` : item.name
+      let value = s.folders.find((f) => f.arcSourceId === item.sourceId)
+      if (!value) {
+        const destination = parent?.spaceId || space.id
+        value = s.folders.find((f) => f.spaceId === destination && !f.arcSourceId && folderPath(s, f) === label)
+        if (value) Object.assign(value, { name: item.name, parentId: parent?.id || null })
+        else value = createFolder(s, { spaceId: destination, name: item.name, parentId: parent?.id })
+        value.name = item.name
+        value.arcSourceId = item.sourceId
+        if (!known.has(value.id)) value.collapsed = true
+      }
+      importedFolders.set(item.sourceId, value)
     }
+    for (const item of from.pinned) {
+      const value = importedFolders.get(item.folderSourceId) || ensureFolder(s, space.id, folder(item.folder))
+      const group = value ? folderPath(s, value) : ''
+      const destination = value?.spaceId || space.id
+      const fresh = add('pinned', item, { spaceId: destination, pinned: true, folder: group, ...(value && { folderId: value.id }) }, (t) => !t.favorite && t.spaceId === destination && t.pinned && (value ? t.folderId === value.id : !t.folderId && !t.folder))
+      if (fresh && value && !known.has(value.id)) value.collapsed = true
+    }
+    refreshFolderLabels(s)
     for (const item of from.tabs) add('tabs', item, { spaceId: space.id }, here)
   }
   // ponytail: Arc shares favorites across all spaces of a profile; here they land in the profile's first space
@@ -743,6 +1187,22 @@ function aiSettings(value, current = AI) {
 
 function setSettings(s, p) {
   const next = {}
+  for (const key of ['downloadAskWhere', 'memorySaver', 'transcriptRecovery']) {
+    if (p[key] === undefined) continue
+    if (typeof p[key] !== 'boolean') throw bad(`${key} must be true or false`)
+    next[key] = p[key]
+  }
+  for (const key of ['historyRetentionDays', 'memorySaverMinutes', 'transcriptRetentionDays']) {
+    if (p[key] === undefined) continue
+    const min = key === 'historyRetentionDays' ? 0 : 1
+    const max = key === 'memorySaverMinutes' ? 10080 : 3650
+    if (!Number.isInteger(p[key]) || p[key] < min || p[key] > max) throw bad(`${key} must be an integer between ${min} and ${max}`)
+    next[key] = p[key]
+  }
+  if (p.downloadDirectory !== undefined) {
+    if (typeof p.downloadDirectory !== 'string' || p.downloadDirectory.includes('\0') || p.downloadDirectory.length > 4096) throw bad('downloadDirectory must be a path string')
+    next.downloadDirectory = p.downloadDirectory
+  }
   if (p.autoArchiveHours !== undefined) {
     if (!Number.isFinite(p.autoArchiveHours)) throw bad('autoArchiveHours must be a number')
     next.autoArchiveHours = p.autoArchiveHours
@@ -766,8 +1226,11 @@ function setSettings(s, p) {
 }
 
 module.exports = {
-  err, isObject, load, resolveInput, webUrl, findTab, activeTab, getTab, visibleTabs, isIncognito, persistable, deskTabs, shownTabs,
+  err, isObject, load, resolveInput, webUrl, findTab, activeTab, getTab, visibleTabs, isIncognito, persistable, deskTabs, shownTabs, onDesktop, desktopNumber, setDesktops,
   createSpace, updateSpace, moveSpace, removeSpace, activateSpace, cycleSpace, openIncognito,
+  createFolder, updateFolder, moveFolder, removeFolder, setTrailCollapsed, refreshFolderLabels,
+  createProfile, updateProfile, removeProfile, assignProfile, setLinkRule, removeLinkRule, routeLink,
+  setSplit, resizeSplit, clearSplit, createPeek, promotePeek, dismissPeek,
   createTab, closeTab, activateTab, navigateTab, moveTab, setFavorite, setPinned, setCollapsed, cycleTab, selectTab,
   placeDesk, tileDesk, deskLayouts, hideDesk, showDesk, defaultDesk, thumbnailTabs, restore, removeArchived, clearArchive, sweep, setSettings, importSetup
 }

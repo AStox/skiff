@@ -55,12 +55,11 @@ for (const theme of ['light', 'dark']) {
   })
 }
 
-test('switching shells from Settings leaves no files of the old shell behind and survives a restart', async ({ skiff }) => {
+test('switching shells from Settings closes old overlays and survives a restart', async ({ skiff }) => {
   await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
   await skiff.page('/one')
   expect((await skiff.state()).shells).toEqual(['default', ...shells.sort()])
   await switchShell(skiff, 'quiet')
-  expect(fs.existsSync(path.join(skiff.data, 'shell', 'strip.js'))).toBe(true)
   // The quiet shell rests on a pill overlay over the page and opens its sidebar as another; a switch while it is up must drop that overlay with the shell.
   await expect.poll(() => overlayUrls(skiff)).toEqual([expect.stringMatching(/\/pill\.html$/)])
   const pillView = await skiff.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].contentView.children.find((view) => view.webContents?.getURL().endsWith('/pill.html')).getBounds())
@@ -72,7 +71,6 @@ test('switching shells from Settings leaves no files of the old shell behind and
   await expect.poll(() => overlayUrls(skiff)).toEqual([expect.stringMatching(/\/panel\.html$/)])
   await switchShell(skiff, 'default')
   await expect.poll(() => overlayUrls(skiff)).toEqual([])
-  expect(fs.existsSync(path.join(skiff.data, 'shell', 'strip.js'))).toBe(false)
   await skiff.shell.locator('#settings-toggle').click()
   const picker = skiff.shell.locator('#shell')
   await expect(picker).toHaveValue('default')

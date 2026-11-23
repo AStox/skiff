@@ -59,10 +59,14 @@ test('parseArc reads spaces, folders, favorites and colors', () => {
         name: 'Work',
         color: '#ff8000',
         background: { light: { color: '#ff8000' }, dark: { color: '#ff8000' } },
+        folders: [
+          { sourceId: 'docs', name: 'Docs', parentSourceId: null },
+          { sourceId: 'specs', name: 'Specs', parentSourceId: 'docs' }
+        ],
         pinned: [
           { url: 'https://mail.example/', title: 'Mail', folder: '' },
-          { url: 'https://docs.example/a', title: 'Doc A', folder: 'Docs' },
-          { url: 'https://docs.example/spec', title: 'https://docs.example/spec', folder: 'Docs / Specs' },
+          { url: 'https://docs.example/a', title: 'Doc A', folder: 'Docs', folderSourceId: 'docs' },
+          { url: 'https://docs.example/spec', title: 'https://docs.example/spec', folder: 'Docs / Specs', folderSourceId: 'specs' },
           { url: 'https://split.example/', title: 'Split', folder: '' }
         ],
         tabs: [{ url: 'https://news.example/', title: 'News' }]
@@ -151,4 +155,80 @@ test('malformed theme values never become CSS or fabricated black colors', () =>
     gradient.baseColors = stops
     assert.deepEqual(parseArc(json).spaces[0].background.light, { color: '#e6f0ff' })
   }
+})
+
+test('Arc imports empty and ambiguous nested folders losslessly and repeat import preserves edits', () => {
+  const json = sidebar()
+  const source = json.sidebar.containers[1]
+  source.items.find((x) => x?.id === 'work-pinned').childrenIds.push('empty', 'literal')
+  source.items.push(...pairs([
+    folder('empty', 'Empty', []),
+    folder('literal', 'Docs / Specs', ['literal-tab']),
+    tab('literal-tab', 'https://literal.example/', 'Literal')
+  ]))
+  const setup = parseArc(json, { profileId: 'Default' })
+  const s = S.load()
+  S.importSetup(s, setup, 1)
+  const docs = s.folders.find((f) => f.arcSourceId === 'docs')
+  const specs = s.folders.find((f) => f.arcSourceId === 'specs')
+  const literal = s.folders.find((f) => f.arcSourceId === 'literal')
+  const empty = s.folders.find((f) => f.arcSourceId === 'empty')
+  assert.equal(specs.parentId, docs.id)
+  assert.equal(literal.parentId, null)
+  assert.notEqual(literal.id, specs.id)
+  assert.equal(s.tabs.find((t) => t.arcSourceId === 'literal-tab').folderId, literal.id)
+  assert.ok(empty)
+  S.updateFolder(s, { id: docs.id, name: 'Reference', collapsed: false })
+  S.importSetup(s, setup, 2)
+  assert.equal(docs.name, 'Reference')
+  assert.equal(docs.collapsed, false)
+  assert.equal(s.folders.filter((f) => f.arcSourceId === 'empty').length, 1)
+  const restored = S.load(JSON.parse(JSON.stringify(S.persistable(s))))
+  assert.equal(restored.folders.find((f) => f.id === empty.id).name, 'Empty')
+  assert.equal(restored.folders.find((f) => f.id === specs.id).parentId, docs.id)
+})
+
+test('repeat Arc import reuses moved folder identities and places new descendants in their edited location', () => {
+  const json = sidebar()
+  const source = json.sidebar.containers[1]
+  source.items.find((x) => x?.id === 'docs').childrenIds.push('empty')
+  source.items.push(...pairs([folder('empty', 'Empty', [])]))
+  const setup = () => ({ ...parseArc(json, { profileId: 'Default' }), sessionPartition: 'persist:arc-work' })
+  const s = S.load()
+  S.importSetup(s, setup(), 1)
+  const destination = S.createSpace(s, { name: 'Research' })
+  const docs = s.folders.find((f) => f.arcSourceId === 'docs')
+  const specs = s.folders.find((f) => f.arcSourceId === 'specs')
+  const empty = s.folders.find((f) => f.arcSourceId === 'empty')
+  const specTab = s.tabs.find((t) => t.arcSourceId === 'spec')
+  S.moveFolder(s, { id: docs.id, spaceId: destination.id })
+  S.updateFolder(s, { id: docs.id, name: 'Reference', collapsed: false })
+  const folders = structuredClone(s.folders)
+  const tabs = structuredClone(s.tabs)
+  assert.deepEqual(S.importSetup(s, setup(), 2), { spaces: 0, favorites: 0, pinned: 0, tabs: 0 })
+  assert.deepEqual(s.folders, folders)
+  assert.deepEqual(s.tabs, tabs)
+  assert.equal(specs.parentId, docs.id)
+  assert.equal(empty.spaceId, destination.id)
+  assert.equal(specTab.sessionPartition, 'persist:arc-work')
+
+  source.items.find((x) => x?.id === 'specs').childrenIds.push('new-folder')
+  source.items.push(...pairs([
+    folder('new-folder', 'New child', ['new-tab']),
+    tab('new-tab', 'https://new.example/', 'New')
+  ]))
+  assert.equal(S.importSetup(s, setup(), 3).pinned, 1)
+  const child = s.folders.find((f) => f.arcSourceId === 'new-folder')
+  const added = s.tabs.find((t) => t.arcSourceId === 'new-tab')
+  assert.equal(child.parentId, specs.id)
+  assert.equal(child.spaceId, destination.id)
+  assert.equal(added.folderId, child.id)
+  assert.equal(added.spaceId, destination.id)
+  assert.equal(added.sessionPartition, 'persist:arc-work')
+  assert.equal(docs.collapsed, false)
+  assert.equal(s.folders.filter((f) => f.arcSourceId === 'docs').length, 1)
+  const restored = S.load(JSON.parse(JSON.stringify(S.persistable(s))))
+  S.importSetup(restored, setup(), 4)
+  assert.equal(restored.folders.filter((f) => f.arcSourceId === 'empty').length, 1)
+  assert.equal(restored.folders.find((f) => f.id === empty.id).spaceId, destination.id)
 })

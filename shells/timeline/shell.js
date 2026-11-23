@@ -154,10 +154,10 @@ function archivesIn(tab, now) {
   return `archives in ${minutes < 60 ? `${minutes}m` : `${Math.max(1, Math.round(minutes / 60))}h`}`
 }
 
-function folderRow(space, folder, open, count) {
+function folderRow(space, folder, open, count, toggle = () => call('folders.setCollapsed', { spaceId: space.id, folder, collapsed: open })) {
   return h('li', { class: 'row pinned', 'data-folder-head': folder },
     h('span', { class: 'mark', 'aria-hidden': 'true' }, icon('chevron')),
-    h('button', { class: 'row-main', title: folder, 'aria-expanded': String(open), onclick: () => call('folders.setCollapsed', { spaceId: space.id, folder, collapsed: open }) },
+    h('button', { class: 'row-main', title: folder, 'aria-expanded': String(open), onclick: toggle },
       h('span', { class: 'label' }, folder), h('span', { class: 'count mono' }, String(count))))
 }
 

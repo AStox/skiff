@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Native pointer fixture</title>
+<style>
+  * { box-sizing: border-box }
+  body { margin: 0; background: #18212b; color: white; font: 16px system-ui }
+  #modal { position: fixed; inset: 0; background: #27394a }
+  #close { position: absolute; top: 12px; right: 16px; width: 24px; height: 24px; padding: 0 }
+  #player { position: absolute; inset: 60px 24px 24px; background: #101820 }
+  video { width: 100%; height: 100%; object-fit: contain }
+  #controls { position: absolute; inset: auto 0 0; height: 40px; display: flex; align-items: center; justify-content: space-between; padding: 4px 12px; visibility: hidden; background: #000b }
+  #player[data-hover] #controls { visibility: visible }
+  #volume { width: 80px; height: 24px }
+</style>
+<div id="modal">
+  <button id="close" aria-label="Close image">X</button>
+  <div id="player">
+    <video id="video" muted playsinline></video>
+    <div id="controls"><button id="play">Play</button><input id="volume" aria-label="Volume" type="range"></div>
+  </div>
+</div>
+<script>
+  window.pointerEvents = []
+  window.closedImages = 0
+  window.volumeClicks = 0
+  window.playerLeaves = 0
+  window.hoverEvents = []
+  for (const name of ['mousemove', 'mousedown', 'mouseup', 'click']) addEventListener(name, (event) => {
+    window.pointerEvents.push({ type: name, target: event.target.id, x: event.clientX, y: event.clientY, screenX: event.screenX, screenY: event.screenY, trusted: event.isTrusted })
+  }, true)
+  for (const name of ['mouseenter', 'mouseleave', 'mouseover', 'mouseout', 'pointerenter', 'pointerleave', 'pointerover', 'pointerout']) addEventListener(name, (event) => {
+    window.hoverEvents.push({ type: name, target: event.target.id || null, related: event.relatedTarget?.id || null, x: event.clientX, y: event.clientY, screenX: event.screenX, screenY: event.screenY, trusted: event.isTrusted })
+  }, true)
+  document.querySelector('#close').onclick = () => {
+    window.closedImages++
+    history.pushState({}, '', '/pointer-fixture?image=' + window.closedImages)
+  }
+  const player = document.querySelector('#player')
+  player.onmouseenter = () => { player.dataset.hover = '' }
+  player.onmouseleave = () => { window.playerLeaves++; delete player.dataset.hover }
+  document.querySelector('#volume').onclick = () => window.volumeClicks++
+  const canvas = document.createElement('canvas')
+  canvas.width = 160
+  canvas.height = 90
+  const context = canvas.getContext('2d')
+  let frame = 0
+  setInterval(() => {
+    context.fillStyle = frame++ % 2 ? '#315b74' : '#376580'
+    context.fillRect(0, 0, canvas.width, canvas.height)
+  }, 80)
+  const video = document.querySelector('video')
+  video.srcObject = canvas.captureStream(12)
+  document.querySelector('#play').onclick = () => video.paused ? video.play() : video.pause()
+</script>
+</html>

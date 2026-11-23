@@ -20,7 +20,7 @@ function connect({ input, output, onNotification = () => {}, onRequest = () => {
     input.off('data', read)
     input.off('end', ended)
     input.off('error', ended)
-    for (const { reject } of pending.values()) reject(closedError(error ? error.message : 'The agent exited'))
+    for (const call of pending.values()) call.reject(closedError(error ? error.message : 'The agent exited'))
     pending.clear()
     output.end()
     return true
@@ -37,7 +37,6 @@ function connect({ input, output, onNotification = () => {}, onRequest = () => {
     if (message.method === undefined) {
       const call = pending.get(message.id)
       if (!call) return
-      pending.delete(message.id)
       const e = message.error
       if (e) call.reject(Object.assign(new Error(String(e.message || 'Agent error').slice(0, 2000)), { code: e.code }))
       else call.resolve(message.result)
@@ -78,12 +77,23 @@ function connect({ input, output, onNotification = () => {}, onRequest = () => {
   output.on('error', () => {})
 
   return {
-    request(method, params) {
+    request(method, params, { signal, timeout = 0 } = {}) {
       if (closed) return Promise.reject(closedError('The agent exited'))
+      if (signal?.aborted) return Promise.reject(signal.reason || closedError('The request was cancelled'))
       const id = next++
       return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject })
-        send({ id, method, params })
+        let timer
+        const settle = (fn, value) => {
+          if (!pending.delete(id)) return
+          clearTimeout(timer)
+          signal?.removeEventListener('abort', abort)
+          fn(value)
+        }
+        const abort = () => settle(reject, signal.reason || closedError('The request was cancelled'))
+        pending.set(id, { resolve: (value) => settle(resolve, value), reject: (error) => settle(reject, error) })
+        signal?.addEventListener('abort', abort, { once: true })
+        if (timeout > 0) timer = setTimeout(() => settle(reject, Object.assign(new Error(`${method} did not answer within ${timeout} ms`), { code: 'timeout' })), timeout)
+        try { send({ id, method, params }) } catch (error) { settle(reject, error) }
       })
     },
     notify(method, params) {

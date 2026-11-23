@@ -12,8 +12,15 @@ function fail(message) {
 }
 
 async function main() {
-  const [method, json] = process.argv.slice(2)
-  if (!method) fail('usage: skiff <method> [json-params]\n       skiff events\n       skiff commands.list')
+  let [method, json] = process.argv.slice(2)
+  if (!method || method === '--help') {
+    console.log('usage: skiff <method> [json-params]\n       skiff events\n       skiff source [role]\n       skiff customize [role]\n       skiff safe-mode\n       skiff commands.list\n\nUse components.list/inspect/create/check/stage/apply/revert/bind/preview and components.source.read/write for local source workflows. Applying executable components requires native confirmation.')
+    return
+  }
+  if (method === 'source' || method === 'customize') {
+    json = JSON.stringify({ role: json || 'launcher' })
+    method = method === 'source' ? 'ui.inspectSource' : 'ui.customize'
+  } else if (method === 'safe-mode') method = 'ui.safeMode'
   let api
   let params = {}
   try {

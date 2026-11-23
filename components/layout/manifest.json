@@ -1,0 +1,10 @@
+{
+  "apiVersion": 1,
+  "id": "stock.layout",
+  "version": "1.0.0",
+  "surfaces": {},
+  "backend": "backend.js",
+  "roles": ["layout"],
+  "commands": { "layout": "stock.layout.run" },
+  "capabilities": ["backend", "commands.register", "storage", "call:host.layout", "call:state.get", "call:desk.place", "call:desk.show", "call:desk.hide"]
+}

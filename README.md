@@ -1,12 +1,14 @@
 # Skiff
 
-A bare-bones Arc-like browser for macOS, built on Electron. Three layers:
+A local-first Arc-like browser for macOS, built on Electron. Three layers:
 
-1. **Core** (`src/main.js`, `src/state.js`): owns all state and behavior behind one command registry.
-2. **Shell** (`shell/`): plain HTML, CSS and JS that draws the whole interface. It is copied to the data dir on first run and you can rewrite every file of it.
-3. **Local API**: the same registry over HTTP on 127.0.0.1, plus a small CLI. Anything the interface can do, an agent can do.
+1. **Host** (`src/main.js`, `src/state.js`): owns browser sessions, native page views and persistence behind one typed command registry.
+2. **Components** (`components/`, `shell/`, `shells/`): stock and user-owned HTML/CSS/JS surfaces and optional local backends. Roles can be replaced independently, globally or per space, without replacing live webpages.
+3. **Local API**: the same registry over HTTP on 127.0.0.1, plus a CLI. The owner API controls the browser; agents receive only explicitly approved scopes.
 
-Web pages get none of this: no preload, sandboxed, context isolated.
+Web pages are sandboxed and context isolated. Their limited page preload reports lifecycle protection signals; it exposes no privileged command API. Native window drag regions belong to trusted UI components, not web pages: page-defined `app-region` and `window-drag` styles cannot intercept input through another page.
+
+Read the [component and user guide](docs/components.html) for workflows, exact API examples and limitations.
 
 ## Run
 
@@ -14,26 +16,31 @@ Web pages get none of this: no preload, sandboxed, context isolated.
 npm install
 npm start              # the first run downloads the Electron binary
 npm test               # state logic, plain node --test
-npm run app            # packages a macOS app into dist/, run this on a Mac
+npm run app            # builds Skiff.app and dmg/zip files into dist/, run this on a Mac
 ```
 
-## Electron security updates
+## Releases
 
-The Hetzner updater checks Electron's official stable release feed every 15 minutes and considers newer patch/minor releases on the installed major only. Prereleases and downgrades are ignored. A newer candidate is downloaded to a temporary location; `npm test` and the visual Electron suite run against an isolated copy of the source with a synthetic profile under Xvfb. A failed download or test leaves the installed runtime untouched.
+`npm run app` builds a macOS app into `dist/` (dmg and zip for arm64 and x64) with electron-builder; run it on a Mac. Without signing credentials in the environment it builds unsigned.
 
-Promotion updates only the Electron runtime and its Electron lock entry in the Mac source checkout. It requires the tested source-content fingerprint to still match, and Skiff to be closed; it never quits or restarts the app or touches its profile. A successful install keeps the previous Electron runtime and reports that a normal restart is pending. Chromium security-fix lag is not inferred from version numbers; upstream metadata and the release note are recorded, but a version bump is not proof every Chromium fix is included.
+To cut a release, bump `version` in `package.json`, commit, tag it `vX` (for example `v0.1.0-alpha.2`) and push the tag. The release workflow runs the tests, then signs and notarizes the app and uploads a draft release to GitHub, which you publish by hand. It needs these repository secrets: `CSC_LINK` (the base64 Developer ID .p12), `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID`; `GITHUB_TOKEN` is provided by Actions.
 
-Check status on Hetzner with `node scripts/security-updater.js status`; the state file is `/var/lib/skiff-security-updater/status.json`. Pause/resume checks with `sudo systemctl disable --now skiff-security-updater.timer` / `sudo systemctl enable --now skiff-security-updater.timer`. Resume Skiff only through its ordinary launcher; the updater never launches it. The previous runtime path is in status as `previousRuntime`; restore it only while Skiff is closed, after preserving the current runtime.
+Installed apps check the published releases at startup and every 6 hours, download an update in the background and install it when Skiff quits. A prerelease version is only offered to apps already on a prerelease. Dependabot opens a pull request for each new Electron release, which is how Chromium security fixes reach users.
+
+Skiff can be made the default browser from Settings, in the packaged app on macOS.
 
 Data dir: `~/Library/Application Support/Skiff` on macOS, `~/.config/Skiff` elsewhere. Set `SKIFF_DATA` to use another one (the CLI honors it too).
 
 | File | What |
 | --- | --- |
-| `state.json` | spaces, tabs, archive, settings, window bounds |
-| `shell/` | the live shell; your copy always wins over the bundled one |
+| `state.json` | spaces, profiles, tabs, folders, archive, settings and window bounds |
+| `shell/` | if present from an older profile, preserved and migrated to an owned `legacy.shell` component |
 | `favicons/` | site icons saved by the core; tabs name them by a path relative to the shell |
 | `api.json` | `{port, token}`, mode 0600, rewritten at each launch |
 | `passwords.enc` | saved passwords encrypted with the operating system key store, mode 0600 |
+| `components/` | composition, owned source, active revisions, recovery backups and versioned component data |
+| `transcripts/` | normal-chat recovery records; not private chats |
+| `sync/` | opt-in sync configuration and encrypted journal; not cookies or passwords |
 
 ## Interface
 
@@ -65,7 +72,7 @@ Cmd+Shift+N (Ctrl+Shift+N elsewhere) opens the incognito space and the command b
 
 Cmd+Shift+C (Ctrl+Shift+C elsewhere) copies the current tab's address and shows "Copied URL" above the space strip for a moment. The page keeps focus. `tabs.copyUrl {id?}` does the same for any tab and returns `{url}`.
 
-Browser keys work as in Chrome, with Ctrl in place of Cmd elsewhere. Cmd+Left and Cmd+Right (Alt+Left and Alt+Right on Linux and Windows) go back and forward; inside a text field the field keeps them. Cmd+Shift+R reloads without the cache. Cmd+Shift+] and Cmd+Shift+[ show the next and previous tab. Cmd+1 to Cmd+8 show that tab of the space, counted as Ctrl+Tab counts them, and Cmd+9 shows the last. Cmd+= (or Cmd+Plus), Cmd+- and Cmd+0 zoom the page in, out and back to 100%, as do Ctrl+wheel; a trackpad pinch magnifies the page as Chrome does on the Mac. Same-site tabs share their zoom, and zoom is not saved. Cmd+P prints the page. Cmd+S sends the shell `toggle-sidebar`, which Layer and Quiet use to open and hide their sidebar. The View menu makes the interface larger, smaller or its actual size. `tabs.select {index}`, `tabs.zoom {id?, delta}`, `tabs.print {id?}` and `tabs.reload {id?, ignoreCache?}` are the commands behind them.
+Browser keys work as in Chrome, with Ctrl in place of Cmd elsewhere. Cmd+Left and Cmd+Right (Alt+Left and Alt+Right on Linux and Windows) go back and forward; inside a text field the field keeps them. Cmd+Shift+R reloads without the cache. Cmd+Shift+] and Cmd+Shift+[ show the next and previous tab. Cmd+1 to Cmd+8 show that tab of the space, counted as Ctrl+Tab counts them, and Cmd+9 shows the last. Cmd+= (or Cmd+Plus), Cmd+- and Cmd+0 zoom the page in, out and back to 100%, as do Ctrl+wheel; a trackpad pinch magnifies the page as Chrome does on the Mac. Site zoom is remembered per profile and origin; private zoom is not persisted. Cmd+P prints the page. Cmd+S sends the shell `toggle-sidebar`, which Layer and Quiet use to open and hide their sidebar. The View menu makes the interface larger, smaller or its actual size. `tabs.select {index}`, `tabs.zoom {id?, delta}`, `tabs.print {id?}` and `tabs.reload {id?, ignoreCache?}` are the commands behind them.
 
 Cmd+Shift+U (Ctrl+Shift+U elsewhere) opens the panel of the first extension that has one, such as uBlock Origin's, over the page; it closes when it loses focus. See Extensions below.
 
@@ -88,9 +95,11 @@ npx -y @agentclientprotocol/claude-agent-acp    # Claude
 hermes acp
 ```
 
-Each agent runs once, in your login shell with its own credentials, in a working folder `ai/` in the data dir, and serves all of its chats. Agent mode or Cmd+J starts it so the bar can list its models and efforts; nothing is sent until you press Enter. A question sends your text, and only with **Include this page** ticked the page's title, address, selected text and first 12000 characters of text. An agent that can use MCP over HTTP also gets a small set of browser tools: list, open, navigate, show and close tabs, and read a page; they never read or navigate a chat tab. The tools live on this machine, so an agent over ssh can chat but cannot reach them. When the agent asks before using one, the card with its options is the agent's own request; Skiff passes your answer back.
+Each agent runs once, in your login shell with its own credentials, in a working folder `ai/` in the data dir, and serves its chats. Agent mode or Cmd+J starts it so the bar can list models and efforts; no question is sent until you submit it. **Include this page** explicitly sends the page's title, address, selection and bounded text. There is no automatic AI capture. Browser tools require a separate explicit grant in Browser Tools > Grants: select tabs or spaces, read/mutation rights and any optional component tools. Grants can be revoked. ACP permission cards are the agent's own requests, not a replacement for Skiff's scope checks. Remote agents need their own secure route to this machine's loopback tools.
 
-**Include this page** is never offered for an incognito page and the tools cannot see or touch incognito tabs. A chat asked from an incognito page stays in the incognito space and is gone when it closes, though the agent may keep its own record of the session. Skiff never asks for or stores keys; it keeps only each chat tab's agent name and session id. Quitting stops every agent and everything it started.
+Read and Mutate are independent grant choices, not a bundled permission. Creating a grant does not automatically select or merge it: use **Use for agent** or `grants.select {id, sessionId?}`. Component customization is a separate exact-ID `components` scope, distinct from callable `tools`. **Customize this** confirms the selected component, creates an owned copy when needed and starts an agent chat without page inclusion. The agent can inspect, edit, check and preview only authorized source; apply, enable and revert still require native approval of the exact revision. Revocation never silently falls back to a broader grant.
+
+Incognito pages cannot be included or accessed by browser tools. Private chats are not stored in Skiff's local transcripts, though an external agent may retain its own record. Local recovery transcripts for normal chats are opt-in through `transcriptRecovery`, with configurable retention; saved transcripts can be searched, exported and deleted. If ACP cannot restore a session, a saved local transcript is read-only recovery, not hidden replay: starting a fresh session does not send the recovered conversation. Agent credentials remain the agent's responsibility. Quitting stops managed agent processes.
 
 ## API
 
@@ -116,7 +125,7 @@ bin/skiff events            # server-sent events, one full state per change
 
 Where `id` is optional it means the active tab. Tabs open only `http:` and `https:` URLs. Other text becomes a search.
 
-A tab is plain, pinned or a favorite, and always belongs to one space (`tab.spaceId`). A favorite shows only in its space; `tabs.setFavorite` keeps the tab where it is. A pinned tab stays in its space, optionally in a folder, and is never auto-archived. A folder exists only through the tabs that name it; `folders.setCollapsed` folds it.
+A tab is plain, pinned or a favorite, and always belongs to one space (`tab.spaceId`). A favorite shows only in its space; `tabs.setFavorite` keeps the tab where it is. Pinned tabs are never auto-archived. Folders are persisted entities with `folderId` and optional `parentId`: nested and empty folders survive, and `folders.setCollapsed` controls their presentation. Trails can be collapsed independently.
 
 A plain tab may have a `parentId`, the plain tab of the same space it was opened from. `tabs.create {parentId?}` sets it; a parent that is pinned, a favorite or in another space is ignored. `tabs.move` reorders a tab among the tabs with the same parent.
 
@@ -169,7 +178,7 @@ curl -s -N http://127.0.0.1:$PORT/events -H "Authorization: Bearer $TOKEN"
 
 Error codes: `unknown_method`, `bad_params`, `not_found`, plus `unauthorized` and `forbidden` at the HTTP layer and `internal` for bugs. A request is refused if it has no bearer token, carries an `Origin` header, or has a `Host` other than `127.0.0.1:<port>` or `localhost:<port>`. Bodies are capped at 1 MB. Do not send an `Origin` header from your client.
 
-Command groups: `spaces.*`, `tabs.*`, `folders.setCollapsed`, `desk.*`, `archive.*`, `incognito.open`, `import.arc`, `import.arc.preview`, `passwords.fill`, `settings.set`, `extensions.*`, `ai.*`, `ui.*`. `commands.list` is the reference; this file does not repeat it.
+Command families include spaces, tabs, folders, profiles, link routing, split, peek, history, downloads, site permissions, find, reader, settings, components, grants, transcripts and sync, alongside desk, archive, import, passwords, extensions, AI and UI. `commands.list` returns the current descriptions and input schemas; `settings.catalog` describes editable settings.
 
 `spaces.move {id, index}` takes a zero-based integer position, clamped to the space list. It changes order only, preserving the active space, tabs and profile sessions.
 
@@ -177,7 +186,7 @@ Command groups: `spaces.*`, `tabs.*`, `folders.setCollapsed`, `desk.*`, `archive
 
 The agent is `ai.*`. `ai.agents` lists the configured agents with their status, models and efforts; `ai.warm {agent}` starts one and resolves once its models and efforts are known. `ai.ask {text, agent?, model?, effort?, includePage?, tabId?}` opens a chat tab under `tabId` (the active tab by default) and returns `{tabId, chatId}` at once; with no agent configured the tab waits in setup with the text and sends it to the first agent added. A chat tab's URL is `skiff://chat/<chatId>` and its `chat` field holds `{agent, sessionId}`. `ai.chat {chatId}` returns the conversation (`status` setup, restoring, ready, running or error, `error`, `pending`, `sessionId`, `models`, `model`, `efforts`, `effort`, `permission {id, title, options}` and `turns`), restoring it with `session/load` if this run has not seen it yet. `ai.prompt {chatId, text}` sends a follow-up and returns `{turnId}` at once, `ai.configure {chatId, model?, effort?}` changes the model or effort for the next turn, `ai.cancel {chatId}` stops the turn, and `ai.permit {chatId, optionId}` or `{chatId, cancel: true}` answers a permission request. A change to the agent list pushes `ai-agents` to the shell pages and chat tabs; a change to a chat pushes `chat` to that chat's own tab. `/events` streams both as `event: ai-agents` and `event: chat`.
 
-`POST /mcp` with the same bearer token is an MCP server (streamable HTTP, JSON replies) with the tools `browser_list_tabs`, `browser_open_tab`, `browser_navigate`, `browser_activate_tab`, `browser_close_tab` and `browser_read_page`. Skiff hands it to the agent at `session/new` when the agent can use MCP over HTTP. Every tool refuses incognito tabs.
+`POST /mcp` is an MCP server with browser tools and explicitly tool-enabled component commands. The owner token from `api.json` is a powerful local credential; do not hand it to an ACP agent. Skiff instead derives scoped session credentials from explicit grants. Those credentials work only on `POST /mcp`, not owner `/rpc` or `/events`, and never authorize incognito access. Revocation also invalidates derived session grants. Component tools must be selected explicitly; their nested browser calls retain the originating grant's scope.
 
 Shortcuts live in `settings.shortcuts` as `{ "<Electron accelerator>": { "method": "...", "params": {...} } }`. `settings.set {"shortcuts": {...}}` replaces the whole map and rebuilds the menu. Electron ignores an accelerator it cannot parse.
 
@@ -191,18 +200,22 @@ New tabs opened at the exact host `web.whatsapp.com`, and older saved tabs resto
 
 To choose an identity while navigating an existing tab, pass it to `tabs.navigate`, for example `tabs.navigate {"url":"https://web.whatsapp.com/","browserIdentity":"compatible"}` for the active tab. This recreates that tab's view with the same session before loading the requested URL; the new view starts a fresh navigation history. Omit `browserIdentity` to keep the tab's current choice, or pass `null` to persistently use the profile default, including on WhatsApp. Do not first navigate a native tab to WhatsApp and expect automatic site-only switching. A compatible tab stays compatible on Google; use a native tab or explicitly select `native` when navigating to Google.
 
-This does not create profiles or change profile storage. Creating an ordinary space still shares the main profile; the existing profile-creation path is Arc import. There is no general profile editor or browser-identity control in Settings.
+Browser Tools > Profiles creates and names isolated profiles, assigns the profile for future tabs in a space, and manages external-link routing. Existing tabs retain their original session when moved or when a space changes profile. Browser identity remains an API setting rather than a dedicated identity editor.
 
 ## Customizing the shell
 
 ```sh
-bin/skiff ui.shellPath      # where the live files are
+bin/skiff ui.shellPath      # {path, owner, readOnly} for the selected source
 bin/skiff ui.capture '{"target":"shell"}' | jq -r .png | base64 -d > shell.png
 bin/skiff ui.devtools '{"target":"shell"}'
-bin/skiff ui.resetShell     # moves your shell to shell.bak-<timestamp>, restores the default
+bin/skiff ui.resetShell     # selects default stock; backs up old data/shell if present
 ```
 
-Edit the files in place. The app watches the folder and reloads the shell on every change, so the loop is: edit, `ui.capture`, look, repeat. A `shell` capture shows the interface without the web page (the page is a separate native view); capture `page` for the page itself. The folder holds `index.html`, `shell.js` and `shell.css` for the window, `palette.html` and `palette.js` for the command bar, which is its own page drawn over the window, and `common.js` for what the window and the command bar share. Chat tabs are not part of the shell: they show `chat/chat.html` from the app folder, with the same `window.skiff` bridge, in every shell.
+A `shell` capture shows the interface without the native webpage view; capture `page` for the page itself. Use Components to inspect selected source, copy it to an owned package, edit, check, preview and explicitly apply it. Stock source stays bundled and read-only; owned source edits do not activate a revision until applied. Older data-dir shell files migrate to a backed-up `legacy.shell` package and remain selected on migration. Chat has a stock `chat/chat.html` surface and can be independently bound like the launcher, frame and other roles.
+
+Components can declare scalar settings in their manifests. Shared Settings resolves their defaults, global overrides and optional normal-space overrides, showing the owning component and the source of each effective value. Use `components.settings.list/get/set/reset` rather than a second settings file. Properties live outside source files; apply carries compatible overrides, while revert restores the previous code and its saved configuration. Versioned component data is not rolled back. Private-space persistence is rejected.
+
+Every component UI, stock or owned, uses the same capability-checked bridge. Bundled management surfaces explicitly declare `host.manage` alongside call/event capabilities. A copied manager requires normal native approval; `call:*` alone is not administrative authority. Treat `host.manage` as powerful local browser administration, not an OS sandbox. Scoped agent invocations remain constrained by their original grant even through a management component.
 
 The contract a shell must keep:
 
@@ -211,7 +224,7 @@ The contract a shell must keep:
 - Tell the core where the page goes: `skiff.call('ui.setPageBounds', {x, y, width, height, radius})` in CSS pixels, on load and whenever that rectangle moves. Nothing is shown until you do.
 - Use `ui.setPageVisible {visible: false}` before a shell dialog and restore it when closing. The page is a native view and otherwise covers HTML overlays. To float something over the live page instead, open one of your own files with `ui.showOverlay {file}` and close it with `ui.hideOverlay`: the file is drawn as a transparent page covering the whole window, above the web page, and gets the same `window.skiff` bridge, `state` pushes and `ui.emit` events as the shell. The default command bar works this way. Pass `bounds: {x, y, width, height}` to confine the overlay to one rectangle, so the page around it stays clickable; a negative `x` or `y` measures from the right or bottom edge and follows resizes. Showing the same file again only moves it and leaves focus alone. There is one overlay, so showing another file replaces the first.
 - `ui.setWindowButtons {visible: false}` hides the macOS window buttons while your shell has nothing to put behind them; a shell change or reload shows them again. Hidden buttons leave moving the window to a drag region (`-webkit-app-region: drag`) of your own.
-- Keep no state of your own beyond input in progress. Rerender from each `state` event.
+- Treat host browser state as authoritative and rerender from `state` events. Input in progress may remain local; component preferences belong in declared settings or versioned component storage, not a duplicate tab/session model.
 - `tab.favicon` is `''`, `../favicons/<name>` or a `data:` URL. The path form names a file the core saved under `favicons/` in the data dir, relative to the shell's `index.html`, so it works as an image `src` as it is. Incognito tabs get the `data:` form. Draw your own placeholder when it is empty, fails to load, or loads and draws nothing. Chromium accepts some broken ICO files without an error event or a rejected `img.decode()`, so the default shell also checks that the icon has a visible pixel.
 - A space with `incognito: true` is the temporary incognito space. A plain tab may carry `parentId`; the default shell draws such tabs indented under their parent.
 - The shell runs under a strict CSP: no inline scripts, no inline style attributes, no remote scripts. Images load only from the shell's own files and `data:` URLs (`img-src 'self' data:`), so a remote image URL does not load. Set CSS variables with `element.style.setProperty`.
@@ -223,11 +236,11 @@ The persisted/API space field is `background: {light?: layer, dark?: layer}`, wh
 
 Rendering is an approximation of Arc's colors, not macOS vibrancy. Extended sRGB channels are clamped and rounded to 8-bit sRGB. Base colors run left to right across the window. Overlay colors run top to bottom over them. Stops are evenly spaced, and each color shows at two thirds of the stored intensity over the appearance's background color. Grain, wheel generation, translucency and window blur are not reproduced. Shell text is black or white, whichever contrasts more with the colors under the sidebar. The colors are not washed out for legibility: a uniform veil is added only when that contrast would still be below 4.5:1. The stored source colors and intensity are unchanged.
 
-An update to the bundled shell does not touch your copy. Run `ui.resetShell` to pick it up.
+Stock shell components follow the bundled source revision on update. Owned copies, including migrated legacy source, are not overwritten. `ui.resetShell` selects the default stock shell but retains owned packages and independent custom bindings.
 
 ## Trying another shell
 
-`shells/` holds complete alternative shells, each a folder with the same files as `shell/`. Pick one from the Shell field in Settings or from the Shell menu: the live shell folder is replaced and the window reloads it in place, with tabs, spaces and the page untouched. `default` is the bundled `shell/`. The choice is saved as `settings.shell`, and every state push lists the names in `shells`.
+`shells/` holds complete bundled alternative shells. Pick one from the Shell field in Settings or the Shell menu: Skiff selects that bundled variant and reloads its UI, preserving tabs, spaces and live pages. `default` is the bundled `shell/`. The choice is saved as `settings.shell`, and every state push lists the names in `shells`.
 
 ```sh
 bin/skiff state.get | jq .shells
@@ -235,7 +248,7 @@ bin/skiff ui.setShell '{"name":"timeline"}'
 bin/skiff ui.setShell '{"name":"default"}'
 ```
 
-Switching copies the chosen folder over the live one, so edits you made to the live shell are overwritten; `ui.resetShell` keeps a backup, `ui.setShell` does not.
+Switching shells replaces stock or migrated legacy global role selections, not user source files. Independent custom and per-space bindings remain selected. `ui.resetShell` backs up the original data-dir `shell/` if still present and retains its owned legacy package. Component apply/revert, rather than shell selection, provides explicit source revision history.
 
 To look at a shell without Skiff, `node scripts/shell-preview.js shells/timeline out.png` renders it in plain Chromium with a synthetic profile and a stand-in page; add `--dark`, or `--overlay palette.html --type lin` for the command bar. It needs `npx playwright install chromium` once.
 
@@ -246,6 +259,8 @@ A desk shell renders at 1440 by 900 on a plain wallpaper, with stand-in pages at
 A shell folder with `shell.json` `{"window": "desk"}` gets a desk window instead of the app window: frameless, transparent, without a shadow, fixed over the work area of its display (never the menu bar or Dock), refitted when the displays change. Switching between an app shell and a desk shell opens a new window of the other kind and moves the open pages into it, still loaded; the app window's saved bounds are kept for the way back. `ui.setPageBounds` does nothing there.
 
 On the desk every tab may carry `tab.desk: {x, y, width, height, z, hidden?}` in window CSS pixels, saved with the tab; higher `z` is in front within its space. The window shows, for the active space, every ordinary tab (not a favorite, not pinned) that is not hidden, every other tab with a `tab.desk` that is not hidden, and the active tab, always in front. Placed windows stack by `z` above unplaced ones. A shown tab without a rect sits at a default: centred at 62% by 74% of the window (at least 240 by 160), 28px further down and right for each place in the space's tab order, starting over before it would leave the window; it is not saved until the shell places it. A tab opened while a desk window is open (from the command bar, `tabs.create`, a link or `archive.restore`) gets a rect at once: the last rect `desk.place` or `desk.tile` gave a tab of its host, 28px further down and right while a window shows at exactly that rect; else the largest part of the desk that no shown window or its frame's top inset covers, less an 8px margin, when that is at least 520 by 360; else the default. The last 200 hosts placed are kept in `deskHosts`, saved, incognito tabs never. A favorite or pinned tab activated on the desk gets that default rect and stays a window until hidden. Activating a tab, or clicking its page, shows it if hidden and brings it to the front; closing a favorite or pinned tab hides its window. State pushes carry `deskSize: {width, height}`, the window in CSS pixels, and `deskTop`, the frame's top inset, while a desk window is open. A space switch slides the shown windows like macOS Spaces over about 240ms, each page with its frame: the old space's leave the desk the way the switch goes (next space to the left, previous to the right, by `spaces.cycle`'s `delta` or else by space order) while the new space's come in from the other side, a switch mid-slide turns every window around from where it is, and a drag in progress ends; every space's shown windows load in the background after startup, so a first switch never waits for a page.
+
+On a Mac, with a desk shell and Mission Control desktops that can be read (`src/desktops.js`, through the private CoreGraphics calls, off where they are missing), the desk window is on every desktop (`setVisibleOnAllWorkspaces`, not over full-screen apps) so activating Skiff never switches desktops. Each tab carries `desktopId`, the id macOS gives its desktop, saved with the tab; a tab with none, or one whose desktop is gone (the ids can change across restarts), joins the current desktop. New tabs take the current desktop. `state.desktops: {current, list: [{id, number}]}` is runtime state in `state.get` and the event stream, never saved, and absent when the feature is off; `tabs.list` then also gives each tab its `desktop` number. The desk shows only the tabs of the current desktop, and Ctrl+Tab order (`tabs.cycle`, `tabs.select`) stays on it. When the desktop changes, a space whose active tab is on another desktop shows its latest tab here, or none. Exposé and the tab list show the space's tabs of every desktop under a "Desktop N" label. `tabs.activate` of a tab on another desktop moves it to the current one, since macOS has no supported way to switch desktops.
 
 ```sh
 bin/skiff desk.place '{"x":40,"y":60,"width":900,"height":700}'   # the active tab; at least 240 by 160; shows it if hidden
@@ -316,10 +331,14 @@ The suite captures the shell, while separately exercising the native webpage vie
 
 Tests close their owned Electron process groups and remove temporary profiles. A shutdown that cannot be confirmed preserves its profile and fails. `test-results/` and `playwright-report/` are local, ignored artifacts; they are not packaged into the app. The test-only startup and consent override are excluded from packaged builds.
 
-The shell watcher compares file contents before reloading. Delayed macOS file-copy notifications and metadata-only changes no longer close dialogs or reset focus; actual shell edits still reload.
+The selected-shell watcher compares file contents before reloading, so metadata-only file notifications do not reload it. Owned workspaces remain separate from active snapshots: edit the workspace and explicitly apply, rather than editing an active revision directory.
 
-## Not here
+## Browser tools and limits
 
-Sync, a general profile editor, split view, find in page, history, a downloads UI, an app icon, error pages for failed loads. Imported Arc profiles have isolated sessions; other spaces share the main session, and the incognito space has its own in memory. Trails cannot be collapsed. Permission grants (camera, microphone, location, notifications) are asked per origin and session, and forgotten at quit.
+`ui.openTools` opens searchable settings, commands, history, downloads, profiles, nested folders, site permissions, component management, agent grants, transcripts and encrypted sync. Find in page, reversible reader mode, split view, user link peek, collapsible trails, persisted site zoom and crashed-page recovery are available. Memory saver is opt-in and reloads discarded pages; it does not preserve arbitrary JavaScript or scroll state.
 
-Folders are flat: a nested Arc folder arrives as `Parent / Child`, and a folder with no tabs is gone. The import skips Arc's archive and space icons, and there is no import from other browsers. Password import and deliberate filling are supported; saving newly entered passwords, automatic fill and password editing are not.
+Sync is manual and opt-in, using end-to-end encrypted records over a user-provided WebDAV endpoint or shared folder. It is not a hosted account service, and does not transfer cookies, passwords, component source, transcripts or private browsing. Pairing keys and transcript exports reveal sensitive material deliberately; keep them out of logs and shared folders. See the guide for conflict and unlock limitations.
+
+The import skips Arc's archive and space icons, and there is no import from other browsers. Password import and deliberate filling are supported; saving newly entered passwords, automatic fill and password editing are not. There is no app icon or general failed-load error-page replacement.
+
+Initial isolated Linux Electron smoke exercised find, reader, split, peek and history while preserving the page and its cookie. Broader native scenarios and review remain separate acceptance work; this is not a claim of complete validation or new macOS verification.

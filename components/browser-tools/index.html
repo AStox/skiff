@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'"><title>Browser tools · Skiff</title><link rel="stylesheet" href="ui.css"></head>
+<body data-browser-tools>
+<a class="skip" href="#content">Skip to tools</a>
+<header><h1>Browser tools</h1><button id="close" type="button">Close</button></header>
+<div class="workspace"><nav id="sections" aria-label="Browser tools"></nav><main id="main"><label class="search">Search this section<input id="query" type="search" autocomplete="off"></label><p id="status" role="status"></p><p id="error" role="alert"></p><section id="content" tabindex="-1" aria-label="Selected tools"></section></main></div>
+<dialog id="confirm"><form method="dialog"><h2 id="confirm-title">Confirm action</h2><p id="confirm-text"></p><div class="actions"><button value="cancel">Cancel</button><button value="accept" id="confirm-accept">Continue</button></div></form></dialog>
+<script src="ui.js"></script></body></html>

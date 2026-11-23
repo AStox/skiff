@@ -52,7 +52,7 @@ function showError(text) {
   drawError()
 }
 function drawError() {
-  const text = failure || chat?.error || ''
+  const text = [failure || chat?.error, chat?.transcriptError].filter(Boolean).join(' ')
   $('chat-error').textContent = text
   $('chat-error').hidden = !text
 }
@@ -219,8 +219,9 @@ function render() {
   $('chat-model').disabled = $('chat-effort').disabled = busy()
   $('chat-stop').hidden = chat.status !== 'running'
   $('chat-send').hidden = chat.status === 'running'
-  $('chat-send').disabled = chat.status === 'restoring'
-  input.placeholder = (chat.turns || []).length ? 'Ask for a follow-up' : `Ask ${name}`
+  $('chat-send').disabled = chat.status === 'restoring' || Boolean(chat.recovery?.requiresFresh)
+  $('chat-recovery').hidden = !chat.recovery?.readOnly
+  input.placeholder = chat.recovery?.requiresFresh ? 'Write the first message for a fresh session' : (chat.turns || []).length ? 'Ask for a follow-up' : `Ask ${name}`
   drawLog()
   drawPermission()
   drawError()
@@ -241,13 +242,17 @@ function theme() {
   document.documentElement.classList.toggle('incognito', Boolean(space.incognito))
 }
 
-async function send() {
+async function send(fresh = false) {
   const text = input.value.trim()
-  if (!text || !chat || busy()) return
+  if (!text || !chat || busy()) {
+    if (fresh && !text) showError('Write a message before starting a fresh session.')
+    return
+  }
+  if (chat.recovery?.requiresFresh && !fresh) return showError('This transcript is read only. Choose Start fresh session to send a new message without replaying earlier turns.')
   failure = ''
   drawError()
   try {
-    await skiff.call('ai.prompt', { chatId, text })
+    await skiff.call('ai.prompt', { chatId, text, ...(fresh ? { fresh: true } : {}) })
     if (input.value.trim() === text) input.value = ''
     log.scrollTop = log.scrollHeight
   } catch (error) {
@@ -279,6 +284,7 @@ input.addEventListener('input', () => {
   drawError()
 })
 $('chat-stop').addEventListener('click', () => skiff.call('ai.cancel', { chatId }).catch((error) => showError(error.message || 'The agent did not stop.')))
+$('chat-start-fresh').addEventListener('click', () => send(true))
 $('chat-model').addEventListener('change', () => configure('model'))
 $('chat-effort').addEventListener('change', () => configure('effort'))
 $('chat-agents').addEventListener('click', openAgents)
