@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Untitled Browser</title>
+<meta name="description" content="A Mac browser made of blocks. Every tab is a window on your desktop, and every piece of the interface can be swapped out or rewritten.">
+<meta property="og:title" content="Untitled Browser">
+<meta property="og:description" content="A Mac browser made of blocks.">
+<meta property="og:image" content="https://skiff.adamstockermans.com/img/layer.webp">
+<meta name="theme-color" content="#ff6a3d">
+<link rel="preload" href="fonts/AlloVariable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111'/%3E%3Crect x='6' y='7' width='13' height='10' rx='2' fill='%23ff6a3d'/%3E%3Crect x='13' y='14' width='13' height='11' rx='2' fill='%23fff'/%3E%3C/svg%3E">
+<style>
+@font-face {
+  font-family: Allo;
+  src: url("fonts/AlloVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  --ground: #ff6a3d;
+  --ink: #111;
+  --paper: #fffaf2;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: light;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { background: var(--ground); scrollbar-color: var(--ink) var(--ground); -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  min-height: 100svh;
+  display: flex; flex-direction: column;
+  font-family: Allo, system-ui, sans-serif;
+  font-size: 18px; line-height: 1.5; font-weight: 450;
+  color: var(--ink);
+}
+
+::selection { background: var(--ink); color: var(--ground); }
+a { color: inherit; text-underline-offset: 0.2em; text-decoration-thickness: 2px; }
+:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; border-radius: 6px; }
+
+header, footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 22px clamp(20px, 4vw, 48px);
+  font-weight: 600; font-size: 16px;
+}
+.brand { font-weight: 800; font-size: 19px; text-decoration: none; display: flex; align-items: center; gap: 10px; }
+.tag {
+  font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  border: 2px solid var(--ink); border-radius: 99px; padding: 1px 8px 2px;
+}
+
+main {
+  flex: 1;
+  width: min(1180px, 100% - 2 * clamp(20px, 4vw, 48px));
+  margin: 0 auto;
+  padding: clamp(24px, 5vh, 64px) 0 clamp(40px, 6vh, 80px);
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(52px, 8vw, 6rem); line-height: 0.92; font-weight: 900; letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+.lede { margin: 22px 0 0; max-width: 44ch; font-size: clamp(19px, 1.6vw, 22px); text-wrap: pretty; }
+
+.cta { margin-top: 32px; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 14px 22px; }
+.btn {
+  display: inline-flex; align-items: center; gap: 12px;
+  background: var(--ink); color: var(--paper);
+  font-weight: 700; font-size: 20px; text-decoration: none;
+  padding: 16px 26px 17px; border-radius: 14px;
+  box-shadow: 0 10px 24px -12px rgb(0 0 0 / 0.55);
+  transition: transform 200ms var(--ease), box-shadow 200ms var(--ease);
+}
+.btn:hover { transform: translateY(-2px); box-shadow: 0 16px 30px -14px rgb(0 0 0 / 0.6); }
+.btn svg { width: 20px; height: 20px; flex: none; }
+.alt { font-weight: 600; }
+.meta { margin: 14px 0 0; font-size: 15px; font-weight: 500; }
+
+.shot {
+  margin: clamp(40px, 7vh, 72px) 0 0;
+  width: 100%;
+  border: 2px solid var(--ink); border-radius: 16px; overflow: hidden;
+  background: var(--paper);
+  box-shadow: 0 40px 80px -40px rgb(0 0 0 / 0.6);
+  animation: rise 900ms 120ms var(--ease) both;
+}
+.shot img { display: block; width: 100%; height: auto; }
+@keyframes rise {
+  from { transform: translateY(28px) scale(0.98); filter: blur(4px); }
+  to { transform: none; filter: none; }
+}
+
+footer { flex-wrap: wrap; font-size: 15px; font-weight: 550; }
+footer nav { display: flex; gap: 22px; flex-wrap: wrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  .shot { animation: none; }
+  .btn, .btn:hover { transition: none; transform: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <a class="brand" href="./">Untitled Browser <span class="tag">Alpha</span></a>
+  <a href="https://github.com/AStox/skiff">GitHub</a>
+</header>
+
+<main>
+  <h1>A browser made of blocks.</h1>
+  <p class="lede">Every tab is its own window on your desktop. The bar, the tab panel and the command bar are pieces you can swap out or rewrite. Or keep the ones it comes with.</p>
+  <div class="cta">
+    <a class="btn" data-dl="arm64" href="https://github.com/AStox/skiff/releases/download/v0.1.0-alpha.1/Skiff-0.1.0-alpha.1-arm64.dmg">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v12M6 11l6 6 6-6M5 20h14"/></svg>
+      Download for Mac
+    </a>
+    <a class="alt" data-dl="x64" href="https://github.com/AStox/skiff/releases/download/v0.1.0-alpha.1/Skiff-0.1.0-alpha.1.dmg">Intel Mac</a>
+  </div>
+  <p class="meta"><span data-version>v0.1.0-alpha.1</span> for macOS. It can bring over your Arc spaces and tabs.</p>
+
+  <figure class="shot">
+    <img src="img/layer.webp" width="2000" height="1250" alt="Tabs as separate windows on a Mac desktop, with a tab panel on the left and a small bar for the space at the bottom.">
+  </figure>
+</main>
+
+<footer>
+  <nav aria-label="Links">
+    <a href="https://github.com/AStox/skiff">Source</a>
+    <a href="https://github.com/AStox/skiff/releases">Releases</a>
+    <a href="https://github.com/AStox/skiff/issues">Report a bug</a>
+  </nav>
+  <span>Set in <a href="https://allo.joshpuckett.me/">Allo</a></span>
+</footer>
+
+<script>
+// Point the download links at the newest release, prereleases included.
+fetch('https://api.github.com/repos/AStox/skiff/releases?per_page=5')
+  .then((r) => r.ok ? r.json() : [])
+  .then((releases) => {
+    const rel = releases.find((r) => !r.draft)
+    if (!rel) return
+    const dmg = (arm) => rel.assets.find((a) => a.name.endsWith('.dmg') && a.name.includes('arm64') === arm)
+    const urls = { arm64: dmg(true), x64: dmg(false) }
+    document.querySelectorAll('[data-dl]').forEach((a) => { const asset = urls[a.dataset.dl]; if (asset) a.href = asset.browser_download_url })
+    document.querySelectorAll('[data-version]').forEach((el) => { el.textContent = rel.tag_name })
+  })
+  .catch(() => {})
+</script>
+</body>
+</html>
