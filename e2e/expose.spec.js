@@ -77,8 +77,10 @@ test('a two finger swipe up on the Buoy spreads the windows out with live pictur
   const fired = await buoy.evaluate((streams) => streams.map((events) => {
     const swipe = swipeTracker(true)
     return events.flatMap(([t, x, y]) => swipe.step(t, x, y) || [])
-  }), [UP, DOWN, SIDEWAYS, [...UP, ...swipe(1, 0).map(([t, x, y]) => [t + 500, x, y])], [...UP, ...swipe(1, 0).map(([t, x, y]) => [t + 300, x, y])], UP.map(([t, x, y]) => [t, y, y])])
-  expect(fired).toEqual([['up'], ['down'], [1], ['up', 1], ['up'], []])
+  }), [UP, DOWN, SIDEWAYS, [...UP, ...swipe(1, 0).map(([t, x, y]) => [t + 500, x, y])], [...UP, ...swipe(1, 0).map(([t, x, y]) => [t + 300, x, y])], UP.map(([t, x, y]) => [t, y, y]),
+    [...UP, ...DOWN.map(([t, x, y]) => [t + 300, x, y])], [...UP, ...Array.from({ length: 12 }, (_, i) => [300 + i * 16, 0, -2])], [...UP, ...UP.map(([t, x, y]) => [t + 300, x, y])]])
+  // A reversal while a tail still runs is a new touch, as sideways ever was; a few stray pixels the other way and a second swipe straight on are not.
+  expect(fired).toEqual([['up'], ['down'], [1], ['up', 1], ['up'], [], ['up', 'down'], ['up'], ['up']])
   // Chromium hands the page both deltas of sendInputEvent the other way round, so play() flips them.
   await buoy.evaluate(() => { window.seen = []; addEventListener('wheel', (e) => window.seen.push([e.deltaX, e.deltaY]), { capture: true }) })
   await onBuoy(skiff, [[0, 3, 7]])
@@ -122,6 +124,16 @@ test('a two finger swipe up on the Buoy spreads the windows out with live pictur
   // A hidden window is not drawn, so it has no picture, only its icon and title.
   await expect(expose.locator('.slot.shelved .blank')).toHaveText('Fixture reading')
   await expect(expose.locator('.slot.shelved img.shot')).toHaveCount(0)
+  // It is laid out as the window it is, scaled into its tile, so it can grow into the window; its tile corners stay 7px on screen.
+  const tile = await expose.locator('.slot.shelved').evaluate((slot) => {
+    const win = slot.querySelector('.win')
+    const k = Number(win.style.getPropertyValue('--k'))
+    return { size: [win.style.width, win.style.height], k, radius: parseFloat(getComputedStyle(win.querySelector('.card')).borderRadius), width: slot.getBoundingClientRect().width, parts: ['.ear', '.ring', '.glow'].map((part) => Boolean(win.querySelector(part))) }
+  })
+  expect(tile.size).toEqual([`${tabs[ids.four].width}px`, `${tabs[ids.four].height}px`])
+  expect(tile.k).toBeCloseTo(tabs[ids.four].width / tile.width, 1)
+  expect(tile.radius).toBeCloseTo(7 * tile.k, 3)
+  expect(tile.parts).toEqual([true, true, true])
   await expect(expose.locator('#empty')).toBeHidden()
   // The cards stand in for the windows, which leave until exposé closes.
   await expect.poll(() => pages(skiff)).toEqual([])
@@ -137,6 +149,8 @@ test('a two finger swipe up on the Buoy spreads the windows out with live pictur
     expect(box.x >= panel.x + panel.width || box.y + box.height <= panel.y || box.y >= panel.y + panel.height).toBe(true)
   }
   await expect(expose.locator('html')).toHaveClass(/\bsettled\b/)
+  // Once the windows are gone the veil is a plain fill: a masked full-screen layer is dear to fade.
+  await expect(expose.locator('#veil .fill')).not.toHaveAttribute('mask', /./)
   await expose.mouse.move(2, 2)
   await snapshot(expose.locator('body'), 'expose.png', { mask: [expose.locator('img.shot')] })
 
@@ -236,11 +250,31 @@ test('a window picked in exposé comes to the front, a hidden one is shown, and 
   expect(await activeId(skiff)).toBe(ids.three)
 
   expose = await open()
+  // The tile grows into the window's corners and gives way to the page once it is drawn, with no blank or hard-cornered card at the end.
+  await expose.evaluate(() => {
+    window.landing = []
+    const sample = () => {
+      const slot = document.querySelector('.slot.shelved')
+      if (!slot) return
+      const win = slot.querySelector('.win')
+      window.landing.push({ radius: parseFloat(getComputedStyle(win.querySelector('.card')).borderRadius), k: Number(win.style.getPropertyValue('--k')), ring: Number(getComputedStyle(win.querySelector('.ring')).opacity), ear: Number(getComputedStyle(win.querySelector('.ear')).opacity), card: Number(getComputedStyle(slot).opacity) })
+      requestAnimationFrame(sample)
+    }
+    document.querySelector('.slot.shelved').addEventListener('click', () => requestAnimationFrame(sample))
+  })
   await expose.locator('.slot.shelved').click()
   await expect.poll(() => exposed(skiff)).toBe(false)
   await expect.poll(() => pages(skiff)).toEqual([...order.filter((p) => p !== '/three'), '/three', '/four'])
   expect(await activeId(skiff)).toBe(ids.four)
   expect((await skiff.state()).tabs.find((t) => t.id === ids.four).desk.hidden).toBeFalsy()
+  const landing = await expose.evaluate(() => window.landing)
+  expect(landing.length).toBeGreaterThan(5)
+  // On screen the corners go from the tile's 7px to the window's 10px, whatever the scale on the way.
+  expect(landing[0].radius).toBeGreaterThan(10)
+  expect(landing.at(-1).radius).toBeLessThanOrEqual(10 + 0.01)
+  expect(Math.max(...landing.map((s) => s.ring))).toBe(1)
+  expect(Math.max(...landing.map((s) => s.ear))).toBe(1)
+  expect(Math.min(...landing.map((s) => s.card)), 'The card fades off the page').toBeLessThan(1)
 
   expose = await open()
   await expect(expose.locator(`.slot[data-tab-id="${ids.four}"]`)).toBeFocused()
@@ -287,6 +321,19 @@ test('a click glides the window home at once, before the core has brought it for
   await skiff.rpc('tabs.activate', { id: ids.two })
   await expect.poll(() => exposed(skiff)).toBe(false)
   await expect.poll(async () => (await pages(skiff)).at(-1)).toBe('/two')
+
+  // A swipe up that lands while the windows are still going home is not lost: exposé opens again once it has gone.
+  expose = await open()
+  const shows = async () => (await skiff.audit()).overlayCalls.filter(({ method, params }) => method === 'ui.showOverlay' && params.name === 'expose').length
+  const count = await shows()
+  await expose.keyboard.press('Escape')
+  await skiff.rpc('ui.emit', { name: 'expose', focus: false })
+  await expect.poll(shows).toBe(count + 1)
+  await expect.poll(() => exposed(skiff)).toBe(true)
+  await expect(expose.locator('.slot')).toHaveCount(4)
+  await expect(expose.locator('html')).toHaveClass(/\bsettled\b/)
+  await expose.keyboard.press('Escape')
+  await expect.poll(() => exposed(skiff)).toBe(false)
 })
 
 test('exposé in a space with no windows says so, and in the incognito space shows its own windows', async ({ skiff }) => {
@@ -315,4 +362,41 @@ test('exposé in a space with no windows says so, and in the incognito space sho
   await expose.locator(`.slot[data-tab-id="${tab.id}"]`).click()
   await expect.poll(() => exposed(skiff)).toBe(false)
   await expect.poll(() => pages(skiff)).toEqual(['/private'])
+})
+
+test('with reduced motion exposé fades instead of gliding, and the pages are back under the cards before the cards go', async ({ skiff }) => {
+  const { ids, order } = await desk(skiff)
+  const expose = await shellPage(skiff, '/expose.html')
+  await expose.emulateMedia({ reducedMotion: 'reduce' })
+  await onBuoy(skiff, UP)
+  await expect.poll(() => exposed(skiff)).toBe(true)
+  await expect(expose.locator('html')).toHaveClass(/\bsettled\b/)
+  await expect(expose.locator('.slot')).toHaveCount(4)
+  expect(await expose.evaluate(() => [...document.querySelectorAll('.slot .win')].map((win) => win.getAnimations().length))).toEqual([0, 0, 0, 0])
+  const calls = (await skiff.audit()).overlayCalls.length
+  await expose.locator('.slot.shelved').click()
+  await expect.poll(() => exposed(skiff)).toBe(false)
+  const after = (await skiff.audit()).overlayCalls.slice(calls).map(({ method, params }) => [method, params])
+  expect(after).toEqual([['tabs.activate', { id: ids.four }], ['ui.setPageVisible', { visible: true }], ['ui.hideOverlay', { name: 'expose' }]])
+  await expect.poll(() => pages(skiff)).toEqual([...order, '/four'])
+})
+
+test('Escape while the pictures are still being taken leaves at once, and the windows never go', async ({ skiff }) => {
+  const { order } = await desk(skiff)
+  const expose = await shellPage(skiff, '/expose.html')
+  await skiff.app.evaluate(() => { global.__skiffVisualDelay = { 'tabs.thumbnails': 1200 } })
+  const calls = (await skiff.audit()).overlayCalls.length
+  await skiff.rpc('ui.emit', { name: 'expose', focus: false })
+  await expect.poll(() => exposed(skiff)).toBe(true)
+  // The desk has dimmed around the windows, which are still real.
+  await expect.poll(() => expose.evaluate(() => document.getElementById('holes').children.length)).toBeGreaterThan(0)
+  await expose.keyboard.press('Escape')
+  await expect.poll(() => exposed(skiff)).toBe(false)
+  expect(await pages(skiff)).toEqual(order)
+  await skiff.app.evaluate(() => { global.__skiffVisualDelay = null })
+  // The pictures that arrive afterwards open nothing.
+  await skiff.shell.waitForTimeout(1500)
+  expect(await exposed(skiff)).toBe(false)
+  expect(await pages(skiff)).toEqual(order)
+  expect((await skiff.audit()).overlayCalls.slice(calls).filter(({ method }) => method === 'ui.setPageVisible')).toEqual([])
 })

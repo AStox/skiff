@@ -4,6 +4,7 @@
 const $ = (id) => document.getElementById(id)
 const stage = $('stage')
 const veil = $('veil')
+const veilFill = veil.querySelector('.fill')
 const holes = $('holes')
 const tray = $('tray')
 const root = document.documentElement
@@ -20,7 +21,7 @@ const TAG = 26
 const groups = $('groups')
 // Kept clear around the Buoy and the open panel, which stay above exposé.
 const CLEAR = 12
-const MS = 280
+const MS = 250
 // Quick off the mark and settling gently, as macOS moves its windows.
 const EASE = 'cubic-bezier(.25, .8, .25, 1)'
 // A window page's corner radius, as the core rounds it.
@@ -32,6 +33,8 @@ let state = null
 // While open: {space, active, cards: [{tab, rect, to, z, hidden, active, el}]}.
 let shown = null
 let closing = false
+// An opening asked for while exposé was closing.
+let again = false
 let panelRect = readStore('panel')
 // The work prepare() started: {at, key, layout, ready}.
 let prepared = null
@@ -120,14 +123,14 @@ function placeEars(list) {
   return slots
 }
 
-// A window is laid out at its real rect, as its frame and page draw it, and scaled into its place; a hidden one is laid out in its place.
+// A window is laid out at its real rect, as its frame and page draw it, and scaled into its place, a hidden one too, so it can grow into its window.
 function card(c, image) {
   const title = earTitle(c.tab)
-  const at = c.hidden ? c.to : c.rect
+  const at = c.rect
   const scale = c.to.width / at.width
   const win = h('span', { class: `win${c.active ? ' active' : ''}` },
-    !c.hidden && h('span', { class: 'ear', 'aria-hidden': 'true' }, h('span', { class: 'ear-fav' }, favicon(c.tab)), h('span', { class: 'ear-title' }, title)),
-    !c.hidden && h('span', { class: 'ring' }),
+    h('span', { class: 'ear', 'aria-hidden': 'true' }, h('span', { class: 'ear-fav' }, favicon(c.tab)), h('span', { class: 'ear-title' }, title)),
+    h('span', { class: 'ring' }),
     h('span', { class: 'glow' }),
     h('span', { class: 'card' }, image ? h('img', { class: 'shot', src: image, alt: '', draggable: 'false' }) : h('span', { class: 'blank' }, favicon(c.tab), h('span', { class: 'blank-title' }, title))))
   Object.assign(win.style, { left: px(at.x - c.to.x), top: px(at.y - c.to.y), width: px(at.width), height: px(at.height), transform: over(at, c.to) })
@@ -148,6 +151,7 @@ function dim(rects) {
   }
   holes.replaceChildren(Object.assign(rect({ x: 0, y: 0, width: innerWidth, height: innerHeight }), { id: 'all' }), ...rects.map((r) => rect(r, r.rx)))
   holes.firstChild.setAttribute('fill', '#fff')
+  veilFill.setAttribute('mask', 'url(#holes)')
   veil.style.opacity = 1
   if (!still()) veil.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MS, easing: 'ease-out' })
 }
@@ -182,20 +186,17 @@ async function plan() {
   return { st, active, cards, holes }
 }
 
-// Pictures as sharp as the windows are on screen, taken while the pages still show.
+// Pictures taken while the pages still show, each at twice the pixels its card settles at (never above the window's own): the main process encodes them one by one, so small ones open exposé sooner.
 async function pictures(layout) {
   if (!layout) return layout
   const { cards } = layout
-  const images = new Map()
-  const width = clamp(Math.ceil(Math.max(0, ...cards.filter((c) => !c.hidden).map((c) => c.rect.width)) * devicePixelRatio), 160, 3840)
-  const live = cards.filter((c) => !c.group)
-  for (let i = 0; i < live.length; i += 24) {
-    const shots = await skiff.call('tabs.thumbnails', { ids: live.slice(i, i + 24).map((c) => c.tab.id), width }).catch(() => null)
-    for (const s of shots || []) images.set(s.id, s.image)
-  }
-  for (const c of cards) c.el = card(c, images.get(c.tab.id))
+  await Promise.all(cards.map(async (c) => {
+    const width = clamp(Math.ceil(Math.min(c.rect.width, c.to.width * 2) * devicePixelRatio), 160, 3840)
+    const [shot] = c.hidden ? [] : await skiff.call('tabs.thumbnails', { ids: [c.tab.id], width }).catch(() => [])
+    c.el = card(c, shot?.image)
+    await Promise.all([...c.el.querySelectorAll('img.shot')].map((img) => img.decode().catch(() => {})))
+  }))
   placeEars(cards.filter((c) => !c.hidden).sort((a, b) => a.z - b.z))
-  await Promise.all(cards.flatMap((c) => [...c.el.querySelectorAll('img')].map((img) => img.decode().catch(() => {}))))
   return layout
 }
 
@@ -234,14 +235,14 @@ async function openExpose() {
   // Each window card first lies exactly over its window, and moves once the real pages and frames have gone.
   if (glide) for (const a of anims) a.pause()
   stage.replaceChildren(...cards.map((c) => c.el))
-  holes.replaceChildren(holes.firstChild)
   placeTray(cards.filter((c) => c.hidden))
   ;(cards.find((c) => c.tab === active) || cards[0])?.el.focus({ preventScroll: true })
-  // Two frames: the cards' first one has been drawn, so the desk never shows bare between the windows and their cards.
-  await frame()
-  await frame()
+  // Three frames, not two: the overlay's frame with the cards can reach the screen after the pages leave it, which left the desk bare in 7 of 26 Xvfb openings.
+  for (let i = 0; i < 3; i++) await frame()
   if (shown !== token || closing) return
   await skiff.call('ui.setPageVisible', { visible: false }).catch(() => {})
+  // The windows are gone, so the veil needs no holes, and a plain veil is cheap to fade.
+  veilFill.removeAttribute('mask')
   if (glide) await frame()
   if (shown !== token || closing) return
   for (const a of anims) a.play()
@@ -272,7 +273,12 @@ const pick = (c) => closeExpose(c)
 
 // Every window glides back to its place, the chosen one in front and activated meanwhile; a hidden one that was not chosen fades away.
 async function closeExpose(chosen) {
-  if (!shown?.space || closing) return
+  if (!shown || closing) return
+  // Asked to close before the cards are up: nothing has moved yet, so just leave.
+  if (!shown.space) {
+    shown = null
+    return finish()
+  }
   closing = true
   root.classList.remove('settled')
   const { cards } = shown
@@ -301,12 +307,13 @@ async function closeExpose(chosen) {
   for (const c of cards) {
     const win = c.el.firstChild
     if (!glide || (c.hidden && c !== chosen)) move(c.el, 'opacity', 0, motion)
-    else if (c.hidden) move(win, 'transform', over(c.to, c.rect), motion)
     else {
       move(win, 'transform', 'none', motion)
       move(win.querySelector('.ear'), 'opacity', 1, { ...motion, delay: MS * 0.4, duration: MS * 0.6 })
       move(win.querySelector('.ring'), 'opacity', 1, motion)
       move(win.querySelector('.glow'), 'opacity', 0, motion)
+      // A hidden window's tile grows from its tile corners into the window's.
+      if (c.hidden) for (const part of ['.card', '.glow']) move(win.querySelector(part), 'borderRadius', `${RADIUS}px`, motion)
     }
   }
   for (const a of document.getAnimations()) if (!(a instanceof CSSTransition)) a.cancel()
@@ -316,6 +323,8 @@ async function closeExpose(chosen) {
     await skiff.call('ui.setPageVisible', { visible: true }).catch(() => {})
     // The pages draw again under the cards, which lie exactly over them, before the cards go.
     for (let i = 0; i < 4; i++) await frame()
+    // A hidden window has no picture of itself, so its card gives way to the page it has become.
+    if (chosen?.hidden) await chosen.el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120, easing: 'ease-out', fill: 'forwards' }).finished.catch(() => {})
   }
   finish()
 }
@@ -335,6 +344,9 @@ async function finish() {
   await closeOverlay('expose')
   shown = null
   closing = false
+  // A swipe up that landed while the windows were still going home opens exposé again, once it has gone.
+  if (again) skiff.call('ui.emit', { name: 'expose', focus: false }).catch(() => {})
+  again = false
 }
 
 const NEIGHBOUR = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }
@@ -354,7 +366,7 @@ function moveFocus(key) {
 }
 
 addEventListener('keydown', (e) => {
-  if (!shown?.space || closing) return
+  if (!shown || closing) return
   if (NEIGHBOUR[e.key] || e.key === 'Tab') root.classList.add('keyed')
   if (e.key === 'Escape') closeExpose()
   else if (NEIGHBOUR[e.key]) moveFocus(e.key)
@@ -375,8 +387,9 @@ addEventListener('wheel', (e) => {
 // layer.js forwards the event that opens exposé; the gesture again, or a swipe down on the Buoy or an ear, closes it.
 skiff.on('expose', (data) => {
   if (data?.forwarded) openExpose()
-  else if (shown?.space) closeExpose()
-  else if (!shown && !data?.close) prepare()
+  else if (closing) again ||= !data?.close
+  else if (shown) closeExpose()
+  else if (!data?.close) prepare()
 })
 skiff.on('expose-warm', () => { if (!shown) prepare() })
 skiff.on('panel-moved', (rect) => { panelRect = rect || null })

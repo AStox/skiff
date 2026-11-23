@@ -108,24 +108,27 @@ const writeStore = (key, value) => { try { localStorage.setItem(`layer.${key}`, 
 
 // A two finger swipe is a stream of wheel events, and macOS keeps a decaying momentum tail coming for up to a second after the fingers lift.
 // One switch per gesture: a swipe fires once it has gone 30px, then only a pause (a new touch stops the tail first) or a reversal starts another.
-// With vertical, a mostly vertical stream fires 'up' or 'down' once it has gone 40px, and nothing else fires until the next pause.
+// With vertical, a mostly vertical stream fires 'up' or 'down' once it has gone 40px, and nothing else fires until the next pause or a reversal.
 const SWIPE_GAP = 120
 function swipeTracker(vertical = false) {
-  const s = { last: -Infinity, x: 0, y: 0, used: false, dir: 0 }
+  const s = { last: -Infinity, x: 0, y: 0, used: false, dir: 0, up: 0 }
   return {
     // Nothing fires again until the stream goes quiet.
-    block(now) { Object.assign(s, { last: now, x: 0, y: 0, used: true, dir: 0 }) },
+    block(now) { Object.assign(s, { last: now, x: 0, y: 0, used: true, dir: 0, up: 0 }) },
     // x, y: one event's travel in CSS pixels. Returns 1 or -1 when a sideways swipe fires, 'up' or 'down' for a vertical one, else 0.
     step(now, x, y) {
       if (now - s.last >= SWIPE_GAP) Object.assign(s, { x: 0, y: 0, used: false })
       s.last = now
       if (vertical && Math.abs(y) > Math.abs(x) * 1.3) {
         s.x = 0
-        if (s.used) return 0
+        if (s.used) {
+          if (!s.up || Math.sign(y) === s.up) return 0
+          Object.assign(s, { y: 0, used: false, up: 0 })
+        }
         if (s.y && Math.sign(s.y) !== Math.sign(y)) s.y = 0
         s.y += y
         if (Math.abs(s.y) < 40) return 0
-        Object.assign(s, { used: true, dir: 0 })
+        Object.assign(s, { used: true, dir: 0, up: Math.sign(s.y) })
         // With natural scrolling, fingers moving up send a positive deltaY; spaceSwiper flips it when that is off.
         return s.y > 0 ? 'up' : 'down'
       }
