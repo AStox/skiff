@@ -27,7 +27,7 @@
    Do instead: call `skiff.shortcut('<accelerator>')` in a spec; it clicks the menu item from the main process, which is the path the real accelerator takes. It resolves before the shell has handled the event, so wait for its effect (for example `#palette-input` focused) before typing, or the first keystroke lands nowhere. [2026-11-14]
 10. **[2026-11-23] Source lives on GitHub (`AStox/skiff`); releases come only from CI**
    Do instead: commit and push; never hand-copy working trees between hosts. Cut a release by bumping `version`, tagging `v<version>` and pushing the tag; `release.yml` signs, notarizes and uploads to a draft that Adam publishes. Keep the step that pre-creates the draft: without it electron-builder's parallel uploads create two drafts for one tag. Verify a build on the Mac with `codesign --verify --deep --strict`, `spctl -a -vv -t exec` and `xcrun stapler validate` on the extracted app; none of them open a window.
-11. **[2026-11-23] The landing page is `site/`, deployed by `pages.yml` to https://adamstockermans.com/skiff/**
+11. **[2026-11-23] The landing page is `site/`, deployed by `pages.yml` to https://skiff.adamstockermans.com/ (one screen, Layer only; keep it that short)**
    Do instead: refresh its screenshots with `scripts/shell-preview.js <shell> out.png --size 1440x900`, then `ffmpeg -i out.png -vf scale=2000:-1 -c:v libwebp -quality 80 site/img/<name>.webp`. The page is plain HTML with no build step; download links fall back to the hard-coded tag and are rewritten at load from the newest non-draft release.
 
 ## Shell & Command Reliability
