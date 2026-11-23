@@ -1,10 +1,23 @@
 @font-face {
-  font-family: 'Inter Variable';
+  font-family: Allo;
   font-style: normal;
   font-display: swap;
   font-weight: 100 900;
-  src: url('inter.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  src: url('AlloVariable.woff2') format('woff2');
+}
+@font-face {
+  font-family: Allo;
+  font-style: italic;
+  font-display: swap;
+  font-weight: 400;
+  src: url('Allo-Oblique.woff2') format('woff2');
+}
+@font-face {
+  font-family: Allo;
+  font-style: italic;
+  font-display: swap;
+  font-weight: 700;
+  src: url('Allo-BoldOblique.woff2') format('woff2');
 }
 
 :root {
@@ -29,7 +42,7 @@
   --press: color-mix(in oklab, var(--ink) 12%, transparent);
   --ring: color-mix(in oklab, var(--primary) 55%, var(--canvas));
   --lift: 0 -4px 12px -4px #33333312;
-  --sans: 'Inter Variable', Inter, -apple-system, BlinkMacSystemFont, system-ui, 'Segoe UI', sans-serif;
+  --sans: Allo, system-ui, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
   --column: 720px;
   --gutter: max(24px, calc((100% - var(--column)) / 2));
@@ -43,7 +56,7 @@
 * { box-sizing: border-box; margin: 0; padding: 0; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 [hidden] { display: none !important; }
 html, body { height: 100%; }
-body { display: flex; flex-direction: column; overflow: hidden; background: var(--canvas); color: var(--ink); font: 13px/1.625 var(--sans); -webkit-font-smoothing: antialiased; cursor: default; }
+body { display: flex; flex-direction: column; overflow: hidden; background: var(--canvas); color: var(--ink); font: 13px/1.625 var(--sans); font-variation-settings: 'ROND' 50; font-feature-settings: 'calt' 0; -webkit-font-smoothing: antialiased; cursor: default; }
 ::selection { background: color-mix(in oklab, var(--accent) 24%, var(--canvas)); color: var(--ink); }
 :focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 button, input, select, textarea { font: inherit; color: inherit; border: 0; background: none; }

@@ -1,9 +1,19 @@
 @font-face {
-  font-family: Archivo;
-  src: url('assets/archivo.ttf') format('truetype');
+  font-family: Allo;
+  src: url('assets/AlloVariable.woff2') format('woff2');
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
+}
+:root {
+  --sans: Allo, system-ui, sans-serif;
+  --display: Allo, system-ui, sans-serif;
+  --data: Allo, system-ui, sans-serif;
+  --fv-ui: 'ROND' 50;
+  --fv-display: 'opsz' 32, 'ROND' 100;
+  --fv-data: 'ROND' 0;
+  --ff-ui: 'calt' 0;
+  --ff-data: 'calt' 0, 'tnum' 1, 'ss02' 1;
 }
 
 :root {
@@ -49,7 +59,7 @@ body {
   overflow: hidden;
   background: var(--bg);
   color: var(--ink);
-  font: 13px/1.45 Archivo, system-ui, sans-serif;
+  font: 13px/1.45 var(--sans); font-variation-settings: var(--fv-ui); font-feature-settings: var(--ff-ui);
   font-synthesis: none;
   -webkit-font-smoothing: antialiased;
   user-select: none;
