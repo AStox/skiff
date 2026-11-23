@@ -294,11 +294,12 @@ input { caret-color: var(--ink); }
 #panel .hint:empty { display: none; }
 .field { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 0; }
 .field-label, .field { color: var(--soft); font-size: 12px; font-weight: 500; }
-#space-name, #hours, #shell, #search-engine { width: 100%; height: 30px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--control); background: var(--hover); color: var(--ink); font-size: 12px; user-select: text; }
-#space-name:focus-visible, #hours:focus-visible, #shell:focus-visible, #search-engine:focus-visible { outline-offset: 0; }
-#hours { width: 80px; font-family: var(--mono); }
-#shell, #search-engine { width: auto; min-width: 140px; max-width: 100%; padding-right: 26px; appearance: none; font: inherit; font-size: 12px; background: var(--chevron) right 7px center / 14px no-repeat, var(--hover); user-select: none; cursor: default; }
-#shell:hover, #search-engine:hover { background-color: var(--press); }
+.field.check { flex-direction: row; align-items: center; gap: 8px; }
+#space-name, .setting-input, #shell, #search-engine, select.setting-input { width: 100%; height: 30px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--control); background: var(--hover); color: var(--ink); font-size: 12px; user-select: text; }
+#space-name:focus-visible, .setting-input:focus-visible, #shell:focus-visible, #search-engine:focus-visible, select.setting-input:focus-visible { outline-offset: 0; }
+input.setting-input[type='number'] { width: 80px; font-family: var(--mono); }
+#shell, #search-engine, select.setting-input { width: auto; min-width: 140px; max-width: 100%; padding-right: 26px; appearance: none; font: inherit; font-size: 12px; background: var(--chevron) right 7px center / 14px no-repeat, var(--hover); user-select: none; cursor: default; }
+#shell:hover, #search-engine:hover, select.setting-input:hover { background-color: var(--press); }
 .swatches { display: flex; flex-wrap: wrap; gap: 4px; margin-top: -5px; }
 .swatch { flex: none; display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid transparent; border-radius: 50%; }
 .swatch::before { content: ''; width: 16px; height: 16px; border: 1px solid var(--line); border-radius: 50%; background: var(--dot); }

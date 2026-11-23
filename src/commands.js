@@ -261,10 +261,8 @@ const schemas = {
   'import.arc.preview': shape({ profileId: string }),
   'import.arc': shape({ profileIds: array(string, { minItems: 1 }), categories: shape({ tabs: boolean, openTabs: boolean, passwords: boolean, logins: boolean }, ['tabs', 'openTabs', 'passwords', 'logins']), keepSpaces: boolean }, ['profileIds', 'categories', 'keepSpaces']),
   'passwords.fill': shape(),
-  'browser.isDefault': shape(),
-  'browser.setDefault': shape(),
   'settings.set': shape({
-    ...Object.fromEntries(settings.catalog.map((entry) => [entry.id, settings.schemaForSetting(entry.id)])),
+    ...Object.fromEntries(settings.catalog.filter((entry) => entry.type !== 'action').map((entry) => [entry.id, settings.schemaForSetting(entry.id)])),
     shortcuts: { type: 'object', additionalProperties: shape({ method: id, params: { type: 'object' } }, ['method']) },
     browserIdentity: { type: 'object', additionalProperties: { enum: ['native', 'compatible'] } },
     ai: shape({ agents: array(shape({ name: { type: 'string', minLength: 1, maxLength: 40 }, command: { type: 'string', minLength: 1, maxLength: 500 } }, ['name', 'command']), { maxItems: 10 }), agent: string, model: { type: 'string', maxLength: 200 }, effort: { type: 'string', maxLength: 200 } })

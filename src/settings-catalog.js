@@ -1,9 +1,11 @@
 'use strict'
 
-// Only actual user-editable scalars belong here. Profiles, shortcuts and agent
+// Only actual user-editable scalars and host actions belong here. Profiles, shortcuts and agent
 // definitions have their own structured commands, not flattened pseudo-settings.
+// quickPanel marks an entry for the interface's quick Settings panel; a string setting with enum is a choice.
+// An action has no value: its host handler (see present/run) supplies status text and availability.
 const catalog = [
-  { id: 'autoArchiveHours', type: 'number', default: 12, scope: 'global', title: 'Auto-archive after', description: 'Archive inactive ordinary tabs after this many hours. Zero or less disables auto-archive.', aliases: ['archive', 'cleanup', 'hours'], section: 'tabs' },
+  { id: 'autoArchiveHours', type: 'number', default: 12, scope: 'global', title: 'Auto-archive after', description: 'Archive inactive ordinary tabs after this many hours. Favorites and pinned tabs are never archived. Zero or less disables auto-archive.', aliases: ['archive', 'cleanup', 'hours'], section: 'tabs', quickPanel: true },
   { id: 'searchUrl', type: 'string', default: 'https://www.google.com/search?q=%s', scope: 'global', title: 'Search engine URL', description: 'HTTP or HTTPS search address containing %s for the search terms.', aliases: ['search', 'engine', 'provider'], section: 'general', pattern: '^https?://.*%s' },
   { id: 'historyRetentionDays', type: 'integer', default: 90, scope: 'global', title: 'History retention', description: 'Days to keep browsing history. Zero disables history recording.', aliases: ['history', 'privacy', 'days'], section: 'history', minimum: 0, maximum: 3650 },
   { id: 'downloadAskWhere', type: 'boolean', default: true, scope: 'global', title: 'Ask where to save downloads', description: 'Choose a destination before saving each download.', aliases: ['download', 'save', 'prompt'], section: 'downloads' },
@@ -11,7 +13,8 @@ const catalog = [
   { id: 'memorySaver', type: 'boolean', default: false, scope: 'global', title: 'Memory saver', description: 'Unload inactive eligible pages. They reload at their last URL without restoring prior page state, back/forward history or scroll position. Visible pages and pages with protected activity stay loaded.', aliases: ['memory', 'sleep', 'discard', 'performance'], section: 'tabs' },
   { id: 'memorySaverMinutes', type: 'integer', default: 30, scope: 'global', title: 'Memory saver delay', description: 'Minutes before an inactive eligible page may be unloaded.', aliases: ['memory', 'sleep', 'minutes'], section: 'tabs', minimum: 1, maximum: 10080 },
   { id: 'transcriptRecovery', type: 'boolean', default: false, scope: 'global', title: 'Save conversation recovery transcripts', description: 'Opt in to local recovery transcripts for normal conversations. Private conversations are never saved.', aliases: ['chat', 'agent', 'transcript', 'recovery', 'privacy'], section: 'transcripts' },
-  { id: 'transcriptRetentionDays', type: 'integer', default: 30, scope: 'global', title: 'Transcript retention', description: 'Days to retain opted-in conversation recovery transcripts.', aliases: ['chat', 'agent', 'transcript', 'days'], section: 'transcripts', minimum: 1, maximum: 3650 }
+  { id: 'transcriptRetentionDays', type: 'integer', default: 30, scope: 'global', title: 'Transcript retention', description: 'Days to retain opted-in conversation recovery transcripts.', aliases: ['chat', 'agent', 'transcript', 'days'], section: 'transcripts', minimum: 1, maximum: 3650 },
+  { id: 'defaultBrowser', type: 'action', scope: 'global', title: 'Default browser', description: 'Open web links from other apps in Skiff.', actionLabel: 'Make Skiff your default browser', aliases: ['default', 'browser', 'links', 'handler'], section: 'general', quickPanel: true }
 ]
 for (const entry of catalog) {
   entry.owner = 'core'
@@ -27,11 +30,11 @@ function get(id) { return copy(byId.get(id)) }
 function list(filters = {}) {
   return searchEntries(catalog, '', filters)
 }
-function searchEntries(entries, query = '', { scope, section, owner } = {}) {
+function searchEntries(entries, query = '', { scope, section, owner, quickPanel } = {}) {
   if (typeof query !== 'string') throw bad('query must be a string')
   const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean)
   return entries.filter((entry) => {
-    if (scope !== undefined && entry.scope !== scope || section !== undefined && entry.section !== section || owner !== undefined && entry.owner !== owner) return false
+    if (scope !== undefined && entry.scope !== scope || section !== undefined && entry.section !== section || owner !== undefined && entry.owner !== owner || quickPanel !== undefined && Boolean(entry.quickPanel) !== quickPanel) return false
     const text = [entry.id, entry.title, entry.description, entry.section, entry.owner, entry.scope, ...(entry.aliases || [])].join(' ').toLowerCase()
     return terms.every((term) => text.includes(term))
   }).map(copy)
@@ -63,6 +66,7 @@ function schemaForSetting(id) {
 function validate(id, value, { scope = 'global' } = {}) {
   const entry = byId.get(id)
   if (!entry) throw bad(`Unknown setting: ${id}`)
+  if (entry.type === 'action') throw bad(`${id} is an action, not a setting`)
   return validateEntry(entry, value, { scope })
 }
 function validateEntry(entry, value, { scope = 'global' } = {}) {
@@ -81,4 +85,27 @@ function validateEntry(entry, value, { scope = 'global' } = {}) {
   return value
 }
 
-module.exports = { catalog, get, list, search, validate, schemaForSetting, searchEntries, schemaForEntry, validateEntry }
+// Core entries as an interface draws them: settings gain their current value, actions the handler's
+// status text and availability. An action whose handler is missing or unsupported here is omitted.
+// A handler is { supported?(), status() -> {text, available}, run() }.
+function present(entries, { values = {}, actions = {} } = {}) {
+  return entries.flatMap((entry) => {
+    if (entry.owner !== 'core') return [entry]
+    if (entry.type !== 'action') return [{ ...entry, value: Object.hasOwn(values, entry.id) ? values[entry.id] : entry.default }]
+    const action = actions[entry.id]
+    if (!action || action.supported?.() === false) return []
+    const { text = '', available = true } = action.status()
+    return [{ ...entry, status: text, available }]
+  })
+}
+async function run(id, actions = {}) {
+  const entry = byId.get(id)
+  if (entry?.type !== 'action') throw bad(`Unknown action: ${id}`)
+  const action = actions[id]
+  if (!action || action.supported?.() === false) throw bad(`${entry.title} is not available in this build or on this platform`)
+  if (action.status().available === false) throw bad(`${entry.title} has nothing to do right now`)
+  await action.run()
+  return present([copy(entry)], { actions })[0]
+}
+
+module.exports = { catalog, get, list, search, validate, schemaForSetting, searchEntries, schemaForEntry, validateEntry, present, run }

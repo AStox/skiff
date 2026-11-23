@@ -1332,14 +1332,17 @@ def('import.arc', '{profileIds: string[], categories:{tabs,openTabs,passwords,lo
 }))
 def('passwords.fill', '', 'Ask which saved account to fill on the active site; never returns credentials', fillPassword)
 
-const defaultBrowserStatus = () => ({ supported: app.isPackaged && process.platform === 'darwin', default: app.isDefaultProtocolClient('http') && app.isDefaultProtocolClient('https') })
-def('browser.isDefault', '', 'Whether Skiff is the default web browser; supported is false unless this is the packaged macOS app', defaultBrowserStatus)
-def('browser.setDefault', '', 'Ask macOS to make Skiff the default web browser (the system shows its own confirmation) and return the new status; only works in the packaged macOS app', () => {
-  if (!defaultBrowserStatus().supported) throw S.err('bad_params', 'Skiff can only become the default browser as the packaged macOS app')
-  app.setAsDefaultProtocolClient('http')
-  app.setAsDefaultProtocolClient('https')
-  return defaultBrowserStatus()
-})
+const settingsActions = {
+  defaultBrowser: {
+    // macOS shows its own confirmation; only the packaged app can register as the browser.
+    supported: () => app.isPackaged && process.platform === 'darwin',
+    status: () => {
+      const done = app.isDefaultProtocolClient('http') && app.isDefaultProtocolClient('https')
+      return { text: done ? 'Skiff is your default browser.' : '', available: !done }
+    },
+    run: () => { app.setAsDefaultProtocolClient('http'); app.setAsDefaultProtocolClient('https') }
+  }
+}
 
 def('settings.set', '{autoArchiveHours?, searchUrl?, shortcuts?, ai?, browserIdentity?}', 'Change settings; browserIdentity merges {persistentPartition: "native"|"compatible"} and applies only after restarting Skiff, without changing profile storage; compatible is the default. shortcuts replaces the whole map of accelerator to {method, params?}; autoArchiveHours 0 turns auto-archive off; ai {agents?, agent?, model?, effort?} merges into the agent settings: agents [{name, command}] (at most 10, unique names of at most 40 characters, commands of at most 500 run in the login shell), agent the default one, model and effort the last choices; an agent removed or whose command changed is stopped', (p) => {
   for (const s of Object.values(S.isObject(p.shortcuts) ? p.shortcuts : {})) {
@@ -1574,7 +1577,8 @@ command('profiles.list', 'List browsing profiles', {}, [], () => state.profiles)
 command('links.rules', 'List external link routing rules', {}, [], () => state.linkRules)
 command('links.route', 'Resolve an external link profile', { url: string }, ['url'], (p) => S.routeLink(state, p))
 command('links.open', 'Open an external link in its routed profile', { url: string }, ['url'], (p) => openProfileTab(S.routeLink(state, p)))
-command('settings.catalog', 'Search core and owned component settings metadata', { query: string, section: string, spaceId: string, owner: string, scope: { enum: ['global', 'space', 'tab', 'profile'] } }, [], async (p) => settingsCatalog.searchEntries([...settingsCatalog.list(), ...await registry.call('components.settings.list', { spaceId: p.spaceId })], p.query || '', p))
+command('settings.catalog', 'Search core and owned component settings metadata; core entries carry their current value, action entries their status text and availability (unsupported actions are omitted); quickPanel: true lists what an interface draws in its quick Settings panel', { query: string, section: string, spaceId: string, owner: string, quickPanel: boolean, scope: { enum: ['global', 'space', 'tab', 'profile'] } }, [], async (p) => settingsCatalog.searchEntries([...settingsCatalog.present(settingsCatalog.list(), { values: state.settings, actions: settingsActions }), ...await registry.call('components.settings.list', { spaceId: p.spaceId })], p.query || '', p))
+command('settings.run', 'Run a settings action entry from settings.catalog (for example defaultBrowser) and return the refreshed entry', { id: string }, ['id'], (p) => settingsCatalog.run(p.id, settingsActions))
 command('grants.list', 'List scoped agent grants without credentials', {}, [], () => access.list())
 command('grants.issue', 'Approve explicit browser, customization, and component-tool scopes', { owner: string, sessionId: string, tabIds: strings, spaceIds: strings, read: boolean, mutate: boolean, commands: strings, tools: strings, components: strings }, ['owner'], (p) => access.issue(p))
 command('grants.revoke', 'Revoke a grant and its session credentials', { ...ids, owner: string, sessionId: string }, [], (p) => access.revoke(p))
@@ -1763,7 +1767,7 @@ function closePreview(pid) {
 }
 
 async function call(method, params = {}, context = {}) {
-  if (previewMode && /^(?:components\.(?:apply|enable|revert|stage|create|bind|preview)|ui\.customize|ai\.|grants\.|sync\.|extensions\.|import\.|passwords\.|browser\.setDefault|settings\.set$)/.test(method)) throw S.err('forbidden', 'Disposable previews cannot activate executable code or credentials')
+  if (previewMode && /^(?:components\.(?:apply|enable|revert|stage|create|bind|preview)|ui\.customize|ai\.|grants\.|sync\.|extensions\.|import\.|passwords\.|settings\.(?:set|run)$)/.test(method)) throw S.err('forbidden', 'Disposable previews cannot activate executable code or credentials')
   if (context.component && !context.hostManagement && /^(?:grants\.|sync\.|import\.|passwords\.|components\.(?:apply|enable|revert|bind|stage|create|remove|disable)|ui\.customize)/.test(method)) throw S.err('forbidden', 'This operation requires the explicitly granted host.manage capability')
   if (['components.apply', 'components.enable', 'components.revert'].includes(method)) {
     if (context.accessContext) access.assert(context.accessContext, { command: method, params })

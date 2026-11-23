@@ -8,7 +8,7 @@ const relative = new Intl.RelativeTimeFormat(undefined, { style: 'narrow' })
 
 let state = null
 let lastBounds = ''
-const ui = { archive: false, settings: false, renaming: false, imported: '', filling: false, extensions: [] }
+const ui = { archive: false, settings: false, renaming: false, imported: '', filling: false, quick: [], quickKey: '', quickRequest: 0, extensions: [] }
 const drawn = {}
 const importDialog = $('arc-import')
 let importer = null
@@ -532,6 +532,64 @@ async function fillSavedPassword() {
   $('fill-password')?.focus()
 }
 
+// Every quick-panel entry of settings.catalog is drawn here by its type, so a new host setting or action reaches this shell with no change to it.
+function refreshQuick() {
+  const request = ++ui.quickRequest
+  ui.quickKey = JSON.stringify(state.settings)
+  return Promise.resolve(skiff.call('settings.catalog', { quickPanel: true, owner: 'core' })).then((list) => {
+    if (request !== ui.quickRequest) return
+    ui.quick = Array.isArray(list) ? list : []
+    render()
+  }).catch(() => {})
+}
+
+async function runQuick(entry) {
+  await call('settings.run', { id: entry.id })
+  await refreshQuick()
+}
+
+function quickControl(entry, id, describedby) {
+  const write = (value, revert) => Promise.resolve(call('settings.set', { [entry.id]: value })).then((done) => { if (!done) revert() })
+  const attrs = { id, 'aria-describedby': describedby }
+  if (entry.enum) {
+    const select = h('select', { ...attrs, class: 'setting-input' }, entry.enum.map((value) => h('option', { value: String(value), selected: value === entry.value }, String(value))))
+    select.addEventListener('change', () => write(entry.enum.find((value) => String(value) === select.value), () => { select.value = String(entry.value) }))
+    return select
+  }
+  if (entry.type === 'boolean') {
+    const box = h('input', { ...attrs, type: 'checkbox', checked: entry.value === true })
+    box.addEventListener('change', () => write(box.checked, () => { box.checked = entry.value === true }))
+    return box
+  }
+  const numeric = entry.type === 'number' || entry.type === 'integer'
+  const input = h('input', { ...attrs, class: 'setting-input', type: numeric ? 'number' : 'text', min: entry.minimum, max: entry.maximum, step: numeric ? (entry.type === 'integer' ? '1' : 'any') : null, maxlength: entry.maxLength, value: String(entry.value ?? '') })
+  input.addEventListener('change', () => {
+    if (numeric && (!input.value || !input.validity.valid)) {
+      showError(`Enter a valid number for ${entry.title}.`)
+      input.value = String(entry.value)
+      return
+    }
+    write(numeric ? Number(input.value) : input.value, () => { input.value = String(entry.value ?? '') })
+  })
+  return input
+}
+
+function quickRow(entry) {
+  const id = `setting-${entry.id}`
+  const help = entry.description && h('p', { class: 'hint', id: `${id}-help` }, entry.description)
+  if (entry.type === 'action') return [
+    h('div', { class: 'field-label', id: `${id}-label` }, entry.title),
+    help,
+    entry.status && h('p', { class: 'hint', id: `${id}-status`, role: 'status' }, entry.status),
+    entry.available !== false && h('button', { id, class: 'text-btn', onclick: () => runQuick(entry) }, entry.actionLabel || entry.title)
+  ]
+  const check = entry.type === 'boolean' && !entry.enum
+  const control = quickControl(entry, id, help ? `${id}-help` : null)
+  return [h('label', { class: check ? 'field check' : 'field', for: id }, check ? [control, entry.title] : [entry.title, control]), help]
+}
+
+addEventListener('focus', () => { if (ui.settings) refreshQuick() })
+
 function panel(space) {
   const name = h('input', { id: 'space-name', type: 'text', maxlength: '60', value: space.name })
   const saveName = () => {
@@ -545,14 +603,6 @@ function panel(space) {
   name.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') { event.preventDefault(); name.blur() }
     if (event.key === 'Escape') { name.value = space.name; name.blur() }
-  })
-  const hours = h('input', { id: 'hours', type: 'number', min: '0', step: '1', value: String(state.settings.autoArchiveHours), 'aria-describedby': 'hours-help' })
-  hours.addEventListener('change', () => {
-    if (!hours.value || !hours.validity.valid) {
-      showError('Enter a whole number of hours, or 0 to turn auto-archive off.')
-      return
-    }
-    call('settings.set', { autoArchiveHours: Number(hours.value) })
   })
   const shell = h('select', { id: 'shell', onchange: () => call('ui.setShell', { name: shell.value }) },
     state.shells.map((name) => h('option', { value: name, selected: name === state.settings.shell }, name)))
@@ -573,11 +623,10 @@ function panel(space) {
           return swatch
         }))
     ],
-    h('label', { class: 'field', for: 'hours' }, 'Auto-archive after (hours)', hours),
-    h('p', { class: 'hint', id: 'hours-help' }, '0 turns it off. Favorites and pinned tabs are never auto-archived.'),
     h('label', { class: 'field', for: 'shell' }, 'Shell', shell),
     h('p', { class: 'hint' }, 'Switches the whole interface in place. Tabs stay as they are.'),
     h('label', { class: 'field', for: 'search-engine' }, 'Search engine', search),
+    ui.quick.map(quickRow),
     extensionsBlock(),
     h('div', { class: 'settings-actions' },
       h('button', { id: 'import-arc', class: 'text-btn', onclick: importArc }, 'Import from Arc'),
@@ -1084,7 +1133,8 @@ function render() {
     const travel = `translateX(${state.spaces.indexOf(space) > from ? 24 : -24}px)`
     if (from >= 0 && !still.matches) for (const id of ['favorites', 'space-head', 'list']) $(id).animate([{ transform: travel, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 130, easing: 'ease-out' })
   }
-  section('panel', ui.settings && [space, state.spaces.length, state.settings.autoArchiveHours, state.settings.searchUrl, ui.imported, ui.filling, Boolean(tab), ui.extensions], () => (ui.settings ? panel(space) : []))
+  section('panel', ui.settings && [space, state.spaces.length, ui.quick, state.settings.searchUrl, ui.imported, ui.filling, Boolean(tab), ui.extensions], () => (ui.settings ? panel(space) : []))
+  if (ui.settings && ui.quickKey !== JSON.stringify(state.settings)) refreshQuick()
   if (!holds) section('list', ui.archive ? [state.archive] : [tabs, tab?.id, state.collapsed], () => (ui.archive ? archiveRows() : [
     tabRows(space, tabs, (t, depth) => tabRow(t, t.id === tab?.id, depth)),
     h('li', { class: 'row', 'data-new-tab': true }, h('button', { id: 'new-tab', class: 'row-main', onclick: () => openPalette('new') }, icon('plus'), h('span', { class: 'label' }, 'New tab')))
@@ -1124,7 +1174,7 @@ function toggleSettings() {
   ui.archive = false
   ui.renaming = false
   render()
-  if (ui.settings) refreshExtensions()
+  if (ui.settings) { refreshExtensions(); refreshQuick() }
 }
 
 $('archive-toggle').addEventListener('click', toggleArchive)

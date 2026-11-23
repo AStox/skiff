@@ -60,8 +60,9 @@ async function settings() {
   const catalog = await call('settings.catalog', { query: $('query').value, ...(selectedSpaceId?{spaceId:selectedSpaceId}:{}) })
   return [field('Settings scope',scope),button('Refresh settings',() => render()),el('p',{},'Space-scoped component settings inherit their manifest default, then the global override, then the selected space override. Reset removes only the override at this scope. Reverting component code restores its matching saved property overrides; component data storage is separate.'),
     ...empty(catalog.map((item) => {
+      if(item.type==='action')return row(item.title,[item.description,item.status].filter(Boolean).join(' ')+' Owner: core · global',button(item.actionLabel||item.title,async () => {await call('settings.run',{id:item.id});await render()},{disabled:!item.available}))
       const component=Boolean(item.owner&&item.owner!=='core')
-      const current=component?item.value:state.settings[item.id] ?? item.default
+      const current=item.value
       const writable=!selectedSpaceId||item.scope==='space'
       const target=component?{id:item.owner,key:item.key,...(selectedSpaceId?{spaceId:selectedSpaceId}:{})}:null
       const control = item.enum ? select(item.enum.map((v) => [String(v), String(v)]), String(current)) : input(current, item.type === 'boolean' ? 'checkbox' : ['number', 'integer'].includes(item.type) ? 'number' : 'text')

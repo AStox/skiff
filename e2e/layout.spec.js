@@ -58,7 +58,8 @@ for (const theme of ['light', 'dark']) {
       await skiff.rpc('spaces.update', { id: (await skiff.state()).activeSpaceId, name: 'A long workspace label that should truncate without overlap' })
       await contrast(shell, ['#space-head h1', '#address'])
       await shell.locator('#settings-toggle').click()
-      await contrast(shell, ['#panel label', '#space-name', '#hours'])
+      await expect(shell.locator('#setting-autoArchiveHours')).toBeVisible()
+      await contrast(shell, ['#panel label', '#space-name', '#setting-autoArchiveHours'])
       await snapshot(shell.locator('#sidebar'), `${theme}-settings.png`)
       await shell.locator('#settings-toggle').click()
       for (const [width, height] of [[1280, 800], [800, 600], [560, 360]]) {

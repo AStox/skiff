@@ -222,6 +222,71 @@ test('stock backend copies execute the same API with their own namespace and exp
   assert.equal(runtime.resolve('search').owner, 'my.search')
 })
 
+test('owned copies that still match their recorded source follow a changed stock; edited copies and legacy imports stay put', async (t) => {
+  const legacy = fs.mkdtempSync(path.join(os.tmpdir(), 'skiff-legacy-follow-'))
+  t.after(() => fs.rmSync(legacy, { recursive: true, force: true }))
+  fs.writeFileSync(path.join(legacy, 'index.html'), '<!doctype html>legacy')
+  const replaced = []
+  const { root, runtime } = setup(t, { legacyShellDir: legacy, onReplace: (event) => replaced.push(event) })
+  const stockRoot = writePackage(root, 'stock.notes', { backend: false, capabilities: ['ui'] })
+  const manifest = JSON.parse(fs.readFileSync(path.join(stockRoot, 'manifest.json'), 'utf8'))
+  runtime.registerStock({ root: stockRoot, manifest })
+  await runtime.start()
+  const stockPage = (text) => fs.writeFileSync(path.join(stockRoot, 'index.html'), `<!doctype html><main>${text}</main>`)
+  const page = (id) => runtime.sourceRead({ id, file: 'index.html' }).content
+  const revision = (id) => runtime.inspect({ id }).revision
+  const ids = ['my.plain', 'my.edited', 'my.draft', 'my.unapplied']
+  for (const id of ids) await runtime.create({ id, from: 'stock.notes' })
+  assert.match(runtime.inspect({ id: 'my.plain' }).origin.sourceHash, /^[a-f0-9]{64}$/)
+  for (const id of ids.slice(0, 3)) await runtime.apply({ id })
+  await runtime.sourceWrite({ id: 'my.edited', file: 'index.html', content: 'mine' })
+  await runtime.apply({ id: 'my.edited' })
+  await runtime.sourceWrite({ id: 'my.draft', file: 'index.html', content: 'draft' })
+  const before = Object.fromEntries([...ids, 'legacy.shell'].map((id) => [id, revision(id)]))
+  assert.equal(runtime.inspect({ id: 'legacy.shell' }).origin.type, 'legacy')
+
+  await runtime.stop()
+  stockPage('first stock update')
+  await runtime.start()
+  assert.match(page('my.plain'), /first stock update/)
+  assert.match(page('my.unapplied'), /first stock update/)
+  assert.notEqual(revision('my.plain'), before['my.plain'])
+  assert.equal(runtime.inspect({ id: 'my.plain' }).previous, before['my.plain'])
+  assert.equal(runtime.inspect({ id: 'my.plain' }).running, true)
+  assert.equal(page('my.edited'), 'mine')
+  assert.equal(page('my.draft'), 'draft')
+  for (const id of ['my.edited', 'my.draft', 'legacy.shell']) assert.equal(revision(id), before[id])
+  const followed = revision('my.plain')
+  await runtime.stop()
+  await runtime.start()
+  assert.equal(revision('my.plain'), followed)
+
+  replaced.length = 0
+  stockPage('second stock update')
+  await runtime.refreshStock({ id: 'stock.notes', root: stockRoot, manifest })
+  assert.match(page('my.plain'), /second stock update/)
+  assert.notEqual(revision('my.plain'), followed)
+  assert.equal(runtime.inspect({ id: 'my.plain' }).previous, followed)
+  assert.ok(replaced.some((event) => event.id === 'my.plain' && event.action === 'apply'))
+  assert.equal(page('my.edited'), 'mine')
+  assert.equal(revision('my.edited'), before['my.edited'])
+})
+
+test('a copy does not follow when the new stock asks for capabilities it was never granted', async (t) => {
+  const { root, runtime } = setup(t)
+  const stockRoot = writePackage(root, 'stock.notes', { backend: false, capabilities: ['ui'] })
+  const manifest = JSON.parse(fs.readFileSync(path.join(stockRoot, 'manifest.json'), 'utf8'))
+  runtime.registerStock({ root: stockRoot, manifest })
+  await runtime.start()
+  await runtime.create({ id: 'my.notes', from: 'stock.notes' })
+  await runtime.apply({ id: 'my.notes' })
+  const before = runtime.inspect({ id: 'my.notes' }).revision
+  fs.writeFileSync(path.join(stockRoot, 'index.html'), '<!doctype html><main>new</main>')
+  await runtime.refreshStock({ id: 'stock.notes', root: stockRoot, manifest: { ...manifest, capabilities: ['ui', 'host.manage'] } })
+  assert.equal(runtime.inspect({ id: 'my.notes' }).revision, before)
+  assert.doesNotMatch(runtime.sourceRead({ id: 'my.notes', file: 'index.html' }).content, /new/)
+})
+
 test('preview uses an immutable staged path and excludes backend execution by default', async (t) => {
   let request
   const { root, runtime } = setup(t, { preview: async (params) => { request = params; return { launched: true } } })

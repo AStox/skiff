@@ -70,6 +70,18 @@ function revision(root) {
   for (const file of files(root)) { hash.update(file); hash.update('\0'); hash.update(fs.readFileSync(relative(root, file))); hash.update('\0') }
   return hash.digest('hex')
 }
+// Identity of a copy's own source: every file but manifest.json, plus the manifest without its origin record.
+function sourceHash(directory, manifest) {
+  const rest = { ...manifest }
+  delete rest.origin
+  const hash = crypto.createHash('sha256')
+  for (const file of files(directory)) {
+    if (file === 'manifest.json') continue
+    hash.update(file); hash.update('\0'); hash.update(fs.readFileSync(relative(directory, file))); hash.update('\0')
+  }
+  return hash.update(JSON.stringify(rest)).digest('hex')
+}
+const manifestOf = (directory) => JSON.parse(fs.readFileSync(relative(directory, 'manifest.json'), 'utf8'))
 function settingEntries(manifest) {
   if (manifest.settings === undefined) return []
   if (!manifest.settings || typeof manifest.settings !== 'object' || Array.isArray(manifest.settings)) throw fail('Component settings must be a map')
@@ -553,7 +565,7 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
     if (expectedRevision === undefined) return
     if (typeof expectedRevision !== 'string' || !/^[a-f0-9]{64}$/.test(expectedRevision) || revisionId !== expectedRevision) throw fail('Component candidate changed after approval; review it again', 'cancelled')
     const source = packageFor(id, revisionId)
-    const current = stocks.has(id) ? crypto.createHash('sha256').update(revision(source.root)).update(JSON.stringify(source.manifest)).digest('hex') : revision(source.root)
+    const current = stocks.has(id) ? stockRevision(source) : revision(source.root)
     if (current !== expectedRevision) throw fail('Approved component snapshot changed; review it again', 'cancelled')
   }
   async function restoreAfterFailure(id, previous, properties, error) {
@@ -640,7 +652,7 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
     const provided = new Set(roles(manifest))
     const affected = [...new Set([...roles(previous.manifest), ...provided])]
     const item = record(id)
-    const rev = crypto.createHash('sha256').update(revision(directory)).update(JSON.stringify(manifest)).digest('hex')
+    const rev = stockRevision({ manifest, root: directory })
     await deactivate(id)
     stocks.set(id, { manifest, root: directory })
     item.active = rev
@@ -656,9 +668,54 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
       if (item.enabled) await activate(id, rev, item.grants)
       await onReplace({ id, owner: id, action: 'refresh', roles: affected, revision: rev })
       save()
+      await followStock(id)
       return info(id)
     } catch (error) { item.error = error.message; save(); throw error }
   }) }
+  const stockRevision = (stock) => crypto.createHash('sha256').update(revision(stock.root)).update(JSON.stringify(stock.manifest)).digest('hex')
+  // Bundled sources are identified by where they sit in the app, not by absolute path.
+  const stockKey = (stock) => bundledRoot ? path.relative(hostRoot(bundledRoot), stock.root) : stock.root
+  const copyManifest = (source, from, id) => ({ ...source, id, commands: Object.fromEntries(Object.entries(source.commands || {}).map(([key, command]) => [key, command.replace(from + '.', id + '.')])) })
+  function untouched(id, item) {
+    try { return [sourcePath(id), item.active && revisionPath(id, item.active)].filter(Boolean).every((directory) => sourceHash(directory, manifestOf(directory)) === item.origin.sourceHash) }
+    catch { return false }
+  }
+  async function follow(id, item, stock, base) {
+    const grants = item.grants || []
+    const manifest = copyManifest(clone(stock.manifest), item.origin.id, id)
+    if (item.active && !manifest.capabilities.every((cap) => grants.includes(cap))) return // new capabilities need the normal approval
+    const origin = { ...item.origin, baseRevision: base, sourceRevision: revision(stock.root), version: stock.manifest.version }
+    const temporary = path.join(root, 'staging', crypto.randomUUID())
+    fs.mkdirSync(path.dirname(temporary), { recursive: true })
+    fs.cpSync(stock.root, temporary, { recursive: true })
+    try {
+      origin.sourceHash = sourceHash(temporary, manifest)
+      atomic(path.join(temporary, 'manifest.json'), { ...manifest, origin })
+      validateProperties(id, manifest)
+      const rev = snapshot(id, temporary)
+      if (started && item.enabled && item.active) await switchRevision(id, rev, grants, 'apply')
+      else if (item.active) Object.assign(item, { previous: item.active, previousGrants: grants, previousProperties: clone(propertiesFor(id) || { global: {}, spaces: {} }), active: rev, error: null })
+      fs.rmSync(sourcePath(id), { recursive: true, force: true })
+      fs.cpSync(temporary, sourcePath(id), { recursive: true })
+    } finally { fs.rmSync(temporary, { recursive: true, force: true }) }
+    item.origin = origin
+    item.staged = null
+    item.workspaceRevision = revision(sourcePath(id))
+    save()
+  }
+  // A copy whose source still hashes to its recorded origin follows its stock's new revision; edited copies,
+  // copies of workspace sources and legacy imports (no recorded hash) are never touched.
+  async function followStock(only) {
+    if (safeMode) return
+    for (const [id, item] of Object.entries(store.components)) {
+      const origin = item.origin
+      const stock = origin?.type === 'copy' && origin.source === 'bundled' && origin.sourceHash && stocks.get(origin.id)
+      if (!stock || (only && origin.id !== only) || origin.stockRoot !== stockKey(stock)) continue
+      const base = stockRevision(stock)
+      if (base === origin.baseRevision || !untouched(id, item)) continue
+      try { await follow(id, item, stock, base) } catch {} // a copy that cannot follow keeps its current revision
+    }
+  }
   async function start(options = {}) {
     const nextSafeMode = options.safeMode ?? safeMode
     if (started && nextSafeMode === safeMode) return list()
@@ -742,11 +799,12 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
       }
     }
     for (const [id, stock] of stocks) {
-      const rev = crypto.createHash('sha256').update(revision(stock.root)).update(JSON.stringify(stock.manifest)).digest('hex')
+      const rev = stockRevision(stock)
       const item = store.components[id] ||= { enabled: true, origin: { type: 'bundled' } }
       item.active = rev; item.grants = stock.manifest.capabilities
       for (const role of roles(stock.manifest)) if (!own(store.bindings.global, role)) store.bindings.global[role] = id
     }
+    await followStock()
     started = true
     for (const [id, item] of Object.entries(store.components)) if (item.enabled && item.active) {
       if (safeMode && !stocks.has(id)) continue
@@ -777,9 +835,9 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
       if (sourceManifest.id !== from) throw fail('Source component id changed')
       const sourceRevision = revision(original.path)
       fs.cpSync(original.path, directory, { recursive: true })
-      manifest = { ...sourceManifest, id }
-      manifest.commands = Object.fromEntries(Object.entries(manifest.commands || {}).map(([key, command]) => [key, command.replace(from + '.', id + '.')]))
+      manifest = copyManifest(sourceManifest, from, id)
       origin = { type: 'copy', id: from, baseRevision: original.revision, sourceRevision, source: stocks.has(from) ? 'bundled' : 'workspace', version: sourceManifest.version }
+      if (stocks.has(from)) Object.assign(origin, { stockRoot: stockKey(stocks.get(from)), sourceHash: sourceHash(directory, manifest) })
     } else {
       fs.mkdirSync(directory)
       manifest = { apiVersion: 1, id, version: '1.0.0', surfaces: {}, capabilities: [] }

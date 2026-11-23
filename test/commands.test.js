@@ -261,10 +261,37 @@ test('settings catalog searches aliases, filters scopes and rejects invalid scal
   const entry = settings.get('memorySaver')
   entry.aliases.push('mutated')
   assert.equal(settings.get('memorySaver').aliases.includes('mutated'), false)
-  for (const entry of settings.catalog) {
+  for (const entry of settings.catalog.filter((item) => item.type !== 'action')) {
     assert.equal(settings.validate(entry.id, entry.default, { scope: entry.scope }), entry.default)
     validateSchema(settings.schemaForSetting(entry.id), entry.default)
   }
+})
+
+test('settings catalog quick-panel entries carry values and action status, omit unsupported actions and run', async () => {
+  assert.deepEqual(settings.list({ quickPanel: true }).map((entry) => entry.id), ['autoArchiveHours', 'defaultBrowser'])
+  assert.equal(settings.list({ quickPanel: false }).some((entry) => entry.id === 'defaultBrowser'), false)
+  let done = false, supported = true, runs = 0
+  const actions = { defaultBrowser: { supported: () => supported, status: () => ({ text: done ? 'Skiff is your default browser.' : '', available: !done }), run: () => { runs++; done = true } } }
+  const draw = (values = { autoArchiveHours: 5 }) => settings.present(settings.list({ quickPanel: true }), { values, actions })
+  const [hours, action] = draw()
+  assert.equal(hours.value, 5)
+  assert.equal(draw({})[0].value, 12)
+  assert.deepEqual([action.type, action.title, action.actionLabel, action.status, action.available, 'value' in action], ['action', 'Default browser', 'Make Skiff your default browser', '', true, false])
+  assert.deepEqual(draw().map((entry) => entry.id), ['autoArchiveHours', 'defaultBrowser'])
+  const ran = await settings.run('defaultBrowser', actions)
+  assert.deepEqual([runs, ran.status, ran.available], [1, 'Skiff is your default browser.', false])
+  await assert.rejects(settings.run('defaultBrowser', actions), { code: 'bad_params' })
+  assert.equal(runs, 1)
+  supported = false
+  assert.deepEqual(draw().map((entry) => entry.id), ['autoArchiveHours'])
+  await assert.rejects(settings.run('defaultBrowser', actions), { code: 'bad_params' })
+  assert.deepEqual(draw().map((entry) => entry.id), ['autoArchiveHours'])
+  assert.deepEqual(settings.present(settings.list({ quickPanel: true }), { actions: {} }).map((entry) => entry.id), ['autoArchiveHours'])
+  for (const id of ['memorySaver', 'unknown']) await assert.rejects(settings.run(id, actions), { code: 'bad_params', message: /Unknown action/ })
+  assert.throws(() => settings.validate('defaultBrowser', true), { code: 'bad_params' })
+  assert.throws(() => validateSchema(schemaFor('settings.set'), { defaultBrowser: true }), { code: 'bad_params' })
+  const future = { id: 'tabBar', owner: 'core', type: 'string', enum: ['top', 'side'], default: 'side', scope: 'global', title: 'Tab bar', description: 'Where tabs sit.', aliases: [], section: 'tabs', quickPanel: true }
+  assert.deepEqual(settings.present([future], { values: { tabBar: 'top' } }), [{ ...future, value: 'top' }])
 })
 
 test('component scalars reuse host validation while allowing declared normal-space overrides', () => {
