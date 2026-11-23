@@ -25,8 +25,8 @@
    Do instead: after any `chown -R` of the scratch tree, run `chown root:root` and `chmod 4755` on `node_modules/electron/dist/chrome-sandbox` again; every spec failing with "Process failed to launch!" means this. `cp -a` the scratch `e2e/goldens/` back into the repo right after `test:visual:update`, because the next `rsync --delete` removes them.
 9. **[2026-11-13] Synthetic key events never reach the native menu, so they do not test a shortcut**
    Do instead: call `skiff.shortcut('<accelerator>')` in a spec; it clicks the menu item from the main process, which is the path the real accelerator takes. It resolves before the shell has handled the event, so wait for its effect (for example `#palette-input` focused) before typing, or the first keystroke lands nowhere. [2026-11-14]
-10. **[2026-11-20] Uncommitted working-tree deployments cannot use `git archive HEAD`**
-   Do instead: freeze the intended working-tree files with SHA-256 manifests, compare target edits against the original baseline, preserve independent Mac fixes and runtime bootstrap, and verify staged/installed hashes. Keep a code/dependency rollback copy outside the profile; transfer bounded, retry-safe chunks through bb. Never overwrite concurrent changes or copy live profile storage.
+10. **[2026-11-23] Source lives on GitHub (`AStox/skiff`); releases come only from CI**
+   Do instead: commit and push; never hand-copy working trees between hosts. Cut a release by bumping `version`, tagging `v<version>` and pushing the tag; `release.yml` signs, notarizes and uploads to a draft that Adam publishes. Keep the step that pre-creates the draft: without it electron-builder's parallel uploads create two drafts for one tag. Verify a build on the Mac with `codesign --verify --deep --strict`, `spctl -a -vv -t exec` and `xcrun stapler validate` on the extracted app; none of them open a window.
 
 ## Shell & Command Reliability
 1. **[2026-11-11] Electron 45 has no postinstall download**
