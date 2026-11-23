@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Untitled Browser: a Mac browser you can take apart</title>
+<meta name="description" content="Spaces, vertical tabs and an archive that never loses a tab. Every part of the interface is a local file you can swap, and AI agents only touch the tabs you hand them. Alpha for macOS.">
+<meta property="og:title" content="Untitled Browser">
+<meta property="og:description" content="A Mac browser you can take apart. Alpha.">
+<meta property="og:image" content="img/shell.webp">
+<meta name="theme-color" content="#ff6a3d">
+<link rel="preload" href="fonts/AlloVariable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111'/%3E%3Crect x='7' y='8' width='6' height='16' rx='2' fill='%23ff6a3d'/%3E%3Crect x='15' y='8' width='10' height='16' rx='2' fill='%23fff'/%3E%3C/svg%3E">
+<style>
+@font-face {
+  font-family: Allo;
+  src: url("fonts/AlloVariable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  --ground: #ff6a3d;
+  --ink: #111;
+  --paper: #fffaf2;
+  --rule: 2px solid var(--ink);
+  --pad: clamp(20px, 4vw, 56px);
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  background: var(--ground);
+  transition: background-color 700ms var(--ease);
+  scrollbar-color: var(--ink) var(--ground);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: Allo, system-ui, sans-serif;
+  font-size: 18px;
+  line-height: 1.5;
+  font-weight: 450;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+::selection { background: var(--ink); color: var(--ground); }
+
+a { color: inherit; text-underline-offset: 0.2em; text-decoration-thickness: 2px; }
+a:hover { text-decoration-thickness: 3px; }
+
+:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; border-radius: 4px; }
+
+h1, h2, h3 { margin: 0; text-wrap: balance; }
+p { margin: 0; text-wrap: pretty; }
+
+code, pre, .mono { font-family: var(--mono); font-size: 0.82em; }
+
+.skip {
+  position: absolute; left: 12px; top: -60px;
+  background: var(--ink); color: var(--ground); padding: 10px 16px; border-radius: 8px; z-index: 10;
+}
+.skip:focus { top: 12px; }
+
+/* top bar */
+.bar {
+  display: flex; align-items: stretch;
+  border-bottom: var(--rule);
+  position: sticky; top: 0; z-index: 5;
+  background: var(--ground);
+  transition: background-color 700ms var(--ease);
+}
+.brand {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px var(--pad);
+  border-right: var(--rule);
+  font-weight: 800; font-size: 20px; letter-spacing: -0.01em;
+  text-decoration: none;
+}
+.tag {
+  font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  border: 2px solid var(--ink); border-radius: 99px; padding: 1px 8px 2px;
+}
+.bar nav { display: flex; margin-left: auto; }
+.bar nav a {
+  display: flex; align-items: center;
+  padding: 0 clamp(12px, 1.6vw, 22px);
+  border-left: var(--rule);
+  font-weight: 600; font-size: 16px; text-decoration: none;
+}
+.bar nav a:hover { background: color-mix(in oklab, var(--ink) 8%, transparent); }
+.bar nav a.get { background: var(--ink); color: var(--ground); }
+.bar nav a.get:hover { background: #2a2a2a; }
+
+/* buttons */
+.btn {
+  display: inline-flex; align-items: center; gap: 12px;
+  background: var(--ink); color: var(--paper);
+  font-weight: 700; font-size: 20px; text-decoration: none;
+  padding: 16px 26px 17px; border-radius: 14px;
+  box-shadow: 0 10px 24px -12px rgb(0 0 0 / 0.55);
+  transition: transform 200ms var(--ease), box-shadow 200ms var(--ease);
+}
+.btn:hover { transform: translateY(-2px); box-shadow: 0 16px 30px -14px rgb(0 0 0 / 0.6); text-decoration: none; }
+.btn:active { transform: translateY(0); }
+.btn svg { width: 20px; height: 20px; flex: none; }
+
+/* hero */
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  border-bottom: var(--rule);
+}
+.hero-copy {
+  padding: clamp(40px, 6vw, 88px) var(--pad);
+  border-right: var(--rule);
+  display: flex; flex-direction: column; gap: 28px;
+}
+.hero h1 {
+  font-size: clamp(56px, 7.4vw, 6rem);
+  line-height: 0.9;
+  font-weight: 900;
+  letter-spacing: -0.035em;
+}
+.lede { font-size: clamp(19px, 1.5vw, 22px); max-width: 34ch; }
+.cta { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 22px; margin-top: 8px; }
+.cta .alt { font-weight: 600; }
+.meta { font-size: 15px; font-weight: 500; }
+
+.stage { padding: clamp(24px, 3vw, 44px) var(--pad); display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.picker-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.picker-head h2 { font-size: 18px; font-weight: 700; }
+.picker-head p { font-size: 15px; font-weight: 500; }
+
+.shells {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.shells button {
+  font: inherit; font-size: 15px; font-weight: 650;
+  color: var(--ink); background: transparent;
+  border: 2px solid var(--ink); border-radius: 99px;
+  padding: 6px 14px 7px; cursor: pointer;
+  transition: background-color 200ms var(--ease), color 200ms var(--ease);
+}
+.shells button:hover { background: color-mix(in oklab, var(--ink) 10%, transparent); }
+.shells button[aria-selected="true"] { background: var(--ink); color: var(--ground); }
+
+.frame {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  border: var(--rule); border-radius: 14px; overflow: hidden;
+  background: var(--paper);
+  box-shadow: 0 30px 60px -30px rgb(0 0 0 / 0.55);
+}
+.frame img {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; object-position: left top;
+  display: block;
+}
+.frame img.in { animation: wipe 650ms var(--ease) both; }
+@keyframes wipe {
+  from { clip-path: inset(0 100% 0 0); filter: blur(6px); }
+  to { clip-path: inset(0 0 0 0); filter: blur(0); }
+}
+.caption { display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; min-height: 3em; }
+.caption strong { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; }
+.caption span { font-size: 16px; font-weight: 500; max-width: 56ch; }
+
+/* arc band */
+.arc {
+  background: var(--ink); color: var(--paper);
+  display: grid; grid-template-columns: auto 1fr; gap: clamp(24px, 5vw, 80px);
+  align-items: center;
+  padding: clamp(36px, 5vw, 64px) var(--pad);
+}
+.arc .days { display: flex; align-items: baseline; gap: 14px; color: var(--ground); transition: color 700ms var(--ease); }
+.days b { font-size: clamp(88px, 12vw, 6rem); font-weight: 900; line-height: 0.8; letter-spacing: -0.04em; }
+.days span { font-size: 20px; font-weight: 700; line-height: 1.1; }
+.arc h2 { font-size: clamp(30px, 3.4vw, 46px); line-height: 1.02; font-weight: 850; letter-spacing: -0.02em; margin-bottom: 14px; }
+.arc p { max-width: 64ch; color: #e9e4da; }
+.arc p + p { margin-top: 10px; font-size: 16px; color: #bdb7ad; }
+
+/* sections */
+section > .head {
+  padding: clamp(56px, 8vw, 112px) var(--pad) clamp(28px, 3vw, 40px);
+  display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 24px 48px; align-items: end;
+  border-bottom: var(--rule);
+}
+section > .head h2 {
+  font-size: clamp(44px, 5.6vw, 5.25rem); line-height: 0.92; font-weight: 900; letter-spacing: -0.035em;
+}
+section > .head p { font-size: 19px; max-width: 46ch; }
+
+.parts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.part {
+  padding: clamp(28px, 3vw, 44px) var(--pad);
+  border-bottom: var(--rule);
+  display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 4px 28px; align-content: start;
+}
+.part:nth-child(even):not(.wide) { border-right: var(--rule); }
+.part .key { grid-row: span 2; display: flex; gap: 4px; flex-wrap: wrap; align-content: flex-start; }
+.part h3 { font-size: 26px; line-height: 1.1; font-weight: 800; letter-spacing: -0.015em; margin-bottom: 6px; }
+.part p { max-width: 50ch; }
+.part.wide { grid-column: 1 / -1; border-right: 0; grid-template-columns: 104px minmax(0, 5fr) minmax(0, 6fr); grid-template-rows: auto 1fr; align-items: start; }
+.part.wide .shot { grid-row: 1 / span 2; grid-column: 3; }
+
+kbd {
+  font-family: Allo, system-ui, sans-serif; font-weight: 700; font-size: 20px; line-height: 1;
+  min-width: 44px; height: 44px; padding: 0 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 2px solid var(--ink); border-radius: 10px;
+  background: var(--paper);
+  box-shadow: 0 3px 0 -1px var(--ink);
+}
+.word { font-weight: 800; font-size: 15px; letter-spacing: 0.04em; text-transform: uppercase; padding-top: 10px; }
+
+.shot { border: var(--rule); border-radius: 12px; overflow: hidden; box-shadow: 0 24px 48px -28px rgb(0 0 0 / 0.5); background: var(--paper); }
+.shot img { display: block; width: 100%; height: auto; }
+
+/* own it */
+.own { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); }
+.own .steps { border-right: var(--rule); }
+.own ol { list-style: none; margin: 0; padding: 0; }
+.own li { padding: 22px var(--pad); border-bottom: var(--rule); display: grid; grid-template-columns: 120px 1fr; gap: 16px; }
+.own li:last-child { border-bottom: 0; }
+.own li b { font-size: 22px; font-weight: 850; letter-spacing: -0.01em; }
+.code { padding: clamp(24px, 3vw, 44px) var(--pad); display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.code figcaption { font-size: 15px; font-weight: 600; }
+pre {
+  margin: 0; padding: 22px 24px; overflow-x: auto;
+  background: var(--ink); color: #f3efe6; border-radius: 12px;
+  font-size: 14.5px; line-height: 1.6;
+  scrollbar-color: #555 var(--ink);
+}
+pre .c { color: #9b968d; }
+pre .s { color: var(--ground); transition: color 700ms var(--ease); }
+
+/* agents */
+.agents { display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 6fr); border-bottom: var(--rule); }
+.agents .say { padding: clamp(28px, 3vw, 48px) var(--pad); border-right: var(--rule); display: flex; flex-direction: column; gap: 18px; }
+.agents .say p { max-width: 52ch; }
+.agents .say ul { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.agents .say li { display: grid; grid-template-columns: 28px 1fr; gap: 10px; font-weight: 550; }
+.agents .say li svg { width: 22px; height: 22px; margin-top: 3px; }
+.grant-wrap { padding: clamp(28px, 3vw, 48px) var(--pad); display: flex; flex-direction: column; gap: 12px; }
+.grant {
+  background: var(--paper); border: var(--rule); border-radius: 16px;
+  box-shadow: 0 30px 60px -32px rgb(0 0 0 / 0.55);
+  font-size: 16px;
+}
+.grant header { padding: 16px 20px; border-bottom: 1.5px solid #d9d2c5; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.grant header b { font-size: 19px; font-weight: 800; }
+.grant header span { font-size: 14px; font-weight: 600; color: #5d574e; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 20px; border-bottom: 1.5px solid #ebe5da; }
+.row:last-child { border-bottom: 0; }
+.row .what { display: grid; }
+.row .what small { color: #5d574e; font-size: 14px; font-weight: 500; }
+.switch {
+  position: relative; width: 52px; height: 30px; flex: none;
+  appearance: none; -webkit-appearance: none; margin: 0;
+  background: #d9d2c5; border-radius: 99px; cursor: pointer;
+  transition: background-color 200ms var(--ease);
+}
+.switch::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px;
+  background: #fff; border-radius: 50%; box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+  transition: transform 220ms var(--ease);
+}
+.switch:checked { background: var(--ink); }
+.switch:checked::after { transform: translateX(22px); }
+.switch:disabled { cursor: not-allowed; opacity: 0.55; }
+.note { font-size: 14px; font-weight: 600; }
+
+/* desk */
+.desk { display: grid; grid-template-columns: minmax(0, 8fr) minmax(0, 4fr); border-bottom: var(--rule); }
+.desk .shot { margin: clamp(24px, 3vw, 44px) var(--pad); }
+.desk .say { border-left: var(--rule); padding: clamp(28px, 3vw, 48px) var(--pad); display: flex; flex-direction: column; gap: 16px; justify-content: center; }
+.desk h3 { font-size: clamp(30px, 3vw, 42px); line-height: 1; font-weight: 900; letter-spacing: -0.025em; }
+
+/* limits */
+.limits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.limits div { padding: 26px var(--pad); border-bottom: var(--rule); }
+.limits div:nth-child(odd) { border-right: var(--rule); }
+.limits h3 { font-size: 21px; font-weight: 800; margin-bottom: 4px; letter-spacing: -0.01em; }
+.limits p { max-width: 52ch; }
+
+/* close */
+.close { padding: clamp(64px, 10vw, 140px) var(--pad) 40px; display: flex; flex-direction: column; gap: 32px; }
+.close h2 { font-size: clamp(64px, 12vw, 6rem); line-height: 0.85; font-weight: 900; letter-spacing: -0.04em; }
+.foot { display: flex; flex-wrap: wrap; gap: 10px 28px; padding: 22px var(--pad); border-top: var(--rule); font-size: 15px; font-weight: 550; }
+.foot span { margin-left: auto; }
+
+@media (max-width: 1000px) {
+  .hero, .own, .agents, .desk { grid-template-columns: 1fr; }
+  .hero-copy, .own .steps, .agents .say { border-right: 0; border-bottom: var(--rule); }
+  .desk .say { border-left: 0; border-top: var(--rule); }
+  section > .head { grid-template-columns: 1fr; }
+  .part.wide { grid-template-columns: 104px minmax(0, 1fr); grid-template-rows: none; }
+  .part.wide .shot { grid-column: 1 / -1; grid-row: auto; margin-top: 18px; }
+}
+@media (max-width: 760px) {
+  body { font-size: 17px; }
+  .bar nav a:not(.get) { display: none; }
+  .parts, .limits { grid-template-columns: 1fr; }
+  .part:nth-child(even):not(.wide), .limits div:nth-child(odd) { border-right: 0; }
+  .part { grid-template-columns: 1fr; gap: 12px; }
+  .part.wide { grid-template-columns: 1fr; }
+  .part .key { grid-row: auto; }
+  .arc { grid-template-columns: 1fr; }
+  .own li { grid-template-columns: 1fr; gap: 4px; }
+  .shells { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 6px; margin-right: calc(var(--pad) * -1); scrollbar-width: none; }
+  .shells button { flex: none; }
+  .foot span { margin-left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html, .bar, .days, pre .s { transition: none; }
+  .frame img.in { animation: none; }
+  .btn, .btn:hover { transition: none; transform: none; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="bar">
+  <a class="brand" href="#top" aria-label="Untitled Browser, alpha">Untitled Browser <span class="tag">Alpha</span></a>
+  <nav aria-label="Page">
+    <a href="#interfaces">Interfaces</a>
+    <a href="#arc">From Arc</a>
+    <a href="#agents">Agents</a>
+    <a href="#limits">Limits</a>
+    <a href="https://github.com/AStox/skiff">GitHub</a>
+    <a class="get" data-dl="arm64" href="https://github.com/AStox/skiff/releases/download/v0.1.0-alpha.1/Skiff-0.1.0-alpha.1-arm64.dmg">Download</a>
+  </nav>
+</header>
+
+<main id="main">
+  <div class="hero" id="top">
+    <div class="hero-copy">
+      <h1>A browser you can take apart.</h1>
+      <p class="lede">Spaces, vertical tabs and an archive that never loses a tab, for the Mac. Every part of the interface is a file on your disk that you can swap, edit or roll back. AI agents only touch the tabs you hand them.</p>
+      <div class="cta">
+        <a class="btn" data-dl="arm64" href="https://github.com/AStox/skiff/releases/download/v0.1.0-alpha.1/Skiff-0.1.0-alpha.1-arm64.dmg">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v12M6 11l6 6 6-6M5 20h14"/></svg>
+          Download for Mac
+        </a>
+        <a class="alt" data-dl="x64" href="https://github.com/AStox/skiff/releases/download/v0.1.0-alpha.1/Skiff-0.1.0-alpha.1.dmg">Intel Mac</a>
+      </div>
+      <p class="meta"><span data-version>v0.1.0-alpha.1</span> for Apple silicon. Signed and notarized, and it updates itself.</p>
+    </div>
+
+    <div class="stage" id="interfaces">
+      <div class="picker-head">
+        <h2 id="picker-label">Eight interfaces come in the box</h2>
+        <p>Pick one. Your tabs stay open.</p>
+      </div>
+      <div class="shells" role="tablist" aria-labelledby="picker-label"></div>
+      <div class="frame" role="tabpanel" aria-live="polite">
+        <img src="img/shell.webp" width="2000" height="1250" alt="The default interface: a sidebar with favorites, pinned folders and tabs beside the open page.">
+      </div>
+      <p class="caption"><strong data-name>Sidebar</strong> <span data-desc>The default. Favorites as icon tiles, pinned folders, tabs that nest under the page that opened them, spaces along the bottom.</span></p>
+    </div>
+  </div>
+
+  <div class="arc" id="arc">
+    <p class="days" aria-live="off"><b data-days>29</b><span data-days-label>days of<br>Arc left</span></p>
+    <div>
+      <h2 data-arc-head>Arc stops on December 22. Your tabs don't have to.</h2>
+      <p>Import your spaces, tabs, favorites, pinned folders, space colors and site icons straight from Arc's files. Saved passwords and sign-ins can come too, after you approve it on the Mac. Nothing is uploaded and nothing is written out to a plain file.</p>
+      <p>Arc's archive and space icons stay behind. Imports from other browsers aren't supported yet.</p>
+    </div>
+  </div>
+
+  <section aria-labelledby="parts-h">
+    <div class="head">
+      <h2 id="parts-h">The parts you'd expect, done carefully.</h2>
+      <p>Everything a tab-heavy day needs, with nothing the browser does on its own able to lose a tab for good.</p>
+    </div>
+    <div class="parts">
+      <div class="part wide">
+        <div class="key"><kbd>⌘</kbd><kbd>T</kbd></div>
+        <h3>A command bar that finishes your words</h3>
+        <p>Type <code>red</code> and it fills in reddit.com. Press Tab on a site to search inside it. Open tabs from every space, known sites and archived tabs share one list.</p>
+        <div class="shot"><img src="img/palette-yt.webp" width="2000" height="1250" loading="lazy" alt="The command bar over a page, turned into a YouTube search after pressing Tab on youtube.com."></div>
+      </div>
+      <div class="part">
+        <div class="key"><span class="word">Drag</span></div>
+        <h3>Pin by dragging, with a preview</h3>
+        <p>Drag a tab into favorites, pinned or a folder. A dashed copy shows exactly where it lands before you let go. There are no pin or star buttons.</p>
+      </div>
+      <div class="part">
+        <div class="key"><span class="word">Archive</span></div>
+        <h3>Old tabs tidy themselves away</h3>
+        <p>Tabs you haven't touched move to the archive after a delay you choose. Favorites and pinned tabs never do, and anything archived opens again from the command bar.</p>
+      </div>
+      <div class="part">
+        <div class="key"><kbd>⇧</kbd><kbd>⌘</kbd><kbd>N</kbd></div>
+        <h3>One private space, kept in memory</h3>
+        <p>Its tabs, cookies and site data never touch the disk. Close it and they're gone.</p>
+      </div>
+      <div class="part">
+        <div class="key"><span class="word">uBlock</span></div>
+        <h3>uBlock Origin, built in</h3>
+        <p>Installed from its own GitHub release on first launch and kept up to date while you browse. Its dashboard is one click away in Settings.</p>
+      </div>
+      <div class="part">
+        <div class="key"><span class="word">Trails</span></div>
+        <h3>Links remember where they came from</h3>
+        <p>A tab opened from a page nests under it, as deep as you go. Close the parent and its children move up a level.</p>
+      </div>
+      <div class="part">
+        <div class="key"><span class="word">Sync</span></div>
+        <h3>Sync with no account</h3>
+        <p>Optional and end-to-end encrypted, over your own WebDAV server or a shared folder. Cookies and passwords never sync.</p>
+      </div>
+      <div class="part wide">
+        <div class="key"><span class="word">More</span></div>
+        <h3>The rest of the basics</h3>
+        <p>Split view, reader mode, link peek, find in page, history, downloads, separate profiles, per-site zoom and permissions, and an opt-in memory saver.</p>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="own-h">
+    <div class="head">
+      <h2 id="own-h">Every piece is a file you own.</h2>
+      <p>The sidebar, the command bar, the archive, search and layout are separate components. Change one without touching the rest.</p>
+    </div>
+    <div class="own">
+      <div class="steps">
+        <ol>
+          <li><b>Copy</b><p>Make your own copy of any stock part. Stock parts keep updating; your copies are never overwritten.</p></li>
+          <li><b>Edit</b><p>Plain HTML, CSS and JavaScript. No build step. Ask your agent to do it with Customize this.</p></li>
+          <li><b>Preview</b><p>Check it and see it before anything changes.</p></li>
+          <li><b>Apply or revert</b><p>Apply needs your approval of that exact revision. Revert brings back the last one, settings included.</p></li>
+        </ol>
+      </div>
+      <figure class="code">
+        <figcaption>The stock archive, as it ships</figcaption>
+<pre><code>{
+  "id": <span class="s">"stock.archive"</span>,
+  "version": "1.0.0",
+  "backend": "backend.js",
+  "roles": ["archive"],
+  "commands": { "archive": "stock.archive.run" },
+  "capabilities": ["storage", "call:tabs.close", "call:archive.restore", …]
+}</code></pre>
+        <figcaption>The buttons and your scripts use the same commands</figcaption>
+<pre><code><span class="c"># switch the whole interface</span>
+bin/skiff ui.setShell '{"name":"timeline"}'
+<span class="c"># open a tab in the background</span>
+bin/skiff tabs.create '{"url":"example.com","activate":false}'
+<span class="c"># list every command the app knows</span>
+bin/skiff commands.list</code></pre>
+      </figure>
+    </div>
+  </section>
+
+  <section aria-labelledby="agents-h" id="agents">
+    <div class="head">
+      <h2 id="agents-h">Your agent sees what you give it.</h2>
+      <p>Ask any agent that speaks the Agent Client Protocol, from the command bar, with <kbd>⌘</kbd> <kbd>J</kbd>.</p>
+    </div>
+    <div class="agents">
+      <div class="say">
+        <p>Claude, Codex, Gemini or your own: each runs as its own program with its own login, so there's no new AI bill and no account here. Every question opens a chat tab under the page you asked from.</p>
+        <ul>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>A page is sent only when you tick Include this page.</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>To use the browser it needs a grant: chosen tabs or spaces, with reading and changing as separate switches.</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>Revoke a grant and it stops working at once.</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>Your private space is never reachable. Web pages never get the command API.</li>
+        </ul>
+      </div>
+      <div class="grant-wrap">
+        <form class="grant" aria-label="Example grant for an agent">
+          <header><b>Grant for Claude</b><span>Browser Tools › Grants</span></header>
+          <label class="row"><span class="what">Work space<small>4 tabs</small></span><input class="switch" type="checkbox" checked></label>
+          <label class="row"><span class="what">Reading list space<small>11 tabs</small></span><input class="switch" type="checkbox"></label>
+          <label class="row"><span class="what">Read pages<small>Title, address, selection and text</small></span><input class="switch" type="checkbox" checked></label>
+          <label class="row"><span class="what">Change pages<small>Open, navigate and close tabs</small></span><input class="switch" type="checkbox"></label>
+          <label class="row"><span class="what">Private space<small>Never available to agents</small></span><input class="switch" type="checkbox" disabled></label>
+        </form>
+        <p class="note">An illustration of the grant choices. Try the switches.</p>
+      </div>
+    </div>
+    <div class="desk">
+      <div class="shot"><img src="img/layer.webp" width="2000" height="1250" loading="lazy" alt="The Layer interface: tabs as separate windows floating on the desktop, with a tab list and a small bar at the bottom."></div>
+      <div class="say">
+        <h3>Or drop the window altogether.</h3>
+        <p>Layer puts every tab on your desktop as its own window, with a small bar for the space. Swipe up to spread them out like Mission Control. Swipe sideways to change spaces.</p>
+        <p>When an agent opens tabs, they wait in a hidden window and never take your focus. Click one to look over its shoulder.</p>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="limits-h" id="limits">
+    <div class="head">
+      <h2 id="limits-h">What it doesn't do yet.</h2>
+      <p>It's an alpha. Here's the honest list before you download.</p>
+    </div>
+    <div class="limits">
+      <div><h3>Built on Electron</h3><p>Not a Chromium fork. Many Chrome extensions work, some won't, and uBlock Origin Lite can't.</p></div>
+      <div><h3>Mac only</h3><p>No Windows, Linux or phone app.</p></div>
+      <div><h3>No account, no hosted sync</h3><p>Sync goes through your own server or folder, or not at all.</p></div>
+      <div><h3>Imports from Arc only</h3><p>Chrome, Safari and the rest aren't supported yet.</p></div>
+      <div><h3>Passwords are basic</h3><p>Imported passwords fill when you ask. It doesn't save new ones or fill them on its own.</p></div>
+      <div><h3>Still being checked</h3><p>Some things are tested on Linux but not yet on every Mac setup. Expect bugs and tell us.</p></div>
+      <div><h3>No app icon</h3><p>Not yet.</p></div>
+      <div><h3>No name</h3><p>Untitled Browser is a placeholder. The app you download is called Skiff for now.</p></div>
+    </div>
+  </section>
+
+  <section class="close" aria-labelledby="close-h">
+    <h2 id="close-h">Take it apart.</h2>
+    <div class="cta">
+      <a class="btn" data-dl="arm64" href="https://github.com/AStox/skiff/releases/download/v0.1.0-alpha.1/Skiff-0.1.0-alpha.1-arm64.dmg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v12M6 11l6 6 6-6M5 20h14"/></svg>
+        Download for Mac
+      </a>
+      <a class="alt" data-dl="x64" href="https://github.com/AStox/skiff/releases/download/v0.1.0-alpha.1/Skiff-0.1.0-alpha.1.dmg">Intel Mac</a>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <a href="https://github.com/AStox/skiff">Source on GitHub</a>
+  <a href="https://github.com/AStox/skiff/releases">All releases</a>
+  <a href="https://github.com/AStox/skiff/issues">Report a bug</a>
+  <span>Set in <a href="https://allo.joshpuckett.me/">Allo</a> by Josh Puckett.</span>
+</footer>
+
+<script>
+const shells = [
+  { id: 'shell', name: 'Sidebar', color: '#ff6a3d', desc: 'The default. Favorites as icon tiles, pinned folders, tabs that nest under the page that opened them, spaces along the bottom.', alt: 'The default interface: a sidebar with favorites, pinned folders and tabs beside the open page.' },
+  { id: 'filmstrip', name: 'Filmstrip', color: '#ffc933', desc: 'Tabs on the right as small pictures of their pages, with the address bar across the top.', alt: 'The Filmstrip interface: page thumbnails in a column on the right.' },
+  { id: 'index', name: 'Index', color: '#3dd6c3', desc: 'A dense list with counts beside every section and spaces as a row of tabs.', alt: 'The Index interface: a compact sidebar list with counts in brackets.' },
+  { id: 'lacquer', name: 'Lacquer', color: '#ff8ec7', desc: 'Soft and rounded, with the page set like a card on a tinted desk.', alt: 'The Lacquer interface: rounded sidebar and a page framed like a card.' },
+  { id: 'ledger', name: 'Ledger', color: '#8fd14f', desc: 'Rows like a notebook, each tab with its address under the title.', alt: 'The Ledger interface: ruled rows with addresses beneath each tab title.' },
+  { id: 'quiet', name: 'Quiet', color: '#b9a6ff', desc: 'No sidebar until you ask for it. Just the page.', alt: 'The Quiet interface: the page fills the window with no sidebar.' },
+  { id: 'timeline', name: 'Timeline', color: '#5bb2ff', desc: 'Tabs grouped by when you last used them: today, yesterday, earlier.', alt: 'The Timeline interface: tabs listed under Today, Yesterday and Earlier with times.' },
+  { id: 'layer', name: 'Layer', color: '#ff9a3d', desc: 'No browser window at all. Each tab floats on your desktop as its own window.', alt: 'The Layer interface: tabs as separate windows on the desktop.' }
+]
+
+const list = document.querySelector('.shells')
+const img = document.querySelector('.frame img')
+const nameEl = document.querySelector('[data-name]')
+const descEl = document.querySelector('[data-desc]')
+const theme = document.querySelector('meta[name="theme-color"]')
+const reduce = matchMedia('(prefers-reduced-motion: reduce)')
+
+shells.forEach((s, i) => {
+  const b = document.createElement('button')
+  b.type = 'button'
+  b.setAttribute('role', 'tab')
+  b.textContent = s.name
+  b.setAttribute('aria-selected', i === 0)
+  b.tabIndex = i === 0 ? 0 : -1
+  b.addEventListener('click', () => pick(i))
+  list.append(b)
+  if (i) new Image().src = `img/${s.id}.webp`
+})
+
+let current = 0
+function pick (i, focus) {
+  const buttons = list.children
+  buttons[current].setAttribute('aria-selected', false)
+  buttons[current].tabIndex = -1
+  current = i
+  const s = shells[i]
+  buttons[i].setAttribute('aria-selected', true)
+  buttons[i].tabIndex = 0
+  if (focus) buttons[i].focus()
+  document.documentElement.style.setProperty('--ground', s.color)
+  theme.content = s.color
+  nameEl.textContent = s.name
+  descEl.textContent = s.desc
+  img.classList.remove('in')
+  img.src = `img/${s.id}.webp`
+  img.alt = s.alt
+  if (!reduce.matches) { void img.offsetWidth; img.classList.add('in') }
+}
+
+list.addEventListener('keydown', (e) => {
+  const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key]
+  if (step) { e.preventDefault(); pick((current + step + shells.length) % shells.length, true) }
+  else if (e.key === 'Home') { e.preventDefault(); pick(0, true) }
+  else if (e.key === 'End') { e.preventDefault(); pick(shells.length - 1, true) }
+})
+
+// Arc's announced shutdown, midnight Eastern on December 22, 2026.
+const sunset = Date.parse('2026-12-22T00:00:00-05:00')
+const left = Math.ceil((sunset - Date.now()) / 864e5)
+const days = document.querySelector('[data-days]')
+const label = document.querySelector('[data-days-label]')
+if (left > 1) days.textContent = left
+else if (left === 1) { days.textContent = 1; label.innerHTML = 'day of<br>Arc left' }
+else {
+  days.parentElement.hidden = true
+  document.querySelector('.arc').style.gridTemplateColumns = '1fr'
+  document.querySelector('[data-arc-head]').textContent = 'Arc stopped on December 22. Your tabs didn\'t have to.'
+}
+
+// Point the download links at the newest release, prereleases included.
+fetch('https://api.github.com/repos/AStox/skiff/releases?per_page=5')
+  .then((r) => r.ok ? r.json() : [])
+  .then((releases) => {
+    const rel = releases.find((r) => !r.draft)
+    if (!rel) return
+    const dmg = (arm) => rel.assets.find((a) => a.name.endsWith('.dmg') && a.name.includes('arm64') === arm)
+    const urls = { arm64: dmg(true), x64: dmg(false) }
+    document.querySelectorAll('[data-dl]').forEach((a) => { const asset = urls[a.dataset.dl]; if (asset) a.href = asset.browser_download_url })
+    document.querySelectorAll('[data-version]').forEach((el) => { el.textContent = rel.tag_name })
+  })
+  .catch(() => {})
+</script>
+</body>
+</html>
