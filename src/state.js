@@ -40,7 +40,7 @@ const SHORTCUTS = {
 }
 // System-wide: these fire while another app is in front, so the handler raises Skiff before running the method.
 const GLOBAL_SHORTCUTS = {
-  'Alt+T': { method: 'ui.emit', params: { name: 'new-tab' } }
+  'Alt+Space': { method: 'ui.emit', params: { name: 'new-tab' } }
 }
 const MARGIN = 8
 const OFFSET = 28

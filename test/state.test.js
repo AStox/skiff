@@ -415,9 +415,9 @@ test('a saved shortcut map gains new defaults and keeps its overrides', () => {
 })
 
 test('global shortcuts gain the default on load, keep overrides, and are validated like shortcuts', () => {
-  assert.deepEqual(S.load({}).settings.globalShortcuts['Alt+T'], { method: 'ui.emit', params: { name: 'new-tab' } })
-  const s = S.load({ settings: { globalShortcuts: { 'Alt+T': { method: 'tabs.back' }, 'Alt+X': { method: 'tabs.forward' } } } })
-  assert.deepEqual(s.settings.globalShortcuts, { 'Alt+T': { method: 'tabs.back' }, 'Alt+X': { method: 'tabs.forward' } })
+  assert.deepEqual(S.load({}).settings.globalShortcuts['Alt+Space'], { method: 'ui.emit', params: { name: 'new-tab' } })
+  const s = S.load({ settings: { globalShortcuts: { 'Alt+Space': { method: 'tabs.back' }, 'Alt+X': { method: 'tabs.forward' } } } })
+  assert.deepEqual(s.settings.globalShortcuts, { 'Alt+Space': { method: 'tabs.back' }, 'Alt+X': { method: 'tabs.forward' } })
   assert.throws(() => S.setSettings(s, { globalShortcuts: { 'Alt+Y': 'tabs.back' } }), /globalShortcuts must map/)
   assert.deepEqual(s.settings.globalShortcuts['Alt+X'], { method: 'tabs.forward' })
 })

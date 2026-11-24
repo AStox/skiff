@@ -66,15 +66,15 @@ test('Cmd+T floats a centered, dimmed command bar over the live page, completes 
   await closed(skiff, bar)
 })
 
-test('the system-wide Option+T brings a hidden window forward and opens the command bar like Cmd+T', async ({ skiff }) => {
+test('the system-wide Option+Space brings a hidden window forward and opens the command bar like Cmd+T', async ({ skiff }) => {
   const shell = () => skiff.app.evaluate(({ BrowserWindow }) => {
     const w = BrowserWindow.getAllWindows().find((item) => item.webContents.getURL().endsWith('/index.html'))
     return [w.isVisible(), w.isFocused()]
   })
-  expect(await skiff.app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('Alt+T'))).toBe(true)
+  expect(await skiff.app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('Alt+Space'))).toBe(true)
   await skiff.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((item) => item.webContents.getURL().endsWith('/index.html')).hide())
   expect((await shell())[0]).toBe(false)
-  await skiff.app.evaluate(() => global.__skiffGlobalShortcuts.get('Alt+T')())
+  await skiff.app.evaluate(() => global.__skiffGlobalShortcuts.get('Alt+Space')())
   await expect.poll(shell).toEqual([true, true])
   const bar = await skiff.bar()
   await expect(input(bar)).toBeFocused()
