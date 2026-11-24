@@ -1049,6 +1049,38 @@ test('a new desk window goes where its host was last put, else into the largest 
   await expect.poll(() => JSON.parse(fs.readFileSync(path.join(skiff.data, 'state.json'), 'utf8')).deskHosts).toEqual(deskHosts)
 })
 
+test.describe('stacking when the front window closes', () => {
+  const pagesBackToFront = async (skiff) => (await children(skiff)).filter((c) => c.kind === 'page').map((c) => c.name)
+  async function setup(skiff, opened) {
+    await switchWindow(skiff, deskShell)
+    await inertShell(skiff, '')
+    const focused = (await skiff.rpc('tabs.create', { url: skiff.origin + '/focused' })).id
+    const five = []
+    for (const n of [1, 2, 3, 4, 5]) five.push((await skiff.rpc('tabs.create', { url: `${skiff.origin}/bg${n}`, activate: false })).id)
+    // A background window never takes a place above the focused one.
+    const z = async (id) => (await tabOf(skiff, id)).desk.z
+    for (const id of five) expect(await z(id)).toBeLessThan(await z(focused))
+    expect((await skiff.state()).activeTabBySpace[(await skiff.state()).activeSpaceId]).toBe(focused)
+    const a = (await skiff.rpc('tabs.create', { url: skiff.origin + '/a' })).id
+    await expect.poll(async () => (await pagesBackToFront(skiff)).slice(-1)).toEqual(['/a'])
+    const b = (await skiff.rpc('tabs.create', { url: skiff.origin + '/b', ...(opened === 'child' && { parentId: a }) })).id
+    await expect.poll(async () => (await pagesBackToFront(skiff)).slice(-1)).toEqual(['/b'])
+    return { five, a, b, before: (await pagesBackToFront(skiff)).filter((p) => p !== '/b') }
+  }
+  for (const opened of ['child', 'command bar']) {
+    test(`closing B opened as ${opened} from A brings back A and leaves the other windows' order`, async ({ skiff }) => {
+      const { a, b, before } = await setup(skiff, opened)
+      const stateBefore = (await skiff.state()).tabs.filter((t) => t.id !== b).map((t) => [t.id, t.desk.z])
+      await skiff.rpc('tabs.close', { id: b })
+      await expect.poll(async () => (await pagesBackToFront(skiff)).includes('/b')).toBe(false)
+      expect(await pagesBackToFront(skiff)).toEqual(before)
+      expect((await pagesBackToFront(skiff)).at(-1)).toBe('/a')
+      expect((await skiff.state()).tabs.filter((t) => t.desk).sort((x, y) => x.desk.z - y.desk.z).map((t) => t.id).at(-1)).toBe(a)
+      expect((await skiff.state()).tabs.filter((t) => t.id !== b).map((t) => [t.id, t.desk.z]).sort()).toEqual(stateBefore.sort())
+    })
+  }
+})
+
 test.describe('layer panel and Buoy', () => {
   // The expanded Buoy: the pill grown into the card. Settled open has the class and no morph left; settled home is the pill at its place.
   const isOpen = (buoy) => buoy.locator('#buoy').evaluate((el) => el.classList.contains('open') && !el.classList.contains('morphing'))

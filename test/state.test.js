@@ -847,12 +847,13 @@ test('a new desk window goes to the largest free part of the desk, else to the c
   // The free right two thirds, past the left window and its frame.
   S.tileDesk(s, { id: a.id, layout: 'left-third' })
   const b = S.createTab(s, { url: 'https://b.example/', activate: false }, 1)
-  assert.deepEqual(b.desk, { ...layouts['right-two-thirds'], z: 2 })
+  assert.deepEqual(b.desk, { ...layouts['right-two-thirds'], z: 1 })
   assert.equal(S.activeTab(s), a)
+  assert.ok(a.desk.z > b.desk.z, 'a background window opens beneath the active one')
   // A frame's top inset counts as taken: under a window at the top only 362px are left, less than 360 once the margin is off, so the cascade.
   S.placeDesk(s, { id: b.id, x: 0, y: 30, width: 1000, height: 408 })
   const c = S.createTab(s, { url: 'https://c.example/' }, 1)
-  assert.deepEqual(c.desk, { ...S.defaultDesk(s, c), z: 3 })
+  assert.deepEqual(c.desk, { ...S.defaultDesk(s, c), z: 4 })
   // A free gap of exactly 520 by 360 after the margin is enough; one pixel less is not.
   const fits = (width, height) => {
     const t = onDesk()

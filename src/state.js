@@ -232,7 +232,9 @@ function load(raw = {}) {
 function release(s, tab) {
   if (s.activeTabBySpace[tab.spaceId] !== tab.id) return
   const list = visibleTabs(s, tab.spaceId).filter((t) => (!t.pinned || t === tab) && (!s.desktops || t.desktopId === tab.desktopId))
-  const next = list[list.indexOf(tab) + 1] || list[list.indexOf(tab) - 1]
+  // On the desk the window beneath comes forward, the opener first, so no other window changes place.
+  const beneath = tab.desk && shownTabs(s, tab.spaceId).filter((t) => t !== tab && t.desk)
+  const next = (beneath?.find((t) => t.id === tab.parentId) || beneath?.at(-1)) || list[list.indexOf(tab) + 1] || list[list.indexOf(tab) - 1]
   if (next) s.activeTabBySpace[tab.spaceId] = next.id
   else delete s.activeTabBySpace[tab.spaceId]
   if (tab.spaceId === s.activeSpaceId) look(s)
@@ -780,7 +782,8 @@ function createTab(s, p, now, chat) {
   s.tabs.push(tab)
   if (s.deskSize) {
     tab.desk = { ...newDesk(s, tab), z: 0 }
-    front(s, tab)
+    if (p.activate === false) behind(s, tab)
+    else front(s, tab)
   }
   if (p.activate !== false) activateTab(s, { id: tab.id }, now)
   return tab
@@ -976,6 +979,14 @@ function deskRect(p) {
 
 function front(s, tab) {
   tab.desk.z = Math.max(0, ...deskTabs(s, tab.spaceId).filter((t) => t !== tab).map((t) => t.desk.z)) + 1
+}
+
+// A window opened in the background goes directly beneath the active one, never above it.
+function behind(s, tab) {
+  const order = deskTabs(s, tab.spaceId).filter((t) => t !== tab)
+  const active = order.findIndex((t) => s.activeTabBySpace[tab.spaceId] === t.id)
+  order.splice(active < 0 ? order.length : active, 0, tab)
+  order.forEach((t, i) => { t.desk.z = i + 1 })
 }
 
 function placeDesk(s, p) {
