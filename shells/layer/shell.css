@@ -238,7 +238,7 @@ html.tablist:not(.above) #tablist { --oy: -20px; }
 #top { flex: none; display: flex; align-items: center; gap: 2px; height: 30px; padding: 0 4px; }
 #top .icon-btn:disabled { color: var(--soft); opacity: .7; }
 
-#favorites { flex: 0 1 auto; max-height: 28vh; overflow-y: auto; display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 14px; padding: 0 10px; }
+#favorites { flex: none; display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 14px; padding: 0 10px; }
 #favorites.spread { justify-content: space-between; }
 .tile { position: relative; flex: none; width: 36px; height: 36px; border: 1px solid var(--line); border-radius: 50%; background: var(--hover); overflow: hidden; }
 .tile:hover { background: var(--current); }
@@ -497,7 +497,6 @@ input.setting-input[type='number'] { width: 80px; font-family: var(--data); font
 @media (max-height: 440px) {
   #space-head { margin-top: 8px; margin-bottom: 2px; }
   #space-head h1, #rename { font-size: 22px; }
-  #favorites { max-height: 38px; }
   .import-header { padding-top: 12px; padding-bottom: 8px; }
   .import-header h2 { font-size: 20px; }
   #arc-steps { margin-top: 8px; }

@@ -296,6 +296,7 @@ function createFrame(id) {
   const view = shellView()
   loadSurface(view.webContents, roleFile('frame', path.join(shellRoot(), frameSpec.file), S.findTab(state, id)?.spaceId), { query: { tab: id } })
   frames.set(id, view)
+  view.webContents.on('before-mouse-event', (_e, mouse) => { if (mouse.type === 'mouseDown') pressOutside() })
   // It asks for the state itself once loaded.
   seen.set(view, pushed)
   return view
@@ -314,6 +315,7 @@ function createChatView(tab) {
   const wc = view.webContents
   guardShell(wc)
   wc.on('before-mouse-event', (_e, mouse) => {
+    if (mouse.type === 'mouseDown') pressOutside()
     if (deskMode && mouse.type === 'mouseDown' && views.get(tab.id) === view && state.peek !== tab.id && (state.peek || S.activeTab(state)?.id !== tab.id)) call('tabs.activate', { id: tab.id }).catch(console.error)
   })
   loadSurface(wc, roleFile('chat', path.join(chatDir, 'chat.html'), tab.spaceId), { query: { id: tab.url.slice('skiff://chat/'.length) } })
@@ -399,6 +401,7 @@ function createView(tab) {
   })
   // A page view takes its own clicks, so the shell never sees a click on a desk window behind the active one; a click on any window but the peeked one ends a peek.
   wc.on('before-mouse-event', (_e, mouse) => {
+    if (mouse.type === 'mouseDown') pressOutside()
     if (mouse.type === 'mouseDown' && views.get(id) === view && state.peek !== id && (state.peek || S.activeTab(state)?.id !== id)) call('tabs.activate', { id }).catch(console.error)
   })
   wc.on('did-start-loading', () => update({}, { loading: true }))
@@ -712,6 +715,8 @@ function inDir(dir, url) {
 const inShell = (url) => inDir(shellRoot(), url)
 
 const shellContents = () => [win?.webContents, ...[...overlays.values()].map((o) => o.host.webContents), ...[...frames.values()].map((view) => view.webContents)].filter(Boolean)
+// A press on a page, a frame or the desk, or another app taking over, is a click outside whatever floats open (the tab list); the Buoy card keeps its own rules.
+const pressOutside = () => { if (deskMode) for (const wc of shellContents()) sendEvent(wc, 'desk-press', null) }
 const chatContents = () => [...views.values()].filter((view) => chatViews.has(view)).map((view) => view.webContents)
 const shellWebPreferences = { preload: path.join(__dirname, 'preload.js'), get additionalArguments() { return [`--skiff-tools-url=${pathToFileURL(toolsDir + path.sep).href}`, `--skiff-icons-url=${pathToFileURL(faviconDir + path.sep).href}`, `--skiff-shell-url=${pathToFileURL(shellRoot() + path.sep).href}`] }, contextIsolation: true, sandbox: true, nodeIntegration: false }
 
@@ -1033,7 +1038,9 @@ function focusShell(o) {
 function focusLeft() {
   setTimeout(() => {
     const focused = BrowserWindow.getFocusedWindow()
+    const was = inFront
     inFront &&= Boolean(focused && (focused === win || parkedWin(focused) || [...overlays.values()].some((o) => o.float && o.host === focused)))
+    if (was && !inFront) pressOutside()
   }, 100)
 }
 
@@ -1120,6 +1127,7 @@ function createWindow(near = state.window, { quiet = false } = {}) {
     : { ...state.window, minWidth: 560, minHeight: 360, titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default', webPreferences: shellWebPreferences })
   ignoring = false
   guardShell(win.webContents)
+  win.webContents.on('before-mouse-event', (_e, mouse) => { if (mouse.type === 'mouseDown') pressOutside() })
   if (quiet) w.showInactive()
   // A desktop's first window loads beside the live Buoy and tab list, which stay.
   let keepFloats = quiet

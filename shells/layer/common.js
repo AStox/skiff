@@ -259,7 +259,8 @@ function earSlot(span, occluders, natural, min = EAR_MIN) {
 // windows: back to front, {id, rect, natural, slot?}; a given slot (the window being dragged) is kept. fixed: rects always on top (the Buoy).
 // Front ears are placed first, so each ear dodges the windows, ears, Buoy and panel drawn above it. Returns {id: slot or null}.
 function earLayout(windows, fixed = [], deskWidth = Infinity) {
-  const grow = (r, by) => ({ x: r.x - by, y: r.y - by, width: r.width + 2 * by, height: r.height + 2 * by })
+  // The ring reaches past a page on three sides, not over its top, where the ears stand: a window stacked exactly on another must not hide its ear.
+  const grow = (r, by) => ({ x: r.x - by, y: r.y, width: r.width + 2 * by, height: r.height + by })
   const above = fixed.map((r) => grow(r, EAR_RIM))
   const slots = {}
   for (const w of [...windows].reverse()) {

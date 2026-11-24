@@ -92,6 +92,8 @@ skiff.on('expose', async (data) => {
 skiff.on('extension-popup', openExtensionPopup)
 skiff.on('url-copied', () => notice('Copied URL'))
 // Skiff brought forward from outside, by the Dock or the app switcher, shows the whole desk.
+// A press on a page, a frame or the desk, or another app taking over: the tab list closes, the Buoy card does not.
+skiff.on('desk-press', closeList)
 skiff.on('desk-activated', () => {
   everyWindow()
   closeList()
