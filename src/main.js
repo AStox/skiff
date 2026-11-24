@@ -2187,10 +2187,6 @@ async function start() {
     if (!id || !['start', 'move', 'end', 'cancel'].includes(phase) || ![screenX, screenY].every(Number.isFinite)) return
     sendEvent(frames.get(id)?.webContents, 'page-drag', { tab: id, phase, screenX, screenY })
   })
-  // A desk window's page reports a vertical swipe that had nothing to scroll; fingers up (by the Mac's scroll setting) opens exposé, and its start (warm) lets exposé take its pictures meanwhile.
-  ipcMain.on('skiff:page-expose', (e, dir, warm) => {
-    if (deskPage(e) && dir === (naturalScroll ? 1 : -1)) rpc('ui.emit', { name: warm === true ? 'expose-warm' : 'expose', focus: false })
-  })
   buildMenu()
   startApi()
   screen.on('display-metrics-changed', refitDesk)

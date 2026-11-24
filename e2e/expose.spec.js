@@ -34,23 +34,27 @@ const DOWN = swipe(0, -1)
 const SIDEWAYS = swipe(1, 0.2)
 
 // Real wheel input, in real time, to the web contents whose URL contains match, at a point in its CSS pixels.
-const play = (skiff, match, point, events) => skiff.app.evaluate(({ webContents }, { match, point, events }) => new Promise((resolve) => {
-  const wc = webContents.getAllWebContents().find((w) => w.getURL().includes(match))
+// With cover, events go to the web contents whose URL contains it instead while it is on the desk window, as the wheel goes to the view under the pointer.
+const play = (skiff, match, point, events, cover) => skiff.app.evaluate(({ webContents, BrowserWindow }, { match, point, events, cover }) => new Promise((resolve) => {
+  const find = (part) => webContents.getAllWebContents().find((w) => w.getURL().includes(part))
+  const wc = find(match)
+  const over = cover && find(cover)
+  const attached = () => over && BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('/index.html')).contentView.children.some((v) => v.webContents === over)
   const start = performance.now()
   const next = (i) => {
     if (i === events.length) return setTimeout(resolve, 400)
     const [t, x, y] = events[i]
     setTimeout(() => {
       // Chromium hands the page both wheel deltas the other way round.
-      wc.sendInputEvent({ type: 'mouseWheel', ...point, deltaX: -x, deltaY: -y, canScroll: true, hasPreciseScrollingDeltas: true })
+      ;(attached() ? over : wc).sendInputEvent({ type: 'mouseWheel', ...point, deltaX: -x, deltaY: -y, canScroll: true, hasPreciseScrollingDeltas: true })
       next(i + 1)
     }, Math.max(0, start + t - performance.now()))
   }
   next(0)
-}), { match, point, events })
+}), { match, point, events, cover })
 const centre = (page, selector) => page.evaluate((selector) => { const r = document.querySelector(selector).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) } }, selector)
 const onBuoy = async (skiff, events) => play(skiff, '/buoy.html', await centre(await shellPage(skiff, '/buoy.html'), '#buoy'), events)
-const onEar = async (skiff, id, events) => play(skiff, `frame.html?tab=${id}`, await centre(await shellPage(skiff, `frame.html?tab=${id}`), '#ear'), events)
+const onEar = async (skiff, id, events) => play(skiff, `frame.html?tab=${id}`, await centre(await shellPage(skiff, `frame.html?tab=${id}`), '#ear'), events, '/expose.html')
 
 // Four windows of mixed sizes, the fourth hidden, the first in front.
 async function desk(skiff) {
@@ -203,31 +207,65 @@ test('on an ear the swipe up opens exposé too, and Escape, the backdrop, a swip
   expect(await spaceCalls(skiff)).toBe(switches)
 })
 
-test('on a page the swipe up opens exposé only when it has nothing left to scroll, and never mid-scroll or the other way', async ({ skiff }) => {
+// A slow swipe as [ms, dx, dy] steps of 4px every 16ms; up and down are in DOM wheel deltas (fingers up is positive).
+const slow = (px, sign = 1, from = 0) => Array.from({ length: Math.round(px / 4) }, (_, i) => [from + i * 16, 0, 4 * sign])
+
+test('a swipe up pulls exposé open with the fingers: the windows move in proportion to travel, stop short and they go home, past the commit point they open', async ({ skiff }) => {
+  const { ids, order } = await desk(skiff)
+  const before = await skiff.state()
+  const rectOf = (expose, id) => expose.evaluate((id) => { const r = document.querySelector(`.slot[data-tab-id="${id}"] .win`).getBoundingClientRect(); return [r.x, r.y, r.width, r.height] }, id)
+  const unchanged = async () => {
+    await expect.poll(() => exposed(skiff)).toBe(false)
+    await expect.poll(() => pages(skiff)).toEqual(order)
+    const s = await skiff.state()
+    expect(s.activeTabBySpace).toEqual(before.activeTabBySpace)
+    expect(s.tabs.map((t) => t.desk)).toEqual(before.tabs.map((t) => t.desk))
+  }
+  const home = before.tabs.find((t) => t.id === ids.two).desk
+
+  // Short of the commit point: the windows leave their places toward exposé in proportion to travel, and when the fingers stop they come back.
+  const short = onBuoy(skiff, [...slow(40), [40 * 16 + 20, 0, 0]].slice(0, -1))
+  await expect.poll(() => exposed(skiff)).toBe(true)
+  const expose = await shellPage(skiff, '/expose.html')
+  await expect(expose.locator('.slot')).toHaveCount(4)
+  await expect.poll(async () => (await rectOf(expose, ids.two))[2]).not.toBe(home.width)
+  const part = await rectOf(expose, ids.two)
+  const full = await expose.locator(`.slot[data-tab-id="${ids.two}"]`).evaluate((slot) => slot.getBoundingClientRect().width)
+  // 40px of 180px: partway, not yet at the exposé size and no longer the window's.
+  expect(part[2]).toBeLessThan(home.width)
+  expect(part[2]).toBeGreaterThan(full)
+  expect(await expose.evaluate(() => document.documentElement.classList.contains('settled'))).toBe(false)
+  await short
+  await unchanged()
+
+  // Fingers going back down before the stream ends count against the travel: up 40, down 28, quiet is 12px.
+  await onBuoy(skiff, [...slow(40), ...slow(28, -1, 40 * 16 + 16)].map(([t, x, y]) => [t, x, y]))
+  await unchanged()
+
+  // Past the commit point the rest is played out when the stream goes quiet, and exposé stays open.
+  await onBuoy(skiff, slow(100))
+  await expect.poll(() => exposed(skiff)).toBe(true)
+  await expect(expose.locator('html')).toHaveClass(/\bsettled\b/)
+  const settled = await rectOf(expose, ids.two)
+  expect(Math.abs(settled[2] - full)).toBeLessThan(1)
+  await expose.keyboard.press('Escape')
+  await unchanged()
+})
+
+test('a vertical swipe on a page only scrolls it, even at the end of the page', async ({ skiff }) => {
   await desk(skiff)
   const page = await skiff.page('/one')
   const onPage = (events) => play(skiff, '/one', { x: 200, y: 200 }, events)
-  // Fingers up with natural scrolling scrolls the page down, so it scrolls while there is more page below.
   await onPage(UP)
   await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(0)
-  expect(await exposed(skiff)).toBe(false)
   await page.evaluate(() => scrollTo(0, document.scrollingElement.scrollHeight))
   await page.waitForTimeout(200)
-  // Fingers down at the bottom scrolls back up; at the top it has nothing to scroll but is not the gesture.
-  await onPage(DOWN)
+  await onPage(UP)
   expect(await exposed(skiff)).toBe(false)
   await page.evaluate(() => scrollTo(0, 0))
   await page.waitForTimeout(200)
   await onPage(DOWN)
   expect(await exposed(skiff)).toBe(false)
-  await page.evaluate(() => scrollTo(0, document.scrollingElement.scrollHeight))
-  await page.waitForTimeout(200)
-  await onPage(UP)
-  await expect.poll(() => exposed(skiff)).toBe(true)
-  const expose = await shellPage(skiff, '/expose.html')
-  await expect(expose.locator('.slot')).toHaveCount(4)
-  await expose.keyboard.press('Escape')
-  await expect.poll(() => exposed(skiff)).toBe(false)
 })
 
 test('a window picked in exposé comes to the front, a hidden one is shown, and the arrows with Enter pick by keyboard', async ({ skiff }) => {

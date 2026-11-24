@@ -98,6 +98,10 @@ const writeStore = (key, value) => { try { localStorage.setItem(`layer.${key}`, 
 // One switch per gesture: a swipe fires once it has gone 30px, then only a pause (a new touch stops the tail first) or a reversal starts another.
 // With vertical, a mostly vertical stream fires 'up' or 'down' once it has gone 40px, and nothing else fires until the next pause or a reversal.
 const SWIPE_GAP = 120
+// A swipe up pulls exposé open: the cards show from PEEK px of upward travel; when the stream goes quiet at COMMIT or more they stay out, under it they go home.
+// Momentum counts as travel, so a flick that coasts past COMMIT opens, and fingers that stop or reverse back under COMMIT send everything home.
+const PEEK = 8
+const COMMIT = 72
 function swipeTracker(vertical = false) {
   const s = { last: -Infinity, x: 0, y: 0, used: false, dir: 0, up: 0 }
   return {
@@ -134,39 +138,58 @@ function swipeTracker(vertical = false) {
 }
 
 // A space switch by a two finger swipe, as the Buoy, the card and the ears make it: the space comes in front of other apps.
-// With expose (the Buoy and the ears), a swipe up opens exposé and a swipe down closes it.
+// With expose (the Buoy and the ears), a swipe up pulls exposé open as the fingers travel (expose.js follows 'expose-pull' and decides when it commits) and a swipe down closes it.
 // The momentum tail can land on another view once the windows have slid, so a switch anywhere holds every other view's tracker until its stream goes quiet.
 function spaceSwiper(expose = false) {
   const swipe = swipeTracker(expose)
   const me = Math.random()
-  // The time of the stream's last event, and whether this stream has asked exposé to get its pictures ready.
+  // The time of the stream's last event, its upward travel so far, whether the window came forward for it, whether a space switch has claimed it, and the travel not yet sent.
   let last = -Infinity
-  let warmed = false
-  skiff.on('space-swiped', (data) => { if (data?.from !== me) swipe.block(performance.now()) })
+  let up = 0
+  let raised = false
+  let claimed = false
+  let unsent = 0
+  let timer = 0
+  let sentAt = -Infinity
+  const claim = (now) => { last = now; claimed = true; swipe.block(now) }
+  const send = () => {
+    clearTimeout(timer)
+    timer = 0
+    if (!unsent) return
+    sentAt = performance.now()
+    const dy = unsent
+    unsent = 0
+    skiff.call('ui.emit', { name: 'expose-pull', data: { dy }, focus: false }).catch(() => {})
+  }
+  skiff.on('space-swiped', (data) => { if (data?.from !== me) claim(performance.now()) })
   return {
-    block: (now) => swipe.block(now),
+    block: claim,
     step(now, x, y) {
-      if (now - last >= SWIPE_GAP) warmed = false
+      if (now - last >= SWIPE_GAP) { up = 0; raised = false; claimed = false }
       last = now
-      // Exposé takes its pictures as soon as a swipe heads up, so they are ready when the swipe opens it.
-      if (expose && !warmed && Math.abs(y) > Math.abs(x) * 1.3 && (state?.naturalScroll === false ? -y : y) > 0) {
-        warmed = true
-        skiff.call('ui.emit', { name: 'expose-warm', focus: false }).catch(() => {})
+      // Fingers up is a positive deltaY with natural scrolling; the travel sent is positive for fingers up either way.
+      if (expose && !claimed && Math.abs(y) > Math.abs(x) * 1.3) {
+        const dy = state?.naturalScroll === false ? -y : y
+        up = Math.max(0, up + dy)
+        // Exposé draws in the desk window, so from the Buoy over another app the window comes forward first or it opens out of sight.
+        if (!raised && up >= 8) { raised = true; skiff.call('ui.raise').catch(() => {}) }
+        unsent += dy
+        // At most one message per frame, and none late: a hidden view's timers can wait a second.
+        if (performance.now() - sentAt >= 16) send()
+        else timer ||= setTimeout(send, 16)
       }
       const step = swipe.step(now, x, y)
-      // The wheel follows the fingers only with natural scrolling; without it a swipe up reads as down.
-      const delta = typeof step === 'string' && state?.naturalScroll === false ? (step === 'up' ? 'down' : 'up') : step
-      // Exposé draws in the desk window, so from the Buoy over another app the window comes forward first or it opens out of sight; calls run in order, so the raise lands first without a round trip.
-      if (delta === 'up') {
-        skiff.call('ui.raise').catch(() => {})
-        skiff.call('ui.emit', { name: 'expose', focus: false }).catch(() => {})
+      if (step === 'up' || step === 'down') {
+        // The tracker reads fingers up as 'up' only with natural scrolling.
+        if ((state?.naturalScroll === false ? (step === 'up' ? 'down' : 'up') : step) === 'down') skiff.call('ui.emit', { name: 'expose', data: { close: true }, focus: false }).catch(() => {})
+        return 0
       }
-      if (delta === 'down') skiff.call('ui.emit', { name: 'expose', data: { close: true }, focus: false }).catch(() => {})
-      if (typeof delta !== 'number' || !delta) return 0
+      if (typeof step !== 'number' || !step) return 0
+      claimed = true
       skiff.call('ui.raise').catch(() => {})
-      skiff.call('spaces.cycle', { delta }).catch(() => {})
+      skiff.call('spaces.cycle', { delta: step }).catch(() => {})
       skiff.call('ui.emit', { name: 'space-swiped', data: { from: me }, focus: false }).catch(() => {})
-      return delta
+      return step
     }
   }
 }

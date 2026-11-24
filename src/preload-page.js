@@ -322,44 +322,4 @@ if (window === window.top && /^https?:$/.test(location.protocol)) {
     askHistory()
   })
   addEventListener('pagehide', () => swipe?.bubble?.remove())
-
-  // In a desk window, a two finger swipe that cannot scroll anything under the pointer opens exposé, as the same swipe on the Buoy does.
-  // Decided at the start of a gesture (a 120 ms pause ends one), so scrolling up to the top and on in one stroke never opens it.
-  // The main process takes only the direction that is fingers up for the Mac's scroll setting.
-  // ponytail: a mouse wheel turned at the top counts too; tell trackpad from mouse if that bites.
-  const VERTICAL_COMMIT = 60
-  let vertical = null
-  const scrollsY = (e, dir) => {
-    const root = document.documentElement
-    const viewport = document.scrollingElement || root
-    const can = (top, max) => (dir < 0 ? top > 1 : top < max - 1)
-    for (const el of e.composedPath()) {
-      if (!(el instanceof Element) || el === root || el === viewport || el === document.body) continue
-      if (/auto|scroll|overlay/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight && can(el.scrollTop, el.scrollHeight - el.clientHeight)) return true
-    }
-    const viewY = getComputedStyle(root).overflowY === 'visible' && document.body ? getComputedStyle(document.body).overflowY : getComputedStyle(root).overflowY
-    if (!/hidden|clip/.test(viewY) && viewport.scrollHeight > viewport.clientHeight && can(viewport.scrollTop, viewport.scrollHeight - viewport.clientHeight)) return true
-    return Boolean(visualViewport && visualViewport.scale > 1.01 && can(visualViewport.offsetTop, root.clientHeight - visualViewport.height))
-  }
-  addEventListener('wheel', (e) => {
-    if (!e.isTrusted || !desk) return
-    if (!vertical || e.timeStamp - vertical.last >= SWIPE_GAP) vertical = { last: e.timeStamp, x: 0, y: 0, events: [], phase: 'pending' }
-    vertical.last = e.timeStamp
-    if (vertical.phase === 'off' || vertical.phase === 'done') return
-    // An earlier event of this gesture reached the page's own listeners by now; a page that took the wheel keeps it.
-    if (vertical.events.some((ev) => ev.defaultPrevented) || e.ctrlKey || e.shiftKey || e.altKey || e.metaKey || e.deltaMode !== 0) return void (vertical.phase = 'off')
-    vertical.events.push(e)
-    vertical.x += e.deltaX
-    vertical.y += e.deltaY
-    if (vertical.phase === 'pending') {
-      if (Math.abs(vertical.x) < 4 && Math.abs(vertical.y) < 4) return
-      if (Math.abs(vertical.y) <= Math.abs(vertical.x) * 1.3 || scrollsY(vertical.events[0], Math.sign(vertical.y))) return void (vertical.phase = 'off')
-      vertical.phase = 'tracking'
-      // Exposé gets its pictures ready while the swipe goes on.
-      ipcRenderer.send('skiff:page-expose', Math.sign(vertical.y), true)
-    }
-    if (vertical.events.length < 3 || Math.abs(vertical.y) < VERTICAL_COMMIT) return
-    vertical.phase = 'done'
-    ipcRenderer.send('skiff:page-expose', Math.sign(vertical.y))
-  }, { capture: true, passive: true })
 }

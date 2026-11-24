@@ -28,6 +28,10 @@ const EASE = 'cubic-bezier(.25, .8, .25, 1)'
 const RADIUS = 10
 // How long pictures taken as a gesture starts stay good for the exposé it opens.
 const WARM = 500
+// A swipe up pulls exposé open (PEEK and COMMIT are in common.js): the cards are fully out at FULL px of upward travel.
+const FULL = 180
+// The upward travel that closes an exposé that is already open.
+const CLOSE_PULL = 40
 
 let state = null
 // While open: {space, active, cards: [{tab, rect, to, z, hidden, active, el}]}.
@@ -37,6 +41,8 @@ let closing = false
 let again = false
 // The work prepare() started: {at, key, layout, ready}.
 let prepared = null
+// The swipe stream being followed: {last, travel, timer, from: 'closed' | 'open', asked (exposé was opened for it), spent, cancelled}.
+let stream = { last: -Infinity, spent: true }
 
 const still = () => matchMedia('(prefers-reduced-motion: reduce)').matches
 const centre = (r) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 })
@@ -142,7 +148,7 @@ function card(c, image) {
 }
 
 // The desk dims around the windows at once; they stay real until their pictures are ready.
-function dim(rects) {
+function dim(rects, pulled) {
   const rect = (r, rx = 0) => {
     const el = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
     for (const [key, value] of Object.entries({ x: r.x, y: r.y, width: r.width, height: r.height, rx })) el.setAttribute(key, value)
@@ -152,11 +158,14 @@ function dim(rects) {
   holes.firstChild.setAttribute('fill', '#fff')
   veilFill.setAttribute('mask', 'url(#holes)')
   veil.style.opacity = 1
-  if (!still()) veil.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MS, easing: 'ease-out' })
+  if (still()) return null
+  const fade = veil.animate([{ opacity: 0 }, { opacity: 1 }], pulled ? { duration: MS, easing: 'linear', fill: 'both' } : { duration: MS, easing: 'ease-out' })
+  if (pulled) fade.pause()
+  return fade
 }
 
 // Everything before anything shows, for the desk as it is: the layout, then the cards with their pictures decoded. The gesture's
-// first move starts it (expose-warm from the Buoy, an ear or a page), so the pictures are often ready by the time exposé opens.
+// first move starts it (the first 'expose-pull' of a swipe from the Buoy or an ear), so the pictures are often ready by the time exposé opens.
 function prepare() {
   const fresh = prepared && performance.now() - prepared.at < WARM && (!prepared.key || !state || prepared.key === deskKey(state))
   if (!fresh) {
@@ -209,15 +218,21 @@ async function openExpose() {
   if (shown !== token) return
   if (!layout) return finish()
   const { st, active, cards } = layout
+  // The swipe that asked for this opening, if it is still the one being followed; one that ended before exposé could open is not an opening.
+  const mine = stream.asked && !stream.opened && performance.now() - stream.last < 1000 ? stream : null
+  if (mine) mine.opened = true
+  if (mine?.cancelled) return void (shown = null, finish())
+  const pulled = Boolean(mine && !mine.spent && !still())
+  if (pulled) token.pull = mine
   paintSpace(st)
   // The desk dims around the windows at once; they stay real until their cards are ready.
-  dim(layout.holes)
+  token.veil = dim(layout.holes, pulled)
   await pending.ready
   if (shown !== token) return
   Object.assign(token, { space: st.activeSpaceId, active: active?.id, desktop: st.desktops?.current, cards })
   $('empty').hidden = cards.length > 0
   const glide = !still()
-  const motion = glide ? { duration: MS, easing: EASE, fill: 'backwards' } : { duration: 150, easing: 'ease-out', fill: 'backwards' }
+  const motion = pulled ? { duration: MS, easing: 'linear', fill: 'both' } : glide ? { duration: MS, easing: EASE, fill: 'backwards' } : { duration: 150, easing: 'ease-out', fill: 'backwards' }
   const anims = [tray.animate([{ opacity: 0 }, { opacity: 1 }], motion), groups.animate([{ opacity: 0 }, { opacity: 1 }], motion), $('empty').animate([{ opacity: 0 }, { opacity: 1 }], motion)]
   for (const c of cards) {
     const win = c.el.firstChild
@@ -233,6 +248,7 @@ async function openExpose() {
   }
   // Each window card first lies exactly over its window, and moves once the real pages and frames have gone.
   if (glide) for (const a of anims) a.pause()
+  if (pulled) token.anims = [token.veil, ...anims].filter(Boolean)
   stage.replaceChildren(...cards.map((c) => c.el))
   placeTray(cards.filter((c) => c.hidden))
   ;(cards.find((c) => c.tab === active) || cards[0])?.el.focus({ preventScroll: true })
@@ -244,9 +260,70 @@ async function openExpose() {
   veilFill.removeAttribute('mask')
   if (glide) await frame()
   if (shown !== token || closing) return
+  if (pulled) {
+    token.live = true
+    follow(token)
+    if (stream.spent) arrive(token)
+    return
+  }
   for (const a of anims) a.play()
-  // Labels and the hover ring wait for the cards to arrive.
+  settleWhenArrived(token, anims)
+}
+
+// Labels and the hover ring wait for the cards to arrive.
+function settleWhenArrived(token, anims) {
   Promise.all(anims.map((a) => a.finished)).then(() => { if (shown === token && !closing) root.classList.add('settled') }, () => {})
+}
+
+// The cards stand where the fingers have taken them; the paused animations are the positions.
+function follow(token) {
+  const at = clamp(stream.travel / FULL, 0, 1) * MS
+  for (const a of token.anims) a.currentTime = at
+}
+
+// A committed pull plays the rest of the way.
+function arrive(token) {
+  for (const a of token.anims) a.play()
+  settleWhenArrived(token, token.anims)
+}
+
+// Upward travel of the swipe stream; dy is positive for fingers up. Opens exposé as it is pulled, follows the fingers, and decides when the stream ends.
+function pullBy(dy) {
+  const now = performance.now()
+  if (now - stream.last >= SWIPE_GAP) {
+    clearTimeout(stream.timer)
+    stream = { last: now, travel: 0, from: shown && !closing ? 'open' : 'closed', spent: false, asked: false, cancelled: false }
+  }
+  stream.last = now
+  if (stream.spent) return
+  stream.travel = Math.max(0, stream.travel + dy)
+  clearTimeout(stream.timer)
+  const mine = stream
+  mine.timer = setTimeout(() => endPull(mine), SWIPE_GAP + 30)
+  if (mine.from === 'open') {
+    if (mine.travel >= CLOSE_PULL) { mine.spent = true; closeExpose() }
+    return
+  }
+  // A swipe that lands while the windows go home is layer.js's to open again once they have gone.
+  if (closing) return void (mine.spent = true)
+  if (!shown) prepare()
+  const token = shown
+  if (token?.veil && token.pull && !token.live) token.veil.currentTime = clamp(mine.travel / FULL, 0, 1) * MS
+  if (token?.live) {
+    if (mine.travel >= FULL) { mine.spent = true; arrive(token) } else follow(token)
+  } else if (mine.travel >= FULL) mine.spent = true
+}
+
+function endPull(s) {
+  if (s !== stream || s.spent) return
+  s.spent = true
+  if (s.from !== 'closed' || !s.asked) return
+  if (s.travel >= COMMIT) {
+    if (shown?.live) arrive(shown)
+    return
+  }
+  s.cancelled = true
+  closeExpose()
 }
 
 // Snug around the hidden windows' tiles; a tile's title shows under it, past the tray, while it is pointed at. Other desktops' tiles each get a tray with its label on top.
@@ -378,19 +455,35 @@ document.addEventListener('click', (e) => { if (shown?.space && !e.target.closes
 const swipe = swipeTracker(true)
 addEventListener('wheel', (e) => {
   e.preventDefault()
-  if (e.ctrlKey || !shown?.space) return
+  if (e.ctrlKey) return
   const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1
-  if (swipe.step(e.timeStamp, e.deltaX * unit, e.deltaY * unit) === (state?.naturalScroll === false ? 'up' : 'down')) closeExpose()
+  const x = e.deltaX * unit
+  const y = e.deltaY * unit
+  // Once exposé is over an ear, that swipe's wheel events land here instead of on the ear.
+  if (Math.abs(y) > Math.abs(x) * 1.3 && stream.from === 'closed' && performance.now() - stream.last < SWIPE_GAP) pullBy(state?.naturalScroll === false ? -y : y)
+  if (!shown?.space) return
+  if (swipe.step(e.timeStamp, x, y) === (state?.naturalScroll === false ? 'up' : 'down')) closeExpose()
 }, { passive: false })
 
-// layer.js forwards the event that opens exposé; the gesture again, or a swipe down on the Buoy or an ear, closes it.
+// layer.js forwards the event that opens exposé, with the travel so far when a swipe is pulling it open; the gesture again, or a swipe down on the Buoy or an ear, closes it.
 skiff.on('expose', (data) => {
-  if (data?.forwarded) openExpose()
+  if (data?.forwarded) {
+    if (Number.isFinite(data.pull)) {
+      const now = performance.now()
+      if (now - stream.last >= SWIPE_GAP) stream = { last: now, from: 'closed', spent: false, cancelled: false, travel: 0 }
+      stream.travel = Math.max(stream.travel, data.pull)
+      stream.asked = true
+      clearTimeout(stream.timer)
+      const mine = stream
+      mine.timer = setTimeout(() => endPull(mine), SWIPE_GAP + 30)
+    }
+    openExpose()
+  }
   else if (closing) again ||= !data?.close
   else if (shown) closeExpose()
   else if (!data?.close) prepare()
 })
-skiff.on('expose-warm', () => { if (!shown) prepare() })
+skiff.on('expose-pull', (data) => { if (Number.isFinite(data?.dy)) pullBy(data.dy) })
 // Leaving the space closes; a tab picked elsewhere, such as in the card, is picked here.
 skiff.on('state', (next) => {
   state = next

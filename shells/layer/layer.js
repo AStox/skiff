@@ -81,13 +81,27 @@ skiff.on('overlay-closed', (data) => {
 // Exposé covers the whole window and closes itself; while it is open it also takes this event as a close. It shows every window, so a foreground set ends first.
 // The Buoy stays above it, as the Dock does over Mission Control.
 const showExpose = (focus) => skiff.call('ui.showOverlay', { name: 'expose', file: 'expose.html', focus })
-skiff.on('expose', async (data) => {
-  if (data?.forwarded || data?.close || exposed || !state) return
+async function openExposeOverlay(pulled) {
   exposed = true
   closeList()
   if (state.deskOnly) await call('ui.setDesk', { only: null })
-  // A failed show must not leave every later gesture ignored as if exposé were open.
-  showExpose(true).then(() => quietly('expose', { forwarded: true }), () => { exposed = false })
+  // A failed show must not leave every later gesture ignored as if exposé were open. A swipe still pulling tells exposé how far it has gone.
+  showExpose(true).then(() => quietly('expose', { forwarded: true, pull: pulled?.travel }), () => { exposed = false })
+}
+skiff.on('expose', (data) => {
+  if (data?.forwarded || data?.close || exposed || !state) return
+  openExposeOverlay(null)
+})
+// A swipe up opens the overlay at PEEK px of travel and exposé follows the rest of the swipe itself; with reduced motion it opens at COMMIT.
+let pull = { last: -Infinity, travel: 0, asked: false }
+skiff.on('expose-pull', (data) => {
+  const now = performance.now()
+  if (now - pull.last >= SWIPE_GAP) pull = { last: now, travel: 0, asked: false }
+  pull.last = now
+  pull.travel = Math.max(0, pull.travel + (data?.dy || 0))
+  if (exposed || pull.asked || !state || pull.travel < (matchMedia('(prefers-reduced-motion: reduce)').matches ? COMMIT : PEEK)) return
+  pull.asked = true
+  openExposeOverlay(pull)
 })
 skiff.on('extension-popup', openExtensionPopup)
 skiff.on('url-copied', () => notice('Copied URL'))
