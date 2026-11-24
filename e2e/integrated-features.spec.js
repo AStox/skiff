@@ -20,9 +20,8 @@ async function surface(skiff, filename) {
   return skiff.app.context().pages().findLast(matches)
 }
 
-for (const shell of ['default', 'layer']) test.describe(`integrated daily features: ${shell}`, () => {
+test.describe('integrated daily features', () => {
   test('native find, reader, split divider, peek and history retain the live page', async ({ skiff }, testInfo) => {
-    if (shell !== 'default') await skiff.rpc('ui.setShell', { name: shell })
     const tab = await skiff.rpc('tabs.create', { url: skiff.origin + '/article' })
     const page = await skiff.page('/article')
     await expect(page.locator('article h1')).toHaveText('A useful local article')
@@ -71,7 +70,6 @@ for (const shell of ['default', 'layer']) test.describe(`integrated daily featur
 test.describe('local component lifecycle', () => {
   test.use({ fixtureOptions: { componentConsent: 1 } })
   test('custom UI and worker replacement/revert preserve native page identity and partition', async ({ skiff }, testInfo) => {
-    await skiff.rpc('ui.setShell', { name: 'layer' })
     const tab = await skiff.rpc('tabs.create', { url: skiff.origin + '/article' })
     const page = await skiff.page('/article')
     await page.evaluate(() => { window.retainedIdentity = crypto.randomUUID() })
@@ -205,7 +203,8 @@ test('sleeping and renderer crash recovery keep the tab profile without discardi
   const tab = await skiff.rpc('tabs.create', { url: skiff.origin + '/article' })
   const page = await skiff.page('/article')
   await page.getByRole('textbox', { name: 'Draft' }).fill('Unsaved work')
-  await skiff.rpc('tabs.create', { url: skiff.origin + '/second' })
+  const second = await skiff.rpc('tabs.create', { url: skiff.origin + '/second' })
+  await skiff.rpc('ui.setDesk', { only: [second.id] })
   await expect.poll(async () => (await skiff.state()).tabs.find((t) => t.id === tab.id).protections?.dirty).toBe(true)
   expect((await skiff.http('tabs.discard', { id: tab.id })).ok).toBe(false)
   await skiff.rpc('tabs.activate', { id: tab.id })
@@ -214,6 +213,7 @@ test('sleeping and renderer crash recovery keep the tab profile without discardi
   await expect(page.locator('article')).toBeVisible()
   const other = (await skiff.state()).tabs.find((t) => t.id !== tab.id)
   await skiff.rpc('tabs.activate', { id: other.id })
+  await skiff.rpc('ui.setDesk', { only: [other.id] })
   await skiff.rpc('tabs.discard', { id: tab.id })
   expect((await skiff.state()).tabs.find((t) => t.id === tab.id).lifecycle).toBe('sleeping')
   await skiff.rpc('tabs.activate', { id: tab.id })
@@ -481,38 +481,39 @@ test.describe('shutdown failure containment', () => {
 test.describe('owned source provenance and public management parity', () => {
   test.use({ fixtureOptions: { componentConsent: 1 } })
 
-  test('bundled defaults stay bundled while shell changes preserve owned role copies', async ({ skiff }) => {
-    const initial = await skiff.rpc('ui.shellPath')
-    expect(initial).toEqual({ path: path.join(__dirname, '..', 'shell'), owner: 'stock.shell', readOnly: true })
+  test('bundled defaults stay bundled while a shell reset preserves owned role copies', async ({ skiff }) => {
+    const bundled = path.join(__dirname, '..', 'shells', 'layer')
+    expect(await skiff.rpc('ui.shellPath')).toEqual({ path: bundled, owner: 'stock.shell', readOnly: true })
     expect(fs.existsSync(path.join(skiff.data, 'shell'))).toBe(false)
-    const launcher = await skiff.rpc('ui.inspectSource', { role: 'launcher' })
-    expect(launcher.id).toBe('stock.shell')
-    expect(launcher.resolution.file).toBe(path.join(__dirname, '..', 'shell', 'palette.html'))
+    const tablist = await skiff.rpc('ui.inspectSource', { role: 'tablist' })
+    expect(tablist.id).toBe('stock.shell')
+    expect(tablist.resolution.file).toBe(path.join(bundled, 'tablist.html'))
     const stock = await skiff.rpc('components.inspect', { id: 'stock.browser-tools' })
     expect(stock.manifest.surfaces).toMatchObject({ find: 'find.html', reader: 'reader.html', split: 'split.html' })
-    const copy = await skiff.rpc('components.create', { id: 'custom.retained-launcher', from: 'stock.shell', role: 'launcher' })
-    const before = await skiff.rpc('components.source.read', { id: copy.id, file: 'palette.html' })
+    const copy = await skiff.rpc('components.create', { id: 'custom.retained-tablist', from: 'stock.shell' })
+    const before = await skiff.rpc('components.source.read', { id: copy.id, file: 'tablist.html' })
     await skiff.rpc('components.apply', { id: copy.id })
-    await skiff.rpc('components.bind', { id: copy.id, role: 'launcher' })
-    await skiff.rpc('ui.setShell', { name: 'layer' })
-    expect((await skiff.rpc('ui.shellPath')).path).toBe(path.join(__dirname, '..', 'shells', 'layer'))
-    expect((await skiff.rpc('ui.inspectSource', { role: 'launcher' })).id).toBe(copy.id)
-    expect((await skiff.rpc('components.source.read', { id: copy.id, file: 'palette.html' })).content).toBe(before.content)
+    await skiff.rpc('components.bind', { id: copy.id, role: 'tablist' })
+    await skiff.rpc('ui.resetShell')
+    expect((await skiff.rpc('ui.shellPath')).path).toBe(bundled)
+    expect((await skiff.rpc('ui.inspectSource', { role: 'tablist' })).id).toBe(copy.id)
+    expect((await skiff.rpc('ui.inspectSource', { role: 'frame' })).id).toBe('stock.shell')
+    expect((await skiff.rpc('components.source.read', { id: copy.id, file: 'tablist.html' })).content).toBe(before.content)
     await skiff.restart()
-    expect((await skiff.rpc('ui.shellPath')).path).toBe(path.join(__dirname, '..', 'shells', 'layer'))
-    expect((await skiff.rpc('ui.inspectSource', { role: 'launcher' })).id).toBe(copy.id)
+    expect((await skiff.rpc('ui.shellPath')).path).toBe(bundled)
+    expect((await skiff.rpc('ui.inspectSource', { role: 'tablist' })).id).toBe(copy.id)
     await skiff.rpc('ui.safeMode')
-    const recovered = await skiff.rpc('ui.inspectSource', { role: 'launcher' })
+    const recovered = await skiff.rpc('ui.inspectSource', { role: 'tablist' })
     expect(recovered.id).toBe('stock.shell')
     expect(recovered.resolution.source).toBe('default')
-    expect(recovered.resolution.file).toBe(path.join(__dirname, '..', 'shell', 'palette.html'))
-    expect((await skiff.rpc('components.inspect')).bindings.global.launcher).toBe(copy.id)
+    expect(recovered.resolution.file).toBe(path.join(bundled, 'tablist.html'))
+    expect((await skiff.rpc('components.inspect')).bindings.global.tablist).toBe(copy.id)
   })
 
   test('existing legacy shell migrates to a selected owned copy without rewriting its source', async ({ skiff }) => {
     await skiff.restart({ beforeLaunch: ({ data }) => {
       const legacy = path.join(data, 'shell')
-      fs.cpSync(path.join(__dirname, '..', 'shell'), legacy, { recursive: true })
+      fs.cpSync(path.join(__dirname, '..', 'shells', 'layer'), legacy, { recursive: true })
       fs.appendFileSync(path.join(legacy, 'index.html'), '\n<!-- preserved legacy edit -->')
       fs.unlinkSync(path.join(data, 'components', 'composition.json'))
     } })
@@ -522,9 +523,10 @@ test.describe('owned source provenance and public management parity', () => {
     expect((await skiff.rpc('components.source.read', { id: selected.id, file: 'index.html' })).content).toContain('preserved legacy edit')
     const original = fs.readFileSync(path.join(skiff.data, 'shell', 'index.html'), 'utf8')
     expect(fs.readFileSync(path.join(selected.origin.backup, 'index.html'), 'utf8')).toBe(original)
-    await skiff.rpc('ui.setShell', { name: 'layer' })
+    const { backup } = await skiff.rpc('ui.resetShell')
     expect((await skiff.rpc('ui.inspectSource', { role: 'shell' })).id).toBe('stock.shell')
-    expect(fs.readFileSync(path.join(skiff.data, 'shell', 'index.html'), 'utf8')).toBe(original)
+    expect(fs.existsSync(path.join(skiff.data, 'shell'))).toBe(false)
+    expect(fs.readFileSync(path.join(backup, 'index.html'), 'utf8')).toBe(original)
     expect((await skiff.rpc('components.source.read', { id: selected.id, file: 'index.html' })).content).toBe(original)
   })
 
@@ -615,41 +617,4 @@ test.describe('owned source provenance and public management parity', () => {
     await skiff.rpc('components.preview.stop', { pid: result.preview.pid })
     expect(fs.existsSync(result.preview.profile)).toBe(false)
   })
-})
-
-test('shell replacement waits for the new native surface before closing the old window or replying', async ({ skiff }) => {
-  const tab = await skiff.rpc('tabs.create', { url: skiff.origin + '/article' })
-  const page = await skiff.page('/article')
-  await page.evaluate(() => { window.transitionIdentity = 'retained' })
-  const oldId = await skiff.app.evaluate(({ BrowserWindow }, url) => {
-    const old = BrowserWindow.getAllWindows().find((window) => window.webContents.getURL() === url)
-    const proto = Object.getPrototypeOf(old.webContents)
-    const original = proto.loadFile
-    global.__releaseShellLoad = null
-    global.__restoreShellLoad = () => { proto.loadFile = original }
-    proto.loadFile = function (file, ...args) {
-      if (!file.endsWith('/shells/layer/index.html')) return original.call(this, file, ...args)
-      proto.loadFile = original
-      return new Promise((resolve, reject) => {
-        global.__releaseShellLoad = () => { global.__releaseShellLoad = null; original.call(this, file, ...args).then(resolve, reject) }
-      })
-    }
-    return old.id
-  }, skiff.shell.url())
-  let replied = false
-  const switching = skiff.http('ui.setShell', { name: 'layer' }).then((result) => { replied = true; return result })
-  try {
-    await expect.poll(() => skiff.app.evaluate(() => Boolean(global.__releaseShellLoad))).toBe(true)
-    expect(replied).toBe(false)
-    expect(await skiff.app.evaluate(({ BrowserWindow }, id) => Boolean(BrowserWindow.fromId(id)), oldId)).toBe(true)
-    expect(await page.evaluate(() => window.transitionIdentity)).toBe('retained')
-    await skiff.app.evaluate(() => { global.__releaseShellLoad(); global.__restoreShellLoad() })
-    expect((await switching).ok).toBe(true)
-    expect(await skiff.app.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id), oldId)).toBeNull()
-    await expect.poll(() => skiff.shell.url()).toContain('/shells/layer/index.html')
-    expect((await skiff.state()).tabs.some((entry) => entry.id === tab.id)).toBe(true)
-    expect(await page.evaluate(() => window.transitionIdentity)).toBe('retained')
-  } finally {
-    await skiff.app.evaluate(() => { global.__releaseShellLoad?.(); global.__restoreShellLoad?.() })
-  }
 })

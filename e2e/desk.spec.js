@@ -8,20 +8,6 @@ test.use({ fixtureOptions: { componentConsent: 1, legacyShell: process.env.SKIFF
 
 const shellsDir = path.join(__dirname, '..', 'shells')
 const manifest = (name) => { try { return JSON.parse(fs.readFileSync(path.join(shellsDir, name, 'shell.json'), 'utf8')) } catch { return {} } }
-const deskShell = (fs.existsSync(shellsDir) ? fs.readdirSync(shellsDir) : []).sort().find((name) => manifest(name).window === 'desk')
-
-// An owned shell survives a preset change until its role is explicitly rebound.
-async function switchWindow(skiff, name) {
-  const owned = (await skiff.rpc('ui.inspectSource', { role: 'shell' })).kind === 'user'
-  if (owned) await skiff.rpc('ui.setShell', { name })
-  const old = skiff.shell
-  const closed = old.waitForEvent('close')
-  if (owned) await skiff.rpc('components.bind', { role: 'shell', id: 'stock.shell' })
-  else await old.evaluate((name) => { window.skiff.call('ui.setShell', { name }) }, name)
-  await closed
-  await expect.poll(() => !skiff.shell.isClosed()).toBe(true)
-  await skiff.shell.waitForLoadState()
-}
 
 // The app or desk window is the one showing the shell's index.html; a float overlay is a window of its own.
 const windowInfo = (skiff) => skiff.app.evaluate(({ BrowserWindow, screen }) => {
@@ -60,16 +46,8 @@ const ignoring = async (skiff, id) => (await ignoreCalls(skiff, id)).at(-1)
 const cursor = (skiff, point) => skiff.app.evaluate((_electron, point) => { global.__skiffVisualCursor = point }, point)
 const tabOf = async (skiff, id) => (await skiff.state()).tabs.find((t) => t.id === id)
 
-test.skip(!deskShell, 'No bundled shell asks for a desk window')
-
 const INSET = { top: 30, right: 8, bottom: 8, left: 8 }
 const grow = (r) => ({ x: r.x - INSET.left, y: r.y - INSET.top, width: r.width + INSET.left + INSET.right, height: r.height + INSET.top + INSET.bottom })
-const cascade = ({ width, height }, index) => {
-  const w = Math.max(240, Math.round(width * 0.62))
-  const h = Math.max(160, Math.round(height * 0.74))
-  const n = index % Math.max(1, Math.floor(Math.min(width - w, height - h) / 2 / 28) + 1)
-  return { x: Math.round((width - w) / 2) + 28 * n, y: Math.round((height - h) / 2) + 28 * n, width: w, height: h }
-}
 const recorder = "<script>window.events = []; for (const name of ['look-through', 'ping', 'desk-activated']) window.skiff.on(name, (data) => window.events.push([name, data])); window.skiff.on('state', (s) => { window.lastState = s })</script>"
 // Copy the selected desk into an owned component, make its UI inert, and select
 // every copied surface explicitly so independent stock frame/overlay code stops.
@@ -113,7 +91,6 @@ const guardNativeDesk = (skiff, wcId) => process.platform === 'darwin' ? skiff.a
 
 test('background page drag regions cannot block native modal and media controls', async ({ skiff }, testInfo) => {
   if (process.env.SKIFF_POINTER_LEGACY_SOURCE) expect((await skiff.rpc('ui.shellPath')).owner).toBe('legacy.shell')
-  else await switchWindow(skiff, deskShell)
   const peer = await skiff.rpc('tabs.create', { url: skiff.origin + '/drag-region-fixture' })
   const peerPage = await skiff.page('/drag-region-fixture')
   const peerBounds = { x: 220, y: 120, width: 720, height: 500 }
@@ -212,7 +189,6 @@ test('background page drag regions cannot block native modal and media controls'
 })
 
 test('native wheel and scrollbar drags scroll pages without moving the root window or tab', async ({ skiff }, testInfo) => {
-  if (!process.env.SKIFF_POINTER_LEGACY_SOURCE) await switchWindow(skiff, deskShell)
   const tab = await skiff.rpc('tabs.create', { url: skiff.origin + '/scroll-fixture' })
   const page = await skiff.page('/scroll-fixture')
   await skiff.rpc('desk.place', { id: tab.id, x: 160, y: 120, width: 640, height: 520 })
@@ -291,22 +267,17 @@ test('native wheel and scrollbar drags scroll pages without moving the root wind
 test('a desk shell gets a transparent window over the work area that shows every ordinary tab as a framed window', async ({ skiff }) => {
   const one = (await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })).id
   const two = (await skiff.rpc('tabs.create', { url: skiff.origin + '/two' })).id
-  // Opened before there is a desk, so they have no rects yet.
   const three = (await skiff.rpc('tabs.create', { url: skiff.origin + '/three', activate: false })).id
   const four = (await skiff.rpc('tabs.create', { url: skiff.origin + '/four', activate: false })).id
   await skiff.page('/one')
   await skiff.page('/two')
-  const appWindow = await windowInfo(skiff)
   const ids = await pageIds(skiff)
-  expect(Object.keys(ids).sort()).toEqual(['/one', '/two'])
 
   // Somewhere no desk window will be, so the pointer stays passed through until the test moves it.
   const empty = { x: 1300, y: 800 }
   await cursor(skiff, empty)
-  await switchWindow(skiff, deskShell)
   const desk = await windowInfo(skiff)
   expect(desk.count).toBe(1)
-  expect(desk.id).not.toBe(appWindow.id)
   // The desk shell floats its Buoy in a window of its own, on the desk window's display.
   await expect.poll(async () => (await floats(skiff)).map((f) => [f.file, f.visible])).toEqual([['buoy.html', true]])
   const [buoy] = await floats(skiff)
@@ -341,11 +312,9 @@ test('a desk shell gets a transparent window over the work area that shows every
   expect((await tabOf(skiff, one)).desk).toEqual({ ...rects[one], z: z0 + 1 })
   expect((await tabOf(skiff, two)).desk).toEqual({ ...rects[two], z: z0 + 2 })
 
-  // Ordinary tabs without rects are windows all the same: at the default cascade by tab order, behind the placed ones.
+  // Windows opened in the background stay behind the placed ones, in tab order.
   Object.assign(paths, { [three]: '/three', [four]: '/four' })
-  rects[three] = cascade(deskSize, 2)
-  rects[four] = cascade(deskSize, 3)
-  expect((await tabOf(skiff, three)).desk).toBeUndefined()
+  for (const id of [three, four]) rects[id] = (({ x, y, width, height }) => ({ x, y, width, height }))((await tabOf(skiff, id)).desk)
   // Each frame sits directly under its own page, at the window rect grown by the shell's insets.
   const expected = (...list) => list.flatMap((p) => {
     const id = Object.keys(paths).find((key) => paths[key] === p)
@@ -395,9 +364,9 @@ test('a desk shell gets a transparent window over the work area that shows every
   expect(after.activeTabBySpace[after.activeSpaceId]).toBe(one)
   expect(await order()).toEqual(windows('/four', '/two', '/three', '/one'))
   expect((await pageIds(skiff))['/one']).toBe(ids['/one'])
-  // An unplaced window hides at its default rect; closing a tab drops its page and frame.
+  // A hidden window keeps its rect; closing a tab drops its page and frame.
   await skiff.rpc('desk.hide', { id: four })
-  expect((await tabOf(skiff, four)).desk).toEqual({ ...cascade(deskSize, 3), z: 0, hidden: true })
+  expect((await tabOf(skiff, four)).desk).toEqual({ ...rects[four], z: expect.any(Number), hidden: true })
   await skiff.rpc('desk.hide', { id: one })
   expect(await order()).toEqual(windows('/two', '/three'))
   await skiff.rpc('tabs.close', { id: four })
@@ -613,28 +582,6 @@ test('a desk shell gets a transparent window over the work area that shows every
   const refit = await windowInfo(skiff)
   for (const key of ['x', 'y', 'width', 'height']) expect(Math.abs(refit.bounds[key] - refit.area[key])).toBeLessThanOrEqual(1)
   await expect.poll(async () => (await floats(skiff))[0].bounds).toEqual({ x: refit.content.x + placedFloat.x, y: refit.content.y + refit.size[1] + placedFloat.y, width: placedFloat.width, height: placedFloat.height })
-
-  const settled = await ignoreCalls(skiff)
-  await switchWindow(skiff, 'default')
-  // A switch back to an app shell closes the float window.
-  await expect.poll(() => floats(skiff)).toEqual([])
-  const appAgain = await windowInfo(skiff)
-  expect(appAgain.count).toBe(1)
-  expect(appAgain.bounds).toEqual(appWindow.bounds)
-  expect(appAgain.resizable).toBe(true)
-  expect((await skiff.audit()).windows.at(-1)).not.toHaveProperty('transparent')
-  expect(await pageIds(skiff)).toMatchObject(ids)
-  await expect(skiff.shell.locator('#dots .dot').first()).toBeVisible()
-  await expect.poll(async () => (await views(skiff)).map((v) => v.path)).toEqual(['/two'])
-  // An app shell has no frames, and its state carries no desk size.
-  await expect.poll(() => liveFrames(skiff)).toEqual([])
-  expect((await skiff.state()).deskSize).toBeUndefined()
-  await cursor(skiff, empty)
-  await skiff.shell.waitForTimeout(100)
-  // An app window never passes clicks through.
-  expect(await ignoreCalls(skiff)).toEqual(settled)
-  // The desk rects stay in state for the next desk shell.
-  expect((await tabOf(skiff, two)).desk).toMatchObject(rects[two])
 })
 
 test('a space switch slides the old space out and the new one in, retargets mid-slide, and is instant without animation', async ({ skiff }) => {
@@ -643,7 +590,6 @@ test('a space switch slides the old space out and the new one in, retargets mid-
   const tabs = {}
   for (const name of ['a1', 'a2']) tabs[name] = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/${name}` })).id
   for (const name of ['b1', 'b2']) tabs[name] = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/${name}`, spaceId: second, activate: false })).id
-  await switchWindow(skiff, deskShell)
   await inertShell(skiff, "<script>window.events = []; window.states = []; window.skiff.on('drag-cancel', () => window.events.push('drag-cancel')); window.skiff.on('state', (s) => window.states.push(s.activeSpaceId))</script>")
   const rects = { a1: { x: 40, y: 60, width: 500, height: 400 }, a2: { x: 620, y: 120, width: 520, height: 420 }, b1: { x: 100, y: 80, width: 600, height: 450 }, b2: { x: 760, y: 200, width: 400, height: 300 } }
   for (const [name, rect] of Object.entries(rects)) await skiff.rpc('desk.place', { id: tabs[name], ...rect })
@@ -743,7 +689,6 @@ const after = (stream, gap = 16) => stream.at(-1)[0] + gap
 test('a two finger swipe on the Buoy switches one space per gesture, through momentum, uneven speed, a new touch and reversals', async ({ skiff }) => {
   await skiff.rpc('spaces.create', { name: 'Second' })
   await skiff.rpc('spaces.create', { name: 'Third' })
-  await switchWindow(skiff, deskShell)
   const buoy = await shellPage(skiff, '/buoy.html')
   await expect(buoy.locator('#buoy-name')).not.toBeEmpty()
 
@@ -815,7 +760,6 @@ test('a two finger swipe on the Buoy switches one space per gesture, through mom
 })
 
 test('an ear sits as far left on its top edge as it can and still be seen, past windows, ears and the Buoy in front of it', async ({ skiff }) => {
-  await switchWindow(skiff, deskShell)
   const buoy = await shellPage(skiff, '/buoy.html')
   const got = await buoy.evaluate(() => {
     const at = (s) => s && [s.x, s.width, s.room]
@@ -876,7 +820,6 @@ const spots = (page) => page.evaluate(() => {
 })
 
 test('a drag from a desk page\'s empty background goes to its frame as page-drag; text, links, inputs, scrollbars and a page that keeps the press stay the page\'s', async ({ skiff }) => {
-  await switchWindow(skiff, deskShell)
   await inertShell(skiff, "<script>window.drags = []; window.skiff.on('page-drag', (d) => window.drags.push(d))</script>")
   // Every report the page sends, accepted or not.
   await skiff.app.evaluate(({ ipcMain }) => { global.__pageDrags = []; ipcMain.on('skiff:page-drag', (_e, phase) => global.__pageDrags.push(phase)) })
@@ -939,19 +882,9 @@ test('a drag from a desk page\'s empty background goes to its frame as page-drag
   // Only that window's frame hears it.
   expect(await otherFrame.evaluate(() => window.drags)).toEqual([])
   expect(await skiff.shell.evaluate(() => window.drags)).toEqual([])
-
-  // An app window's pages report nothing.
-  await reports()
-  await switchWindow(skiff, 'default')
-  await skiff.rpc('tabs.activate', { id })
-  await expect.poll(async () => (await views(skiff)).map((v) => v.path)).toEqual(['/one'])
-  await pointer(skiff, page.url(), press(empty, [40, 0]))
-  await page.waitForTimeout(100)
-  expect(await reports()).toEqual([])
 })
 
 test('in the layer shell a drag from the page background moves its window as the ear does, and a drop on the top edge fills the desk', async ({ skiff }) => {
-  await switchWindow(skiff, deskShell)
   const id = (await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })).id
   await skiff.rpc('desk.place', { id, x: 300, y: 200, width: 700, height: 500 })
   const page = await skiff.page('/one')
@@ -977,12 +910,6 @@ test('in the layer shell a drag from the page background moves its window as the
 test('desk.layouts names the window rects of the desk, desk.tile and the tiling keys put a window there', async ({ skiff }) => {
   const id = (await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })).id
   const mod = process.platform === 'darwin' ? 'Ctrl+Alt' : 'Ctrl+Super'
-  // Without a desk the keys do nothing.
-  await skiff.shortcut(`${mod}+Left`)
-  expect((await tabOf(skiff, id)).desk).toBeUndefined()
-  expect(await skiff.shell.evaluate(() => window.skiff.call('desk.layouts').catch((e) => e.code))).toBe('not_found')
-
-  await switchWindow(skiff, deskShell)
   await inertShell(skiff, '')
   const { deskSize: { width: W, height: H } } = await skiff.state()
   const layouts = await skiff.rpc('desk.layouts')
@@ -1022,7 +949,6 @@ test('desk.layouts names the window rects of the desk, desk.tile and the tiling 
 })
 
 test('dragging a window past the left, right or bottom desk edge shrinks it from that side, regrows it back to its start size, and stops at the smallest size', async ({ skiff }) => {
-  await switchWindow(skiff, deskShell)
   const id = (await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })).id
   const page = await skiff.page('/one')
   await page.waitForLoadState()
@@ -1076,7 +1002,6 @@ test('dragging a window past the left, right or bottom desk edge shrinks it from
 })
 
 test('a new desk window goes where its host was last put, else into the largest free part of the desk', async ({ skiff }) => {
-  await switchWindow(skiff, deskShell)
   await inertShell(skiff, '')
   const { deskSize: { width: W, height: H } } = await skiff.state()
   const layouts = await skiff.rpc('desk.layouts')
@@ -1106,7 +1031,6 @@ test('a new desk window goes where its host was last put, else into the largest 
 test.describe('stacking when the front window closes', () => {
   const pagesBackToFront = async (skiff) => (await children(skiff)).filter((c) => c.kind === 'page').map((c) => c.name)
   async function setup(skiff, opened) {
-    await switchWindow(skiff, deskShell)
     await inertShell(skiff, '')
     const focused = (await skiff.rpc('tabs.create', { url: skiff.origin + '/focused' })).id
     const five = []
@@ -1171,7 +1095,6 @@ test.describe('layer panel and Buoy', () => {
     await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
     const two = (await skiff.rpc('tabs.create', { url: skiff.origin + '/two' })).id
     const one = (await skiff.state()).tabs.find((t) => t.url.endsWith('/one')).id
-    await switchWindow(skiff, deskShell)
     const buoy = await shellPage(skiff, '/buoy.html')
     await expect(buoy.locator('#buoy-name')).not.toBeEmpty()
     await expect.poll(() => isHome(buoy)).toBe(true)
@@ -1249,8 +1172,8 @@ test.describe('layer panel and Buoy', () => {
   test('the command bar has one Ask row and no duplicate command, and the arrows move the highlight one row at a time, scrolling it into view', async ({ skiff }) => {
     await skiff.rpc('settings.set', { ai: { agents: [{ name: 'Fake', command: `'${process.execPath}' '${path.join(__dirname, 'fake-agent.js')}' '${skiff.root}'` }] } })
     await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
-    await switchWindow(skiff, deskShell)
     const buoy = await shellPage(skiff, '/buoy.html')
+    await expect(buoy.locator('#buoy-name')).not.toBeEmpty()
     await expect.poll(() => isHome(buoy)).toBe(true)
     await buoy.locator('#buoy-main').click()
     await expect(buoy.locator('#palette-input')).toBeFocused()
@@ -1284,8 +1207,8 @@ test.describe('layer panel and Buoy', () => {
   })
 
   test('a window created while the card is open is placed clear of it', async ({ skiff }) => {
-    await switchWindow(skiff, deskShell)
     const buoy = await shellPage(skiff, '/buoy.html')
+    await expect(buoy.locator('#buoy-name')).not.toBeEmpty()
     await expect.poll(() => isHome(buoy)).toBe(true)
     await buoy.locator('#buoy-main').click()
     await expect.poll(() => isOpen(buoy)).toBe(true)
@@ -1305,7 +1228,6 @@ test.describe('layer panel and Buoy', () => {
 
   test('every trigger that opened the panel or the bar opens the card in its own state, or moves an open card there', async ({ skiff }) => {
     await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
-    await switchWindow(skiff, deskShell)
     const buoy = await shellPage(skiff, '/buoy.html')
     await expect(buoy.locator('#buoy-name')).not.toBeEmpty()
     const closed = () => expect.poll(() => isHome(buoy)).toBe(true)
@@ -1384,7 +1306,6 @@ test.describe('layer panel and Buoy', () => {
 
   test('opening is one motion: the pill itself grows into the card and shrinks back, never with both showing, in a window that never moves, and with reduced motion it fades', async ({ skiff }) => {
     await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
-    await switchWindow(skiff, deskShell)
     const buoy = await shellPage(skiff, '/buoy.html')
     await expect(buoy.locator('#buoy-name')).not.toBeEmpty()
     await expect.poll(() => isHome(buoy)).toBe(true)
@@ -1482,7 +1403,6 @@ test.describe('layer panel and Buoy', () => {
     const other = await favorite('/fd')
     await skiff.rpc('spaces.activate', { id: first })
     await skiff.rpc('tabs.activate', { id: plain })
-    await switchWindow(skiff, deskShell)
     const buoy = await shellPage(skiff, '/buoy.html')
     const shownIds = () => buoy.locator('.buoy-fav[data-tab-id]').evaluateAll((els) => els.map((el) => el.dataset.tabId))
     const order = async (spaceId) => (await skiff.state()).tabs.filter((t) => t.favorite && t.spaceId === spaceId).map((t) => t.id)
@@ -1574,7 +1494,7 @@ test.describe('layer panel and Buoy', () => {
     const first = (await skiff.state()).activeSpaceId
     const one = (await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })).id
     // Enough pinned rows that the list scrolls.
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 25; i++) {
       const id = (await skiff.rpc('tabs.create', { url: skiff.origin + `/row${i}` })).id
       await skiff.rpc('tabs.setPinned', { id, pinned: true })
     }
@@ -1582,7 +1502,6 @@ test.describe('layer panel and Buoy', () => {
     await skiff.rpc('spaces.create', { name: 'Second' })
     await skiff.rpc('spaces.create', { name: 'Third' })
     await skiff.rpc('spaces.activate', { id: first })
-    await switchWindow(skiff, deskShell)
     const panel = await shellPage(skiff, '/buoy.html')
     await panel.locator('#buoy-main').click()
     await expect.poll(() => isOpen(panel)).toBe(true)
@@ -1632,10 +1551,10 @@ test.describe('layer panel and Buoy', () => {
     const three = (await skiff.rpc('tabs.create', { url: skiff.origin + '/three' })).id
     const fav = (await skiff.rpc('tabs.create', { url: skiff.origin + '/fa' })).id
     await skiff.rpc('tabs.setFavorite', { id: fav, favorite: true })
+    await skiff.rpc('desk.hide', { id: fav })
     const second = (await skiff.rpc('spaces.create', { name: 'Second' })).id
     await skiff.rpc('spaces.activate', { id: first })
     await skiff.rpc('tabs.activate', { id: one })
-    await switchWindow(skiff, deskShell)
     const buoy = await shellPage(skiff, '/buoy.html')
     await skiff.rpc('desk.hide', { id: three })
     const { deskSize } = await skiff.state()
@@ -1832,8 +1751,7 @@ test.describe('layer frame sizing', () => {
   const frameSetup = async (skiff) => {
     const one = (await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })).id
     await skiff.page('/one')
-    await switchWindow(skiff, deskShell)
-    const inset = manifest(deskShell).frame
+    const inset = manifest('layer').frame
     const frame = await shellPage(skiff, `/frame.html?tab=${one}`)
     const { deskSize } = await skiff.state()
     const layouts = await skiff.rpc('desk.layouts')

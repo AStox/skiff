@@ -4,15 +4,13 @@ const { test, expect } = require('./fixtures')
 
 const bucketOf = async (skiff, id) => (await skiff.state()).tabs.find((t) => t.id === id)?.bucket
 
-test('a page leaves progress when it loads, one never loaded settles unread until shown, and buckets move by hand', async ({ skiff }) => {
+test('a page leaves progress when it loads, one loaded in the background waits unread until shown, and buckets move by hand', async ({ skiff }) => {
   const shown = await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
   await skiff.page('/one')
   await expect.poll(() => bucketOf(skiff, shown.id)).toMatch(/^(active|unread)$/)
 
   const first = await skiff.rpc('tabs.create', { url: skiff.origin + '/two', activate: false })
-  expect(await bucketOf(skiff, first.id)).toBe('progress')
-  expect((await skiff.rpc('archive.sweep')).settled).toEqual([first.id])
-  expect(await bucketOf(skiff, first.id)).toBe('unread')
+  await expect.poll(() => bucketOf(skiff, first.id)).toBe('unread')
   await skiff.rpc('tabs.activate', { id: first.id })
   await expect.poll(() => bucketOf(skiff, first.id)).toBe('active')
 
@@ -31,16 +29,6 @@ test('a page leaves progress when it loads, one never loaded settles unread unti
 })
 
 const fakeAgent = path.join(__dirname, 'fake-agent.js')
-
-async function useLayer(skiff) {
-  const closed = skiff.shell.waitForEvent('close')
-  await skiff.shell.evaluate(() => { window.skiff.call('ui.setShell', { name: 'layer' }) })
-  await closed
-  await expect.poll(() => !skiff.shell.isClosed()).toBe(true)
-  await skiff.shell.waitForLoadState()
-  await expect.poll(() => skiff.app.context().pages().some((page) => page.url().endsWith('/buoy.html'))).toBe(true)
-  return skiff.app.context().pages().find((page) => page.url().endsWith('/buoy.html'))
-}
 
 const isOpen = (buoy) => buoy.locator('#buoy').evaluate((el) => el.classList.contains('open') && !el.classList.contains('morphing'))
 async function openCard(buoy) {
@@ -65,7 +53,7 @@ test('the Layer card lists tabs and threads in six sections that follow their bu
   await skiff.rpc('settings.set', { ai: { agents: [{ name: 'Fake', command: `'${process.execPath}' '${fakeAgent}' '${skiff.root}'` }] } })
   const home = await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
   await skiff.page('/one')
-  const buoy = await useLayer(skiff)
+  const buoy = await skiff.bar()
   const row = (id) => buoy.locator(`#list li.row[data-tab-id="${id}"]`)
   const sections = () => buoy.locator('#list [data-bucket]').evaluateAll((heads) => heads.map((head) => head.dataset.bucket))
   const unread = buoy.locator('#buoy-unread')

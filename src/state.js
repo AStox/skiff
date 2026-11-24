@@ -176,13 +176,14 @@ function load(raw = {}) {
     activeTabBySpace: { ...raw.activeTabBySpace },
     archive: Array.isArray(raw.archive) ? raw.archive : [],
     collapsed: { ...raw.collapsed },
-    settings: { autoArchiveHours: 12, searchUrl: GOOGLE, shell: 'layer', historyRetentionDays: 90, downloadAskWhere: true, downloadDirectory: '', memorySaver: false, memorySaverMinutes: 30, transcriptRecovery: false, transcriptRetentionDays: 30, ...raw.settings, browserIdentity: loadBrowserIdentity(raw.settings?.browserIdentity), ai: loadAi(raw.settings?.ai), shortcuts: { ...SHORTCUTS, ...raw.settings?.shortcuts }, globalShortcuts: { ...GLOBAL_SHORTCUTS, ...raw.settings?.globalShortcuts } },
+    settings: { autoArchiveHours: 12, searchUrl: GOOGLE, historyRetentionDays: 90, downloadAskWhere: true, downloadDirectory: '', memorySaver: false, memorySaverMinutes: 30, transcriptRecovery: false, transcriptRetentionDays: 30, ...raw.settings, browserIdentity: loadBrowserIdentity(raw.settings?.browserIdentity), ai: loadAi(raw.settings?.ai), shortcuts: { ...SHORTCUTS, ...raw.settings?.shortcuts }, globalShortcuts: { ...GLOBAL_SHORTCUTS, ...raw.settings?.globalShortcuts } },
     window: { width: 1280, height: 800, ...raw.window },
     deskHosts: Object.fromEntries(Object.entries(isObject(raw.deskHosts) ? raw.deskHosts : {}).map(([host, rect]) => [host, deskRect(rect)]).filter(([, rect]) => rect).slice(-HOSTS))
   }
   // Before settings version 1 a saved DuckDuckGo URL is the old untouched default, not a choice
   if (!(s.settings.version >= 1) && s.settings.searchUrl === 'https://duckduckgo.com/?q=%s') s.settings.searchUrl = GOOGLE
   s.settings.version = 1
+  delete s.settings.shell
   if (!settingsCatalog.get('tabLayout').enum.includes(s.settings.tabLayout)) s.settings.tabLayout = 'free'
   const j = s.settings.shortcuts['CmdOrCtrl+J']
   if (j?.method === 'ui.emit' && j.params?.name === 'toggle-ai') s.settings.shortcuts['CmdOrCtrl+J'] = SHORTCUTS['CmdOrCtrl+J']

@@ -645,37 +645,6 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
     if (!manifest.id.startsWith('stock.') || stocks.has(manifest.id)) throw fail('Invalid or duplicate stock id')
     stocks.set(manifest.id, { manifest, root: directory, activate: activateStock })
   }
-  function refreshStock({ id, manifest, root: directory }) { return serial(async () => {
-    if (!started || !stocks.has(id)) throw fail('Refresh requires an installed stock component')
-    const previous = stocks.get(id)
-    directory = hostRoot(directory || previous.root)
-    manifest = validate(directory, manifest)
-    if (manifest.id !== id) throw fail('Stock component id changed')
-    if (manifest.backend || previous.manifest.backend || previous.activate) throw fail('Only UI stock sources can be refreshed')
-    validateProperties(id, manifest)
-    const provided = new Set(roles(manifest))
-    const affected = [...new Set([...roles(previous.manifest), ...provided])]
-    const item = record(id)
-    const rev = stockRevision({ manifest, root: directory })
-    await deactivate(id)
-    stocks.set(id, { manifest, root: directory })
-    item.active = rev
-    item.grants = manifest.capabilities
-    item.error = null
-    // Shell switches may remove stock-only files, but never change a user's
-    // independently selected global or per-space component.
-    for (const bindings of [store.bindings.global, ...Object.values(store.bindings.spaces)]) {
-      for (const role of Object.keys(bindings)) if (bindings[role] === id && !provided.has(role)) delete bindings[role]
-    }
-    for (const role of provided) if (!own(store.bindings.global, role)) store.bindings.global[role] = id
-    try {
-      if (item.enabled) await activate(id, rev, item.grants)
-      await onReplace({ id, owner: id, action: 'refresh', roles: affected, revision: rev })
-      save()
-      await followStock(id)
-      return info(id)
-    } catch (error) { item.error = error.message; save(); throw error }
-  }) }
   const stockRevision = (stock) => crypto.createHash('sha256').update(revision(stock.root)).update(JSON.stringify(stock.manifest)).digest('hex')
   // Bundled sources are identified by where they sit in the app, not by absolute path.
   const stockKey = (stock) => bundledRoot ? path.relative(hostRoot(bundledRoot), stock.root) : stock.root
@@ -709,12 +678,12 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
   }
   // A copy whose source still hashes to its recorded origin follows its stock's new revision; edited copies,
   // copies of workspace sources and legacy imports (no recorded hash) are never touched.
-  async function followStock(only) {
+  async function followStock() {
     if (safeMode) return
     for (const [id, item] of Object.entries(store.components)) {
       const origin = item.origin
       const stock = origin?.type === 'copy' && origin.source === 'bundled' && origin.sourceHash && stocks.get(origin.id)
-      if (!stock || (only && origin.id !== only) || origin.stockRoot !== stockKey(stock)) continue
+      if (!stock || origin.stockRoot !== stockKey(stock)) continue
       const base = stockRevision(stock)
       if (base === origin.baseRevision || !untouched(id, item)) continue
       try { await follow(id, item, stock, base) } catch {} // a copy that cannot follow keeps its current revision
@@ -1005,7 +974,7 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
     const disposers = definitions.map(([name, properties, required, run]) => target.register('core', { name: 'components.' + name, description: `Local component ${name}`, inputSchema: { type: 'object', properties, required, additionalProperties: false }, tool: tools.has(name), run: (params, context) => { assertOperation(context); return run(params, context) } }))
     return () => disposers.forEach((dispose) => dispose())
   }
-  return { start, stop, list, inspect, create, check, stage: (params, context) => serial(() => stageInternal(params), context), apply, revert, disable, enable, remove, bind, resolve, surface, register, registerStock, refreshStock, bridge, authorize, ownerForFile, emit, dataRead: storageRead, dataWrite, dataRemove, sourceRead, sourceWrite, settingsList, settingsGet, settingsSet, settingsReset, preview: previewComponent }
+  return { start, stop, list, inspect, create, check, stage: (params, context) => serial(() => stageInternal(params), context), apply, revert, disable, enable, remove, bind, resolve, surface, register, registerStock, bridge, authorize, ownerForFile, emit, dataRead: storageRead, dataWrite, dataRemove, sourceRead, sourceWrite, settingsList, settingsGet, settingsSet, settingsReset, preview: previewComponent }
 }
 
 module.exports = { createComponents }

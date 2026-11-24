@@ -1,14 +1,6 @@
 'use strict'
 const { test, expect, snapshot } = require('./fixtures')
 
-async function useLayer(skiff) {
-  const old = skiff.shell
-  const closed = old.waitForEvent('close')
-  await old.evaluate(() => { window.skiff.call('ui.setShell', { name: 'layer' }) })
-  await closed
-  await expect.poll(() => !skiff.shell.isClosed()).toBe(true)
-  await skiff.shell.waitForLoadState()
-}
 const shellPage = async (skiff, suffix) => {
   const at = (page) => page.url().endsWith(suffix)
   await expect.poll(() => skiff.app.context().pages().some(at)).toBe(true)
@@ -58,7 +50,6 @@ const onEar = async (skiff, id, events) => play(skiff, `frame.html?tab=${id}`, a
 
 // Four windows of mixed sizes, the fourth hidden, the first in front.
 async function desk(skiff) {
-  await useLayer(skiff)
   const rects = { one: [80, 90, 620, 420], two: [460, 240, 700, 480], three: [180, 420, 420, 300], four: [700, 60, 520, 360] }
   const ids = {}
   for (const [name, [x, y, width, height]] of Object.entries(rects)) {
@@ -372,7 +363,6 @@ test('a click glides the window home at once, before the core has brought it for
 })
 
 test('exposé in a space with no windows says so, and in the incognito space shows its own windows', async ({ skiff }) => {
-  await useLayer(skiff)
   const empty = await skiff.rpc('spaces.create', { name: 'Empty' })
   await skiff.rpc('spaces.activate', { id: empty.id })
   await onBuoy(skiff, UP)

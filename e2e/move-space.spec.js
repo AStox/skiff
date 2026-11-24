@@ -79,13 +79,8 @@ test('moving a link peek to a space makes it a tab there, in that space\'s sessi
   await expect.poll(async () => (await skiff.page('/agent/away')).locator('#cookie').textContent()).toBe('cookie: who=dev')
 })
 
-test('Move to Space works from a desk window in Layer', async ({ skiff }) => {
+test('Move to Space moves a tab whose destination space was filled in the background', async ({ skiff }) => {
   const [home, dev] = await twoProfiles(skiff)
-  const old = skiff.shell
-  const closed = old.waitForEvent('close')
-  await old.evaluate(() => { window.skiff.call('ui.setShell', { name: 'layer' }) })
-  await closed
-  await expect.poll(() => !skiff.shell.isClosed()).toBe(true)
   const tab = await skiff.rpc('tabs.create', { url: `${skiff.origin}/agent/a`, spaceId: home.id })
   await (await skiff.page('/agent/a')).evaluate(() => { document.cookie = 'who=home; Path=/' })
   await skiff.rpc('tabs.create', { url: `${skiff.origin}/agent/b`, spaceId: dev.id, activate: false })

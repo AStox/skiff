@@ -25,10 +25,9 @@ async function send(skiff, chatId, chat, text) {
   await settled(skiff, chatId)
 }
 
-for (const shell of ['default', 'layer']) {
-  test(`${shell}: local transcript recovery is read-only, fresh context is explicit, and visible deletion survives restart`, async ({ skiff }, testInfo) => {
+test.describe('transcripts', () => {
+  test('local transcript recovery is read-only, fresh context is explicit, and visible deletion survives restart', async ({ skiff }, testInfo) => {
     test.setTimeout(90_000)
-    if (shell === 'layer') await skiff.rpc('ui.setShell', { name: 'layer' })
     // Only the isolated fixture's real local ACP process runs; no model or account is needed.
     await skiff.rpc('settings.set', { ai: { agents: [{ name: 'Fake', command: agentCommand(skiff) }] } })
     expect((await skiff.state()).settings.transcriptRecovery).toBe(false)
@@ -75,7 +74,7 @@ for (const shell of ['default', 'layer']) {
     const recovered = await skiff.rpc('ai.chat', { chatId })
     expect(recovered.recovery).toMatchObject({ source: 'local', readOnly: true, requiresFresh: true, transcriptId: chatId })
     expect(recovered.sessionId).toBeNull()
-    await testInfo.attach(`${shell}-read-only-recovery`, { body: await chat.screenshot(), contentType: 'image/png' })
+    await testInfo.attach('read-only-recovery', { body: await chat.screenshot(), contentType: 'image/png' })
 
     const fresh = 'A new conversation about the green lighthouse.'
     const input = chat.getByRole('textbox', { name: 'Message', exact: true })
@@ -135,4 +134,4 @@ for (const shell of ['default', 'layer']) {
     await expect(empty.locator('#content .row')).toHaveCount(0)
     await expect(empty.getByRole('button', { name: 'Read transcript', exact: true })).toHaveCount(0)
   })
-}
+})

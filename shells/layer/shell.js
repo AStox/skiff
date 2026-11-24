@@ -588,8 +588,6 @@ function panel(space) {
     if (event.key === 'Enter') { event.preventDefault(); name.blur() }
     if (event.key === 'Escape') { name.value = space.name; name.blur() }
   })
-  const shell = h('select', { id: 'shell', onchange: () => call('ui.setShell', { name: shell.value }) },
-    state.shells.map((name) => h('option', { value: name, selected: name === state.settings.shell }, name === 'layer' ? 'layer (default)' : name === 'default' ? 'plain' : name)))
   const preset = SEARCH_ENGINES.find((engine) => engine.url === state.settings.searchUrl)
   const search = h('select', { id: 'search-engine', onchange: () => call('settings.set', { searchUrl: search.value }) },
     !preset && h('option', { value: state.settings.searchUrl, selected: true, disabled: true }, 'Custom'),
@@ -607,8 +605,6 @@ function panel(space) {
           return swatch
         }))
     ],
-    h('label', { class: 'field', for: 'shell' }, 'Shell', shell),
-    h('p', { class: 'hint' }, 'Switches the whole interface in place. Tabs stay as they are.'),
     h('label', { class: 'field', for: 'search-engine' }, 'Search engine', search),
     ui.quick.map(quickRow),
     agentRows(),
@@ -1222,7 +1218,7 @@ function renderPanel() {
     const travel = `translateX(${state.spaces.indexOf(space) > from ? 24 : -24}px)`
     if (from >= 0 && !still.matches) for (const id of ['favorites', 'space-head', 'list']) $(id).animate([{ transform: travel, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 130, easing: 'ease-out' })
   }
-  section('panel', ui.settings && [space, state.spaces.length, ui.quick, state.settings.searchUrl, state.settings.shell, state.shells, state.settings.ai, ui.imported, ui.filling, Boolean(tab), ui.extensions, ui.agents, ui.agentError], () => (ui.settings ? panel(space) : []))
+  section('panel', ui.settings && [space, state.spaces.length, ui.quick, state.settings.searchUrl, state.settings.ai, ui.imported, ui.filling, Boolean(tab), ui.extensions, ui.agents, ui.agentError], () => (ui.settings ? panel(space) : []))
   if (ui.settings && ui.quickKey !== JSON.stringify([state.settings, state.update?.status])) refreshQuick()
   if (ui.settings) warmDefault()
   if (!holds) {

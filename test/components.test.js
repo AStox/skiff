@@ -260,31 +260,6 @@ test('owned copies that still match their recorded source follow a changed stock
   await runtime.stop()
   await runtime.start()
   assert.equal(revision('my.plain'), followed)
-
-  replaced.length = 0
-  stockPage('second stock update')
-  await runtime.refreshStock({ id: 'stock.notes', root: stockRoot, manifest })
-  assert.match(page('my.plain'), /second stock update/)
-  assert.notEqual(revision('my.plain'), followed)
-  assert.equal(runtime.inspect({ id: 'my.plain' }).previous, followed)
-  assert.ok(replaced.some((event) => event.id === 'my.plain' && event.action === 'apply'))
-  assert.equal(page('my.edited'), 'mine')
-  assert.equal(revision('my.edited'), before['my.edited'])
-})
-
-test('a copy does not follow when the new stock asks for capabilities it was never granted', async (t) => {
-  const { root, runtime } = setup(t)
-  const stockRoot = writePackage(root, 'stock.notes', { backend: false, capabilities: ['ui'] })
-  const manifest = JSON.parse(fs.readFileSync(path.join(stockRoot, 'manifest.json'), 'utf8'))
-  runtime.registerStock({ root: stockRoot, manifest })
-  await runtime.start()
-  await runtime.create({ id: 'my.notes', from: 'stock.notes' })
-  await runtime.apply({ id: 'my.notes' })
-  const before = runtime.inspect({ id: 'my.notes' }).revision
-  fs.writeFileSync(path.join(stockRoot, 'index.html'), '<!doctype html><main>new</main>')
-  await runtime.refreshStock({ id: 'stock.notes', root: stockRoot, manifest: { ...manifest, capabilities: ['ui', 'host.manage'] } })
-  assert.equal(runtime.inspect({ id: 'my.notes' }).revision, before)
-  assert.doesNotMatch(runtime.sourceRead({ id: 'my.notes', file: 'index.html' }).content, /new/)
 })
 
 test('preview uses an immutable staged path and excludes backend execution by default', async (t) => {
@@ -322,37 +297,6 @@ test('surface activation failure rolls back code and explicit grants restrict th
   assert.deepEqual(runtime.inspect({ id: 'local.surface' }).grants, ['ui', 'source'])
   assert.equal(runtime.inspect({ id: 'local.surface' }).running, true)
   await assert.rejects(runtime.bind({ role: 'notes', id: 'local.surface', spaceId: '__proto__' }), /Invalid role/)
-})
-
-test('refreshing stock shell files preserves custom global and space role selections', async (t) => {
-  const { root, runtime } = setup(t)
-  const first = writePackage(root, 'stock.shell', { backend: false, capabilities: ['ui'] })
-  const second = writePackage(root, 'stock.other', { backend: false, capabilities: ['ui'] })
-  const manifest = { apiVersion: 1, id: 'stock.shell', version: '1.0.0', surfaces: { shell: 'index.html', frame: 'index.html' }, capabilities: ['ui'] }
-  runtime.registerStock({ root: first, manifest })
-  await runtime.start()
-  await runtime.create({ id: 'my.frame', role: 'frame' })
-  await runtime.apply({ id: 'my.frame' })
-  await runtime.bind({ role: 'frame', id: 'my.frame' })
-  await runtime.bind({ role: 'frame', id: 'my.frame', spaceId: 'custom' })
-  await runtime.bind({ role: 'frame', id: 'stock.shell', spaceId: 'stock' })
-  const oldBridge = runtime.bridge('stock.shell')
-  const next = { ...manifest, surfaces: { shell: 'index.html', launcher: 'index.html' } }
-  await runtime.refreshStock({ id: 'stock.shell', root: second, manifest: next })
-  assert.equal(runtime.resolve('shell').file, path.join(second, 'index.html'))
-  assert.equal(runtime.resolve('launcher').owner, 'stock.shell')
-  assert.equal(runtime.resolve('frame').owner, 'my.frame')
-  assert.equal(runtime.resolve('frame', { spaceId: 'custom' }).owner, 'my.frame')
-  assert.equal(runtime.inspect().bindings.spaces.stock.frame, undefined)
-  assert.equal(runtime.inspect({ id: 'stock.shell' }).manifest.surfaces.frame, undefined)
-  assert.throws(() => oldBridge.on('state', () => {}), /no longer active/)
-  await assert.rejects(runtime.refreshStock({ id: 'stock.shell', root: second, manifest: { ...next, surfaces: { shell: 'missing.html' } } }), /Missing/)
-  assert.equal(runtime.resolve('shell').file, path.join(second, 'index.html'))
-  await runtime.disable({ id: 'stock.shell' })
-  await runtime.refreshStock({ id: 'stock.shell', root: first, manifest })
-  assert.equal(runtime.inspect({ id: 'stock.shell' }).running, false)
-  assert.equal(runtime.inspect({ id: 'stock.shell' }).enabled, false)
-  assert.equal(runtime.resolve('frame').owner, 'my.frame')
 })
 
 test('external restaging reconciles editable source and previews the exact next activation', async (t) => {

@@ -7,11 +7,13 @@ const chip = (bar) => bar.locator('#palette-site')
 const selection = (bar) => input(bar).evaluate((el) => [el.value, el.value.slice(el.selectionStart, el.selectionEnd)])
 const urls = async (skiff) => (await skiff.state()).tabs.map((tab) => tab.url)
 const loaded = (skiff, id, title) => expect.poll(async () => (await skiff.state()).tabs.find((tab) => tab.id === id)?.title).toBe(title)
-// The menu event reaches the bar after shortcut() resolves, so typing must wait for the input.
+// The menu event reaches the card after shortcut() resolves, so typing must wait for the input; the card is open once it has grown from the pill.
 const open = async (skiff, accelerator = 'CmdOrCtrl+T') => {
-  await skiff.shortcut(accelerator)
   const bar = await skiff.bar()
+  await bar.waitForLoadState()
+  await skiff.shortcut(accelerator)
   await expect(input(bar)).toBeFocused()
+  await expect(bar.locator('#buoy')).not.toHaveClass(/morphing/)
   return bar
 }
 const closed = async (skiff, bar) => {
@@ -19,31 +21,19 @@ const closed = async (skiff, bar) => {
   await expect(input(bar)).not.toBeFocused()
 }
 
-test('Cmd+T floats a centered, dimmed command bar over the live page, completes hosts inline and opens the top result', async ({ skiff }) => {
-  const shell = skiff.shell
+test('Cmd+T opens the command bar over the live page, completes hosts inline and opens the top result', async ({ skiff }) => {
   await skiff.rpc('tabs.create', { url: `${skiff.origin}/first` })
   const page = await skiff.page('/first')
   await page.evaluate(() => { window.ticks = 0; setInterval(() => { window.ticks++ }, 40) })
-  await expect.poll(() => skiff.attached()).toBe(1)
   const bar = await open(skiff)
   await expect(input(bar)).toHaveValue('')
   expect(await skiff.barOpen()).toBe(true)
-  expect(await skiff.attached(), 'The page view stays under the bar').toBe(2)
   expect(await page.evaluate(() => document.visibilityState)).toBe('visible')
   const ticks = await page.evaluate(() => window.ticks)
   await page.waitForTimeout(400)
   expect(await page.evaluate(() => window.ticks), 'Timers in the page keep running under the bar').toBeGreaterThan(ticks + 3)
-  const size = await bar.evaluate(() => ({ width: innerWidth, height: innerHeight }))
-  expect(size).toEqual({ width: 1280, height: 800 })
-  expect(await bar.locator('#backdrop').boundingBox()).toEqual({ x: 0, y: 0, ...size })
-  expect(await bar.locator('#backdrop').evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgba(0, 0, 0, 0.35)')
-  const box = await bar.locator('#palette').boundingBox()
-  expect(Math.abs(box.x + box.width / 2 - size.width / 2)).toBeLessThanOrEqual(2)
-  expect(box.y).toBeGreaterThanOrEqual(size.height * 0.15)
-  expect(box.y).toBeLessThanOrEqual(size.height * 0.3)
   await bar.keyboard.press('Escape')
   await closed(skiff, bar)
-  expect(await skiff.attached()).toBe(1)
   await open(skiff)
   await bar.keyboard.type('red')
   await expect.poll(() => selection(bar)).toEqual(['reddit.com', 'dit.com'])
@@ -60,22 +50,19 @@ test('Cmd+T floats a centered, dimmed command bar over the live page, completes 
   const tab = state.tabs.find((item) => item.url === 'https://reddit.com/')
   expect(tab.spaceId).toBe(state.activeSpaceId)
   expect(state.activeTabBySpace[state.activeSpaceId]).toBe(tab.id)
-  await expect(shell.locator('#address')).toHaveText('https://reddit.com/')
   await open(skiff)
-  await bar.locator('#backdrop').click({ position: { x: 40, y: 700 } })
+  await bar.mouse.click(40, 700)
   await closed(skiff, bar)
 })
 
 test('the system-wide Option+Space brings a hidden window forward and opens the command bar like Cmd+T', async ({ skiff }) => {
-  const shell = () => skiff.app.evaluate(({ BrowserWindow }) => {
-    const w = BrowserWindow.getAllWindows().find((item) => item.webContents.getURL().endsWith('/index.html'))
-    return [w.isVisible(), w.isFocused()]
-  })
+  const visible = () => skiff.onDesk((win) => win.isVisible())
   expect(await skiff.app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('Alt+Space'))).toBe(true)
-  await skiff.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((item) => item.webContents.getURL().endsWith('/index.html')).hide())
-  expect((await shell())[0]).toBe(false)
+  await (await skiff.bar()).waitForLoadState()
+  await skiff.onDesk((win) => win.hide())
+  expect(await visible()).toBe(false)
   await skiff.app.evaluate(() => global.__skiffGlobalShortcuts.get('Alt+Space')())
-  await expect.poll(shell).toEqual([true, true])
+  await expect.poll(visible).toBe(true)
   const bar = await skiff.bar()
   await expect(input(bar)).toBeFocused()
   expect(await skiff.barOpen()).toBe(true)
@@ -111,7 +98,7 @@ test('open tabs in any space are found by title and activated, archived tabs reo
   await expect(rows(bar).last()).toHaveAttribute('aria-selected', 'true')
   await bar.keyboard.press('ArrowDown')
   await bar.mouse.move(1000, 700)
-  await snapshot(bar, 'palette.png')
+  await snapshot(bar.locator('#buoy'), 'palette.png')
   await bar.keyboard.press('Enter')
   await expect.poll(async () => (await skiff.state()).activeSpaceId).toBe(work.id)
   expect((await skiff.state()).activeTabBySpace[work.id]).toBe(second.id)
@@ -138,6 +125,7 @@ test('Tab turns a completed site into a search scope', async ({ skiff }) => {
   await expect(rows(bar).first()).toContainText('Search YouTube for cats')
   await bar.keyboard.press('Enter')
   await expect.poll(() => urls(skiff)).toContain('https://www.youtube.com/results?search_query=cats')
+  await closed(skiff, bar)
   await open(skiff)
   await bar.keyboard.type('maps')
   await expect.poll(() => selection(bar)).toEqual(['maps.google.com', '.google.com'])
@@ -146,6 +134,7 @@ test('Tab turns a completed site into a search scope', async ({ skiff }) => {
   await bar.keyboard.type('pizza near me')
   await bar.keyboard.press('Enter')
   await expect.poll(() => urls(skiff)).toContain('https://www.google.com/maps/search/pizza%20near%20me')
+  await closed(skiff, bar)
   await open(skiff)
   await bar.keyboard.type('youtube.com ')
   await expect(chip(bar)).toHaveText('Search YouTube')
@@ -168,6 +157,7 @@ test('Tab turns a completed site into a search scope', async ({ skiff }) => {
   await expect(input(bar)).toHaveValue('localhost:1')
   await bar.keyboard.press('Enter')
   await expect.poll(() => urls(skiff)).toContain('http://localhost:1/')
+  await closed(skiff, bar)
   await open(skiff)
   await bar.keyboard.type('how to row a skiff')
   await expect(rows(bar).first()).toContainText('Ask an agent')
@@ -178,8 +168,7 @@ test('Tab turns a completed site into a search scope', async ({ skiff }) => {
   await expect.poll(() => urls(skiff)).toContainEqual(expect.stringMatching(new RegExp(`^${engine.origin.replace(/[.]/g, '\\.')}/.*how%20to%20row%20a%20skiff`)))
 })
 
-test('Cmd+L edits the active tab address, and the sidebar address opens the same bar', async ({ skiff }) => {
-  const shell = skiff.shell
+test('Cmd+L edits the active tab address and a typed query searches in that tab', async ({ skiff }) => {
   const tab = await skiff.rpc('tabs.create', { url: `${skiff.origin}/first` })
   await loaded(skiff, tab.id, 'Fixture reading')
   await skiff.rpc('ui.focusPage')
@@ -190,9 +179,7 @@ test('Cmd+L edits the active tab address, and the sidebar address opens the same
   await expect.poll(async () => (await skiff.state()).tabs.find((item) => item.id === tab.id).url).toBe(`${skiff.origin}/second`)
   expect((await skiff.state()).tabs).toHaveLength(1)
   await closed(skiff, bar)
-  await expect(shell.locator('#address')).toHaveText(`${skiff.origin}/second`)
-  await shell.locator('#address').click()
-  await expect(input(bar)).toBeFocused()
+  await open(skiff, 'CmdOrCtrl+L')
   await expect(input(bar)).toHaveValue(`${skiff.origin}/second`)
   await bar.keyboard.type('not a url at all')
   await bar.keyboard.press('Enter')
@@ -229,15 +216,6 @@ test('the bar sends a question to the agent and plain words to a search, and the
   }
 })
 
-// A desk shell replaces the window; Layer's Buoy card is the bar and each window's frame draws its ear.
-async function useLayer(skiff) {
-  const gone = skiff.shell.waitForEvent('close')
-  await skiff.shell.evaluate(() => { window.skiff.call('ui.setShell', { name: 'layer' }) })
-  await gone
-  await expect.poll(() => !skiff.shell.isClosed()).toBe(true)
-  await skiff.shell.waitForLoadState()
-  await expect.poll(() => skiff.app.context().pages().some((page) => page.url().endsWith('/buoy.html'))).toBe(true)
-}
 const frameOf = async (skiff, id) => {
   const at = (page) => !page.isClosed() && page.url().endsWith(`/frame.html?tab=${id}`)
   await expect.poll(() => skiff.app.context().pages().some(at)).toBe(true)
@@ -257,10 +235,9 @@ async function expectBesideEar(frame) {
   expect(offer.y + offer.height).toBeLessThanOrEqual(30)
 }
 
-test('Layer: a search that read like plain words offers the agent beside its ear, and one click asks it instead', async ({ skiff }) => {
+test('a search that read like plain words offers the agent beside its ear, and one click asks it instead', async ({ skiff }) => {
   await connect(skiff)
   await skiff.rpc('settings.set', { searchUrl: `${skiff.origin}/search?q=%s` })
-  await useLayer(skiff)
   const known = new Set((await skiff.state()).tabs.map((tab) => tab.id))
   const bar = await open(skiff)
   await typeAndEnter(skiff, bar, 'best pizza toronto')
@@ -281,9 +258,8 @@ test('Layer: a search that read like plain words offers the agent beside its ear
   expect((await skiff.state()).archive.map((entry) => entry.id)).toContain(tab.id)
 })
 
-test('Layer: a question to the agent offers a search with the engine in use, and one click opens the results', async ({ skiff }) => {
+test('a question to the agent offers a search with the engine in use, and one click opens the results', async ({ skiff }) => {
   await connect(skiff)
-  await useLayer(skiff)
   const known = new Set((await skiff.state()).tabs.map((tab) => tab.id))
   const bar = await open(skiff)
   await typeAndEnter(skiff, bar, 'why is my build failing')
@@ -299,11 +275,10 @@ test('Layer: a question to the agent offers a search with the engine in use, and
   expect((await skiff.rpc('ai.chat', { chatId: tab.url.slice('skiff://chat/'.length) })).status).not.toBe('running')
 })
 
-test('Layer: the pill waits while hovered, fades out by itself, and its x dismisses it', async ({ skiff }) => {
+test('the pill waits while hovered, fades out by itself, and its x dismisses it', async ({ skiff }) => {
   test.setTimeout(60000)
   await connect(skiff)
   await skiff.rpc('settings.set', { searchUrl: `${skiff.origin}/search?q=%s` })
-  await useLayer(skiff)
   const first = await skiff.rpc('tabs.create', { url: 'two words', intent: true })
   const frame = await frameOf(skiff, first.id)
   const offer = frame.locator('#offer')
@@ -323,22 +298,6 @@ test('Layer: the pill waits while hovered, fades out by itself, and its x dismis
   const third = await skiff.rpc('tabs.create', { url: 'four words here', intent: true })
   await skiff.rpc('tabs.navigate', { id: third.id, url: `${skiff.origin}/first` })
   expect((await skiff.state()).tabs.find((tab) => tab.id === third.id).intent).toBeUndefined()
-})
-
-test('the sidebar of the classic shell shows the same pill under a tab the bar just opened', async ({ skiff }) => {
-  await connect(skiff)
-  await skiff.rpc('settings.set', { searchUrl: `${skiff.origin}/search?q=%s` })
-  const known = new Set((await skiff.state()).tabs.map((tab) => tab.id))
-  const bar = await open(skiff)
-  await typeAndEnter(skiff, bar, 'best pizza toronto')
-  const tab = await newTab(skiff, known)
-  const pill = skiff.shell.locator(`li.row[data-tab-id="${tab.id}"] .offer-go`)
-  await expect(pill).toHaveText('Meant to ask Fake?')
-  await pill.click()
-  await expect.poll(async () => (await skiff.state()).tabs.some((item) => item.id === tab.id)).toBe(false)
-  const chat = (await skiff.state()).tabs.find((item) => item.chat)
-  await expect(skiff.shell.locator(`li.row[data-tab-id="${chat.id}"] .offer-go`)).toHaveCount(0)
-  await expect(skiff.shell.locator(`li.row[data-tab-id="${chat.id}"] .label`)).toContainText('best pizza toronto')
 })
 
 test('rerouting refuses a tab the bar did not open and never saves the intent', async ({ skiff }) => {

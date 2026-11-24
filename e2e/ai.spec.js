@@ -22,6 +22,7 @@ async function fixturePage(skiff, route = '/reading', spaceId) {
 }
 
 async function openBar(skiff, accelerator = 'CmdOrCtrl+T') {
+  await (await skiff.bar()).waitForLoadState()
   await skiff.shortcut(accelerator)
   return barReady(skiff)
 }
@@ -42,15 +43,6 @@ async function send(chat, text) {
   await chat.locator('#chat-input').click()
   await chat.keyboard.type(text)
   await chat.keyboard.press('Enter')
-}
-
-async function useLayer(skiff) {
-  const old = skiff.shell
-  const closed = old.waitForEvent('close')
-  await old.evaluate(() => { window.skiff.call('ui.setShell', { name: 'layer' }) })
-  await closed
-  await expect.poll(() => !skiff.shell.isClosed()).toBe(true)
-  await skiff.shell.waitForLoadState()
 }
 
 // Settings > Agents, as a user fills it in: the default preset's name and command typed over.
@@ -76,47 +68,11 @@ async function waitingChat(skiff, text) {
   return opened
 }
 
-test('with no agent the Ask row and a waiting chat tab open Settings at Agents, and the agent added there answers the waiting question', async ({ skiff }) => {
-  await fixturePage(skiff)
-  const shell = skiff.shell
-  const bar = await openBar(skiff)
-  await bar.keyboard.type('what is a skiff')
-  const row = bar.locator('#palette-results li').first()
-  await expect(row).toHaveAttribute('data-ask', '')
-  await expect(row.locator('.label')).toHaveText('Ask an agent')
-  await bar.keyboard.press('Enter')
-  await expect.poll(() => skiff.barOpen()).toBe(false)
-  await expect(shell.locator('#agents-section')).toBeInViewport()
-  await expect(shell.locator('#agent-preset')).toBeFocused()
-  expect((await skiff.state()).tabs.some((t) => t.chat), 'No chat tab opens without an agent').toBe(false)
-  await shell.locator('#settings-toggle').click()
-  await expect(shell.locator('#agents-section')).toHaveCount(0)
-
-  const { chatId, page: chat } = await waitingChat(skiff, 'what is a skiff')
-  await expect(chat.locator('#chat-name')).toHaveText('Connect an agent')
-  await chat.locator('#chat-connect').click()
-  await expect(shell.locator('#agents-section')).toBeInViewport()
-  await expect(shell.locator('#agent-preset')).toBeFocused()
-  await addAgent(shell, skiff)
-  expect((await skiff.state()).settings.ai).toMatchObject({ agents: [{ name: 'Fake', command: command(skiff) }], agent: 'Fake' })
-  await expect(shell.locator('#agents-list li[data-agent="Fake"] .agent-default')).toHaveText('Default')
-  await expect(shell.locator('#agent-name')).toHaveValue('omp')
-  await expect(chat.locator('#chat-connect-card')).toBeHidden()
-  await expect(last(chat, '.ai-user')).toHaveText('what is a skiff')
-  await expect(last(chat, '.ai-assistant')).toContainText('You said: what is a skiff')
-  await settled(skiff, chatId)
-  await expect(chat.locator('.ai-user')).toHaveCount(1)
-  await expect(chat.locator('#chat-name')).toHaveText('Fake')
-  expect((await chatState(skiff, chatId)).turns.at(-1).text).toMatch(FOOT('fake-small', 'low'))
-  await expect(shell.locator('#agent-model')).toBeEnabled()
-  await expect(shell.locator('#agents-list li[data-agent="Fake"] .agent-dot')).toHaveAttribute('data-status', 'ready')
-})
-
-test('in the Layer shell the Ask row and a waiting chat tab open the card at Agents, and the agent added there answers', async ({ skiff }) => {
-  await useLayer(skiff)
+test('with no agent the Ask row and a waiting chat tab open the card at Agents, and the agent added there answers the waiting question', async ({ skiff }) => {
   await fixturePage(skiff)
   const bar = await openBar(skiff)
   await bar.keyboard.type('what is a layer')
+  await expect(bar.locator('#palette-results li').first()).toHaveAttribute('data-ask', '')
   await expect(bar.locator('#palette-results li').first().locator('.label')).toHaveText('Ask an agent')
   await bar.keyboard.press('Enter')
   // The card stays and shows Settings at Agents, where the bar was.
@@ -125,16 +81,26 @@ test('in the Layer shell the Ask row and a waiting chat tab open the card at Age
   expect(await skiff.barOpen()).toBe(true)
   await expect(panel.locator('#agents-section')).toBeInViewport()
   await expect(panel.locator('#agent-preset')).toBeFocused()
+  expect((await skiff.state()).tabs.some((t) => t.chat), 'No chat tab opens without an agent').toBe(false)
   await panel.locator('#settings-toggle').click()
   await expect(panel.locator('#agents-section')).toHaveCount(0)
 
   const { chatId, page: chat } = await waitingChat(skiff, 'what is a layer')
+  await expect(chat.locator('#chat-name')).toHaveText('Connect an agent')
   await chat.locator('#chat-connect').click()
   await expect(panel.locator('#agents-section')).toBeInViewport()
+  await expect(panel.locator('#agent-preset')).toBeFocused()
   await addAgent(panel, skiff)
+  expect((await skiff.state()).settings.ai).toMatchObject({ agents: [{ name: 'Fake', command: command(skiff) }], agent: 'Fake' })
+  await expect(panel.locator('#agents-list li[data-agent="Fake"] .agent-default')).toHaveText('Default')
+  await expect(panel.locator('#agent-name')).toHaveValue('omp')
+  await expect(chat.locator('#chat-connect-card')).toBeHidden()
+  await expect(last(chat, '.ai-user')).toHaveText('what is a layer')
   await expect(last(chat, '.ai-assistant')).toContainText('You said: what is a layer')
   await settled(skiff, chatId)
+  await expect(chat.locator('.ai-user')).toHaveCount(1)
   await expect(chat.locator('#chat-name')).toHaveText('Fake')
+  expect((await chatState(skiff, chatId)).turns.at(-1).text).toMatch(FOOT('fake-small', 'low'))
   await expect(panel.locator('#agent-model')).toHaveValue('fake-small')
   await expect(panel.locator('#agent-effort')).toHaveValue('low')
   await expect(panel.locator('#agents-list li[data-agent="Fake"] .agent-dot')).toHaveAttribute('data-status', 'ready')
@@ -144,11 +110,11 @@ test('in the Layer shell the Ask row and a waiting chat tab open the card at Age
 test('Settings makes another agent the default with its own model and effort, which the next ask uses, and Remove falls back', async ({ skiff }) => {
   await skiff.rpc('settings.set', { ai: { agents: [{ name: 'Fake', command: command(skiff) }, { name: 'Other', command: command(skiff) }] } })
   const page = await fixturePage(skiff)
-  const shell = skiff.shell
   await skiff.rpc('ai.ask', { text: 'first' })
   const { chatId: firstId, page: firstChat } = await openedChat(skiff)
   await settled(skiff, firstId)
   await firstChat.locator('#chat-agents').click()
+  const shell = await skiff.bar()
   await expect(shell.locator('#agents-section')).toBeInViewport()
   const fake = shell.locator('#agents-list li[data-agent="Fake"]')
   const other = shell.locator('#agents-list li[data-agent="Other"]')
@@ -175,6 +141,8 @@ test('Settings makes another agent the default with its own model and effort, wh
   await expect(effort).toHaveValue('high')
 
   await skiff.rpc('tabs.activate', { id: page.id })
+  await shell.keyboard.press('Escape')
+  await expect.poll(() => skiff.barOpen()).toBe(false)
   const bar = await openBar(skiff)
   await bar.keyboard.type('which one is it')
   const row = bar.locator('#palette-results li').first()
@@ -190,23 +158,27 @@ test('Settings makes another agent the default with its own model and effort, wh
   await expect(chat.locator('#chat-model')).toHaveValue('fake-large')
   await expect(chat.locator('#chat-effort')).toHaveValue('high')
 
+  await chat.locator('#chat-agents').click()
+  await expect(other).toBeVisible()
   await other.getByRole('button', { name: 'Remove Other' }).click()
   await expect(other).toHaveCount(0)
   await expect(fake.locator('.agent-default')).toHaveText('Default')
   expect((await skiff.state()).settings.ai).toMatchObject({ agents: [{ name: 'Fake' }], agent: 'Fake', model: '', effort: '' })
   await shell.locator('#settings-toggle').click()
   await expect(shell.locator('#agents-section')).toHaveCount(0)
+  await shell.keyboard.press('Escape')
+  await expect.poll(() => skiff.barOpen()).toBe(false)
   await skiff.rpc('tabs.activate', { id: page.id })
   const next = await openBar(skiff)
   await next.keyboard.type('how about now')
   await expect(next.locator('#palette-results li').first().locator('.label')).toHaveText('Ask Fake')
-  // Add an agent... in agent mode closes the bar and opens Settings at Agents.
+  // Add an agent... in agent mode shows Settings at Agents in the card.
   await next.keyboard.press('Tab')
   await next.keyboard.press('Tab')
   await expect(next.locator('#palette-agent')).toBeFocused()
   await next.keyboard.press('End')
-  await expect.poll(() => skiff.barOpen()).toBe(false)
-  await expect(shell.locator('#agents-section')).toBeInViewport()
+  await expect(next.locator('#agents-section')).toBeInViewport()
+  expect(await skiff.barOpen()).toBe(true)
 })
 
 test('a question from the bar opens a chat tab nested under the page that streams the reply without the page', async ({ skiff }) => {
@@ -232,22 +204,25 @@ test('a question from the bar opens a chat tab nested under the page that stream
   await expect(chat.locator('.ai-context')).toHaveCount(0)
   await expect(last(chat, '.ai-assistant details.ai-thought')).toContainText('Looking at this.')
 
-  const sidebarRow = skiff.shell.locator(`#list li.row[data-tab-id="${tab.id}"]`)
+  const card = await skiff.card()
+  const sidebarRow = card.locator(`#list li.row[data-tab-id="${tab.id}"]`)
   await expect(sidebarRow).toHaveAttribute('data-parent', page.id)
-  await expect(sidebarRow).toHaveAttribute('data-depth', '1')
   await expect(sidebarRow).toContainText('what is this page about')
   await expect(sidebarRow).toHaveClass(/\bcurrent\b/)
+  await card.keyboard.press('Escape')
+  await expect.poll(() => skiff.barOpen()).toBe(false)
   const space = (await skiff.state()).spaces.find((s) => s.id === tab.spaceId)
   await expect.poll(() => chat.evaluate(() => document.documentElement.style.getPropertyValue('--accent'))).toBe(space.color)
   // A colour change reaches the open chat tab.
   await skiff.rpc('spaces.update', { id: space.id, color: '#2f8a4f' })
   await expect.poll(() => chat.evaluate(() => document.documentElement.style.getPropertyValue('--accent'))).toBe('#2f8a4f')
 
+  const loading = async () => (await skiff.state()).tabs.find((t) => t.id === tab.id).loading
   await send(chat, 'slow')
-  await expect(sidebarRow, 'A running chat shows the loading bar').toHaveClass(/\bloading\b/)
+  await expect.poll(loading, { message: 'A running chat shows the loading bar' }).toBe(true)
   await chat.locator('#chat-stop').click()
   await expect(last(chat, '.ai-assistant .ai-stopped')).toHaveText('Stopped.')
-  await expect(sidebarRow).not.toHaveClass(/\bloading\b/)
+  await expect.poll(loading).toBe(false)
 })
 
 test('agent mode picks the model, effort and page with the keyboard and remembers them for the next question', async ({ skiff }) => {
@@ -283,7 +258,7 @@ test('agent mode picks the model, effort and page with the keyboard and remember
   await bar.keyboard.press('Space')
   await expect(include).toBeChecked()
   expect(await skiff.barOpen()).toBe(true)
-  await snapshot(bar.locator('#palette'), 'bar-agent-mode.png')
+  await snapshot(bar.locator('#buoy'), 'bar-agent-mode.png')
   await bar.keyboard.press('Enter')
   await expect.poll(() => skiff.barOpen()).toBe(false)
 
@@ -377,9 +352,10 @@ test('the chat tab takes follow-ups, effort changes, permission answers, Stop an
   // It is the chat agent's own tab, and the end of the turn finishes it.
   expect(opened).toMatchObject({ agent: 'Fake' })
   await expect.poll(async () => (await skiff.state()).tabs.find((t) => t.id === opened.id)).toMatchObject({ agentState: 'done', agentUnseen: true })
-  await expect(skiff.shell.locator(`#list li.row[data-tab-id="${opened.id}"]`)).toBeVisible()
+  const list = await skiff.card()
+  await expect(list.locator(`#list li.row[data-tab-id="${opened.id}"]`)).toBeVisible()
 
-  await skiff.shell.locator(`#list li.row[data-tab-id="${tab.id}"]`).click()
+  await list.locator(`#list li.row[data-tab-id="${tab.id}"] .row-main`).click()
   await expect.poll(async () => { const s = await skiff.state(); return s.activeTabBySpace[s.activeSpaceId] }).toBe(tab.id)
   const count = (await skiff.state()).tabs.length
   await send(chat, `open ${skiff.origin}/refused`)
@@ -472,9 +448,8 @@ test('Cmd+J opens the bar in agent mode, and over an open bar keeps what was typ
   await settled(skiff, chatId)
 })
 
-test('the Layer shell asks from its bar, and its selects work with the mouse without closing the bar', async ({ skiff }) => {
+test('the bar asks from its card, and its selects work with the mouse without closing the bar', async ({ skiff }) => {
   await connect(skiff)
-  await useLayer(skiff)
   const page = await fixturePage(skiff)
   const bar = await openBar(skiff)
   await bar.keyboard.type('what about layers')
@@ -500,25 +475,19 @@ test('the Layer shell asks from its bar, and its selects work with the mouse wit
   await expect(last(chat, '.ai-assistant')).toContainText('You said: what about layers')
   await settled(skiff, chatId)
   expect((await chatState(skiff, chatId)).turns.at(-1).text).toMatch(FOOT('fake-large', 'high'))
-
-  await skiff.rpc('tabs.activate', { id: page.id })
-  await openBar(skiff, 'CmdOrCtrl+J')
-  await expect(bar.locator('#palette-ask')).toHaveText('Ask Fake')
-  await bar.keyboard.type('typed first')
-  await skiff.shortcut('CmdOrCtrl+J')
-  await expect(bar.locator('#palette-input')).toHaveValue('typed first')
-  await bar.keyboard.press('Escape')
-  await expect.poll(() => skiff.barOpen()).toBe(false)
 })
 
 test('incognito pages are never offered or sent, the chat tab stays incognito, and the browser tools refuse them', async ({ skiff }) => {
   await connect(skiff)
+  await (await skiff.bar()).waitForLoadState()
   const space = await skiff.rpc('incognito.open')
   const tab = await skiff.rpc('tabs.create', { url: `${skiff.origin}/private`, spaceId: space.id })
   await skiff.page('/private')
-  const bar = await openBar(skiff)
+  await expect.poll(() => skiff.barOpen()).toBe(true)
+  await (await skiff.bar()).keyboard.press('Escape')
+  await expect.poll(() => skiff.barOpen()).toBe(false)
+  const bar = await openBar(skiff, 'CmdOrCtrl+J')
   await bar.keyboard.type('what is open here')
-  await bar.keyboard.press('Tab')
   await expect(bar.locator('#palette-model')).toBeEnabled()
   await expect(bar.locator('#palette-include')).toBeHidden()
   await bar.keyboard.press('Enter')

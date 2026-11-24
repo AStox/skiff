@@ -17,13 +17,11 @@ const classifier = (file) => vm.runInNewContext(`${fs.readFileSync(path.join(__d
 const SEARCH = ['best pizza toronto', 'weather toronto', 'react useEffect cleanup', 'the matrix', 'electron webcontentsview transparent', 'github.com', 'example.com/a b', 'localhost:3000', 'nginx', 'node 22 release notes', '']
 const ASK = ['why is my build failing', 'what time is it in tokyo', 'summarize this page', 'can you compare postgres and mysql', 'is rust faster than go?', 'rust vs go?', 'rewrite this paragraph shorter', 'fix my css grid', 'the best way to do this in react now', 'sourdough starter keeps failing after day three feeding']
 
-for (const file of ['shells/layer/common.js', 'shell/common.js']) {
-  test(`${file} reads a question from a search`, () => {
-    const looksLikeQuestion = classifier(file)
-    for (const text of SEARCH) assert.equal(looksLikeQuestion(text), false, text)
-    for (const text of ASK) assert.equal(looksLikeQuestion(text), true, text)
-  })
-}
+test('shells/layer/common.js reads a question from a search', () => {
+  const looksLikeQuestion = classifier('shells/layer/common.js')
+  for (const text of SEARCH) assert.equal(looksLikeQuestion(text), false, text)
+  for (const text of ASK) assert.equal(looksLikeQuestion(text), true, text)
+})
 
 test('the bar\'s intent is memory only: a tab keeps it until it navigates, and it is never saved', () => {
   const s = S.load()

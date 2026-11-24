@@ -1,14 +1,6 @@
 'use strict'
 const { test, expect } = require('./fixtures')
 
-async function useLayer(skiff) {
-  const old = skiff.shell
-  const closed = old.waitForEvent('close')
-  await old.evaluate(() => { window.skiff.call('ui.setShell', { name: 'layer' }) })
-  await closed
-  await expect.poll(() => !skiff.shell.isClosed()).toBe(true)
-  await skiff.shell.waitForLoadState()
-}
 const shellPage = async (skiff, suffix) => {
   await expect.poll(() => skiff.app.context().pages().some((page) => page.url().endsWith(suffix) && !page.isClosed())).toBe(true)
   return skiff.app.context().pages().find((page) => page.url().endsWith(suffix) && !page.isClosed())
@@ -17,7 +9,6 @@ const floatOpen = (skiff, file) => skiff.app.context().pages().some((page) => pa
 const deskId = (skiff) => skiff.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('/index.html')).id)
 
 test('two tabs of one URL at the same place on the desk both show in the tab list, the card, exposé and the count', async ({ skiff }) => {
-  await useLayer(skiff)
   const ids = []
   for (let i = 0; i < 2; i++) {
     ids.push((await skiff.rpc('tabs.create', { url: `${skiff.origin}/one` })).id)
@@ -57,7 +48,6 @@ test('two tabs of one URL at the same place on the desk both show in the tab lis
 })
 
 test('the tab list closes on a click anywhere outside it', async ({ skiff }) => {
-  await useLayer(skiff)
   const one = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/one` })).id
   await skiff.rpc('desk.place', { id: one, x: 100, y: 100, width: 600, height: 400 })
   const two = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/two` })).id
@@ -109,7 +99,6 @@ test('the tab list closes on a click anywhere outside it', async ({ skiff }) => 
 })
 
 test('the open card never scrolls its favorites; the tab list takes what is left and scrolls', async ({ skiff }) => {
-  await useLayer(skiff)
   for (let i = 0; i < 70; i++) {
     const id = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/one?f=${i}`, activate: false })).id
     await skiff.rpc('tabs.setFavorite', { id, favorite: true })

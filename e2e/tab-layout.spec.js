@@ -27,11 +27,6 @@ async function grab(skiff, mode) {
 }
 
 test('the Tab layout setting arranges the shown windows without touching their own rects, and free brings them back', async ({ skiff }) => {
-  const closed = skiff.shell.waitForEvent('close')
-  await skiff.shell.evaluate(() => { window.skiff.call('ui.setShell', { name: 'layer' }) })
-  await closed
-  await expect.poll(() => !skiff.shell.isClosed()).toBe(true)
-  await skiff.shell.waitForLoadState()
   const created = []
   for (const name of ['one', 'two', 'three', 'four']) created.push(await skiff.rpc('tabs.create', { url: `${skiff.origin}/agent/${name}` }))
   await expect.poll(async () => (await views(skiff)).length).toBe(4)

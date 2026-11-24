@@ -20,8 +20,6 @@ const test = base.extend({
     fs.mkdirSync(data)
     fs.mkdirSync(path.join(home, 'app-data'))
     fs.writeFileSync(path.join(root, '.skiff-visual-fixture'), 'owned by this test')
-    // Specs assume the plain shell; fixtureOptions.shell picks another, and null leaves the profile fresh.
-    if (fixtureOptions.shell !== null) fs.writeFileSync(path.join(data, 'state.json'), JSON.stringify({ settings: { shell: fixtureOptions.shell ?? 'default' } }))
     // A supplied source-only legacy shell exercises the same startup migration
     // as an installed custom UI, inside this fixture's disposable profile.
     if (fixtureOptions.legacyShell) fs.cpSync(fixtureOptions.legacyShell, path.join(data, 'shell'), { recursive: true })
@@ -196,7 +194,6 @@ const test = base.extend({
         useShell(app.windows().find(isShell))
         await shell.waitForLoadState('load')
         await shell.emulateMedia({ colorScheme: fixtureOptions.theme || 'light' })
-        await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1280, 800))
         await expect.poll(async () => Boolean(await shell.evaluate(() => window.skiff?.call('state.get')))).toBe(true)
       }
       await launch()
@@ -210,7 +207,7 @@ const test = base.extend({
         }, home, data, origin, requests, identities, cookied, release,
         rpc: async (method, params) => {
           // Source activation can replace the invoking renderer before IPC resolves.
-          if (['ui.setShell', 'ui.resetShell', 'ui.safeMode', 'components.apply', 'components.enable', 'components.revert', 'components.bind'].includes(method)) {
+          if (['ui.resetShell', 'ui.safeMode', 'components.apply', 'components.enable', 'components.revert', 'components.bind'].includes(method)) {
             const out = await driver.http(method, params)
             if (!out.ok) throw new Error(`${method} [${out.error?.code || 'unknown'}]: ${out.error?.message || JSON.stringify(out.error)}`)
             await expect.poll(discoverShell, { timeout: 15_000 }).toBe(true)
@@ -243,8 +240,12 @@ const test = base.extend({
           await beforeLaunch?.({ data, root })
           await launch(safeMode ? ['--safe-mode'] : [])
         },
-        resize: (width, height) => app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(...size), [width, height]),
-        attached: () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].contentView.children.length),
+        // The desk window is the one showing index.html; getAllWindows()[0] is the Buoy float.
+        onDesk: (fn, arg) => app.evaluate(({ BrowserWindow }, { source, arg }) => {
+          const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('/index.html'))
+          return new Function(`return (${source})`)()(win, arg)
+        }, { source: fn.toString(), arg }),
+        attached: () => driver.onDesk((win) => win.contentView.children.length),
         page: async (path = '') => {
           const at = (page) => page.url().startsWith(origin + path)
           await expect.poll(() => app.context().pages().filter(at).length).toBeGreaterThan(0)
@@ -257,6 +258,16 @@ const test = base.extend({
           const bar = app.context().pages().find(at)
           await bar.emulateMedia({ colorScheme: fixtureOptions.theme || 'light' })
           return bar
+        },
+        // Layer's card: the Buoy page with the card open (opened from the pill when it is shut); it holds the tab list, space strip, Settings and the Arc import dialog.
+        card: async () => {
+          const buoy = await driver.bar()
+          const open = () => buoy.locator('#buoy').evaluate((el) => el.classList.contains('open') && !el.classList.contains('morphing'))
+          if (!await open()) {
+            await buoy.locator('#buoy-main').click()
+            await expect.poll(open).toBe(true)
+          }
+          return buoy
         },
         // A desk shell replaces the app window, so the window is the one showing the shell; Layer's card is open once the Buoy has grown into it.
         barOpen: () => app.context().pages().find((page) => !page.isClosed() && page.url().endsWith('/buoy.html'))?.evaluate(() => document.getElementById('buoy').classList.contains('open')) ?? app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('/index.html')).contentView.children.some((view) => view.webContents?.getURL().endsWith('/palette.html'))),
@@ -310,11 +321,13 @@ async function snapshot(locator, name, options = {}) {
   await expect(locator).toHaveScreenshot(name, options)
 }
 async function openImport(skiff) {
-  await skiff.shell.locator('#settings-toggle').click()
-  await skiff.shell.locator('#import-arc').click()
-  await expect(skiff.shell.locator('#arc-import')).toBeVisible()
+  const card = await skiff.card()
+  await card.locator('#settings-toggle').click()
+  await card.locator('#import-arc').click()
+  await expect(card.locator('#arc-import')).toBeVisible()
+  return card
 }
-async function next(skiff) { await skiff.shell.locator('#arc-next').click() }
+async function next(skiff) { await (await skiff.bar()).locator('#arc-next').click() }
 // The command bar is a separate page; typing must wait for its input to take focus.
 async function barReady(skiff) {
   const bar = await skiff.bar()
@@ -327,35 +340,35 @@ async function openInBar(skiff, url) {
   await bar.keyboard.press('Enter')
   await expect.poll(() => skiff.barOpen()).toBe(false)
 }
-async function wheel(skiff, dx, dy, selector = '#space-head') {
-  await skiff.shell.locator(selector).hover()
-  await skiff.shell.mouse.wheel(dx, dy)
+async function wheel(page, dx, dy, selector = '#space-head') {
+  await page.locator(selector).hover()
+  await page.mouse.wheel(dx, dy)
 }
 // Real elapsed time is intentional: gesture idle/inertia gates use event timing.
-async function settleGesture(skiff) { await skiff.shell.waitForTimeout(700) }
+async function settleGesture(page) { await page.waitForTimeout(700) }
 
-// Real pointer drags: press on the source and start moving, so drop areas that appear after dragstart can be targeted.
-async function dragStart(skiff, source) {
+// Real pointer drags on a page (the Layer card): press on the source and start moving, so drop areas that appear after dragstart can be targeted.
+async function dragStart(page, source) {
   // hover waits until the row stops moving; state pushes rebuild and shift rows while a page loads.
   await source.hover()
   const box = await source.evaluate((el) => el.getBoundingClientRect().toJSON())
-  await skiff.shell.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-  await skiff.shell.mouse.down()
-  await skiff.shell.mouse.move(box.x + box.width / 2 + 4, box.y + box.height / 2 + 4, { steps: 2 })
-  await skiff.shell.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width / 2 + 4, box.y + box.height / 2 + 4, { steps: 2 })
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
 }
-async function dragOver(skiff, target, position = {}) {
+async function dragOver(page, target, position = {}) {
   await expect(target).toBeVisible()
   const box = await target.evaluate((el) => el.getBoundingClientRect().toJSON())
   const point = { x: box.x + (position.x ?? box.width / 2), y: box.y + (position.y ?? box.height / 2) }
   // One straight move: passing other rows on the way leaves the preview where it first appeared, as it does for a person.
-  await skiff.shell.mouse.move(point.x, point.y)
+  await page.mouse.move(point.x, point.y)
   return point
 }
-async function dragTo(skiff, source, target, position) {
-  await dragStart(skiff, source)
-  await dragOver(skiff, target, position)
-  await skiff.shell.mouse.up()
+async function dragTo(page, source, target, position) {
+  await dragStart(page, source)
+  await dragOver(page, target, position)
+  await page.mouse.up()
 }
 
 module.exports = { test, expect, snapshot, openImport, next, wheel, settleGesture, dragStart, dragOver, dragTo, barReady, openInBar }

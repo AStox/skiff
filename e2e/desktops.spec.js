@@ -4,14 +4,6 @@ const { test, expect } = require('./fixtures')
 // Linux has no macOS desktops, so the entry fakes two: ids 3 and 1, Desktop 1 and Desktop 2, the first current.
 test.use({ fixtureOptions: { desktops: [3, 1] } })
 
-async function useLayer(skiff) {
-  const old = skiff.shell
-  const closed = old.waitForEvent('close')
-  await old.evaluate(() => { window.skiff.call('ui.setShell', { name: 'layer' }) })
-  await closed
-  await expect.poll(() => !skiff.shell.isClosed()).toBe(true)
-  await skiff.shell.waitForLoadState()
-}
 const shellPage = async (skiff, suffix) => {
   const at = (page) => page.url().endsWith(suffix) && !page.isClosed()
   await expect.poll(() => skiff.app.context().pages().some(at)).toBe(true)
@@ -32,7 +24,6 @@ const switchTo = async (skiff, id) => {
 const byPath = async (skiff) => Object.fromEntries((await skiff.state()).tabs.map((t) => [new URL(t.url).pathname, t]))
 
 test('tabs belong to the desktop they open on, the desk shows only that desktop\'s pages, and a tab from another desktop moves here when picked', async ({ skiff }) => {
-  await useLayer(skiff)
   expect((await skiff.state()).desktops).toEqual({ current: 3, list: [{ id: 3, number: 1 }, { id: 1, number: 2 }] })
   // One desk window per desktop, none visible on every desktop; only the Buoy's float is, over full-screen apps too.
   expect(await deskWindows(skiff)).toEqual([{ id: expect.any(Number), desktop: 3, allWorkspaces: false, children: expect.any(Array) }])
@@ -78,7 +69,6 @@ test('tabs belong to the desktop they open on, the desk shows only that desktop\
 })
 
 test('the tab list and exposé show the space\'s tabs of every desktop under their desktop, and picking one from the other desktop moves it here', async ({ skiff }) => {
-  await useLayer(skiff)
   const one = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/one` })).id
   const two = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/two` })).id
   await switchTo(skiff, 1)
@@ -128,7 +118,6 @@ test('the tab list and exposé show the space\'s tabs of every desktop under the
 })
 
 test('tabs on a desktop that no longer exists join the current one, and with one desktop nothing is labelled', async ({ skiff }) => {
-  await useLayer(skiff)
   await skiff.rpc('tabs.create', { url: `${skiff.origin}/one` })
   await switchTo(skiff, 1)
   await skiff.rpc('tabs.create', { url: `${skiff.origin}/two` })
@@ -146,7 +135,6 @@ test('tabs on a desktop that no longer exists join the current one, and with one
 })
 
 test('a desktop that no longer exists loses its window, and a desktop that comes back gets a new one', async ({ skiff }) => {
-  await useLayer(skiff)
   await skiff.rpc('tabs.create', { url: `${skiff.origin}/one` })
   await switchTo(skiff, 1)
   await skiff.rpc('tabs.create', { url: `${skiff.origin}/two` })

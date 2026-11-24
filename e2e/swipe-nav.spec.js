@@ -1,11 +1,6 @@
 'use strict'
 const fs = require('node:fs')
-const path = require('node:path')
 const { test, expect } = require('./fixtures')
-
-const shellsDir = path.join(__dirname, '..', 'shells')
-const manifest = (name) => { try { return JSON.parse(fs.readFileSync(path.join(shellsDir, name, 'shell.json'), 'utf8')) } catch { return {} } }
-const deskShell = (fs.existsSync(shellsDir) ? fs.readdirSync(shellsDir) : []).sort().find((name) => manifest(name).window === 'desk')
 
 // A trackpad swipe at 60 Hz as [ms, dx, dy] in DOM deltas (negative dx swipes back): the fingers speed up, then macOS momentum decays.
 const trackpad = (dir, { speed = 1, tail = 22 } = {}) => [2, 6, 13, 22, 30, ...Array.from({ length: tail }, (_, k) => Math.max(1, Math.round(30 * 0.86 ** (k + 1))))].map((v, i) => [i * 16, dir * Math.round(v * speed), 0])
@@ -30,16 +25,6 @@ const play = (skiff, page, events, point, { hold = false } = {}) => skiff.app.ev
   }
   next(0)
 }), { url: page.url(), events, point, hold })
-
-// ui.setShell replaces the window that runs the call, so the call is not awaited.
-async function switchWindow(skiff, name) {
-  const old = skiff.shell
-  const closed = old.waitForEvent('close')
-  await old.evaluate((name) => { window.skiff.call('ui.setShell', { name }) }, name)
-  await closed
-  await expect.poll(() => !skiff.shell.isClosed()).toBe(true)
-  await skiff.shell.waitForLoadState()
-}
 
 async function swipeScenario(skiff, testInfo) {
   const tab = await skiff.rpc('tabs.create', { url: `${skiff.origin}/first` })
@@ -161,12 +146,6 @@ async function swipeScenario(skiff, testInfo) {
   expect(await navs()).toEqual(['/second', '/third', '/second', '/third'])
 }
 
-test('a two finger swipe on a page goes back and forward in the default shell', async ({ skiff }, testInfo) => {
-  await swipeScenario(skiff, testInfo)
-})
-
-test('a two finger swipe on a page goes back and forward in the desk shell', async ({ skiff }, testInfo) => {
-  test.skip(!deskShell, 'No bundled shell asks for a desk window')
-  await switchWindow(skiff, deskShell)
+test('a two finger swipe on a page goes back and forward', async ({ skiff }, testInfo) => {
   await swipeScenario(skiff, testInfo)
 })

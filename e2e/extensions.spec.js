@@ -66,7 +66,7 @@ test('an unpacked extension blocks, redirects, injects, reports tabs, shows its 
     await expect(popup.locator('#events')).toContainText(pageUrl)
     await expect(popup.locator('#events')).toContainText('"what":"activated"')
     await expect(popup.locator('#active')).toContainText('/ext/page')
-    const bounds = await skiff.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].contentView.children.find((view) => /\/popup\.html/.test(view.webContents?.getURL() || '')).getBounds())
+    const bounds = await skiff.onDesk((win) => win.contentView.children.find((view) => /\/popup\.html/.test(view.webContents?.getURL() || '')).getBounds())
     expect(bounds.x).toBe(300)
     expect(bounds.y).toBe(20)
     expect(bounds.width).toBeLessThanOrEqual(400)

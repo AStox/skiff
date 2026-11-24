@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-// Preview a shell folder in plain Chromium with a synthetic profile, no Skiff needed.
-//   node scripts/shell-preview.js <shell-dir> <out.png> [--dark] [--overlay palette.html] [--type lin] [--emit name=json] [--size 1280x800]
-// The native page is stood in for by a fake article inside #page. Needs `npx playwright install chromium` once.
-// A desk shell (shell.json {"window": "desk"}) renders on a transparent stage over a plain wallpaper, with stand-in page views at
+// Preview a desk shell folder (shells/layer) in plain Chromium with a synthetic profile, no Skiff needed.
+//   node scripts/shell-preview.js <shell-dir> <out.png> [--dark] [--size 1440x900] [steps]
+// Needs `npx playwright install chromium` once. The shell renders on a transparent stage over a plain wallpaper, with stand-in page views at
 // sample tab.desk rects, a frame view under each when shell.json declares one, named overlays, and a small core behind desk.*, tabs.*
-// and ui.setDesk. Its steps run in order:
+// and ui.setDesk. Steps run in the order given:
 //   --click sel | --hover sel | --drag "x,y x,y ..." (held, not released) | --drop "x,y x,y ..." | --pinch "x,y dy" (Ctrl+wheel) | --emit name=json | --type text | --eval js | --wait ms
 // A press on a stand-in page's empty background reports page-drag to its frame, as the core does. A selector (or --eval code) starting with "overlay:"
 // targets the main overlay, "panel:" the panel's, "buoy:" the Buoy's, "tabs:" the tab list's, "layouts:" the layout strip, "frame:<tab id>:" that window's frame. Default size 1440x900.
@@ -20,19 +19,14 @@ const raw = process.argv.slice(2)
 const args = [...raw]
 const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args.splice(i, 2)[1] : undefined }
 const dark = args.includes('--dark') && args.splice(args.indexOf('--dark'), 1)
-const overlay = flag('--overlay')
-const typed = flag('--type')
-const emits = []
-for (let e = flag('--emit'); e; e = flag('--emit')) emits.push(e)
 const sizeFlag = flag('--size')
-for (const name of ['--click', '--hover', '--drag', '--drop', '--pinch', '--eval', '--wait']) while (flag(name) !== undefined);
+for (const name of ['--click', '--hover', '--drag', '--drop', '--pinch', '--emit', '--type', '--eval', '--wait']) while (flag(name) !== undefined);
 const [shellDir, out] = args
 if (!shellDir || !out) {
-  console.error('usage: node scripts/shell-preview.js <shell-dir> <out.png> [--dark] [--overlay palette.html] [--type lin] [--emit name=json] [--size 1280x800]')
+  console.error('usage: node scripts/shell-preview.js <shell-dir> <out.png> [--dark] [--size 1440x900] [steps]')
   process.exit(1)
 }
-const deskShell = (() => { try { return JSON.parse(fs.readFileSync(path.join(shellDir, 'shell.json'), 'utf8')).window === 'desk' } catch { return false } })()
-const size = (sizeFlag || (deskShell ? '1440x900' : '1280x800')).split('x').map(Number)
+const size = (sizeFlag || '1440x900').split('x').map(Number)
 
 const now = Date.now()
 const ago = (minutes) => now - minutes * 60e3
@@ -45,93 +39,12 @@ const ICON = {
   figma: svg('#1e1e1e', '<circle cx="9.5" cy="8" r="2" fill="#1abcfe"/><path d="M4.5 4a2 2 0 0 1 2-2H8v4H6.5a2 2 0 0 1-2-2z" fill="#f24e1e"/><path d="M8 2h1.5a2 2 0 1 1 0 4H8z" fill="#ff7262"/><path d="M4.5 8a2 2 0 0 1 2-2H8v4H6.5a2 2 0 0 1-2-2z" fill="#a259ff"/><path d="M4.5 12a2 2 0 0 1 2-2H8v2a2 2 0 1 1-3.5 0z" fill="#0acf83"/>')
 }
 
-const spaces = [
-  { id: 's1', name: 'Studio', color: '#2f6b4f' },
-  { id: 's2', name: 'Personal', color: '#b4552d' },
-  { id: 's3', name: 'Reading', color: '#4f6bed' },
-  { id: 's4', name: 'Build', color: '#8a7a2c' }
-]
-const tab = (id, spaceId, url, title, extra = {}) => ({ id, spaceId, sessionPartition: 'persist:main', url, title, favicon: '', favorite: false, loading: false, canGoBack: false, canGoForward: false, createdAt: ago(60), lastActiveAt: ago(60), ...extra })
-const tabs = [
-  tab('f1', 's1', 'https://mail.example/inbox', 'Inbox', { favorite: true, favicon: ICON.mail }),
-  tab('f2', 's1', 'https://calendar.example/week', 'Calendar', { favorite: true, favicon: ICON.calendar }),
-  tab('f3', 's1', 'https://linear.app/skiff', 'Linear', { favorite: true, favicon: ICON.linear }),
-  tab('f4', 's1', 'https://github.com/notifications', 'GitHub', { favorite: true, favicon: ICON.github }),
-  tab('f5', 's1', 'https://figma.com/files', 'Figma', { favorite: true, favicon: ICON.figma }),
-  tab('p1', 's1', 'https://skiff.example/readme', 'Skiff README', { pinned: true, folder: 'Docs' }),
-  tab('p2', 's1', 'https://arc.example/import-notes', 'Arc import notes', { pinned: true, folder: 'Docs' }),
-  tab('p3', 's1', 'https://weekly.example/plan', 'Weekly plan', { pinned: true, folder: '', favicon: ICON.calendar }),
-  tab('t1', 's1', 'https://margin.example/journal/looking-up', 'Looking up, slowing down', { createdAt: ago(38), lastActiveAt: ago(0), canGoBack: true }),
-  tab('t2', 's1', 'https://atelier.example/material-studies', 'Material studies', { createdAt: ago(60), lastActiveAt: ago(30) }),
-  tab('t3', 's1', 'https://atelier.example/apartments', 'Apartment references', { parentId: 't2', createdAt: ago(59), lastActiveAt: ago(45) }),
-  tab('t4', 's1', 'https://city.example/everyday', 'The everyday city', { createdAt: ago(205), lastActiveAt: ago(120) }),
-  tab('t5', 's1', 'https://walks.example/copenhagen', 'A walk through Copenhagen', { createdAt: ago(310), lastActiveAt: ago(300) }),
-  tab('t6', 's1', 'https://tools.example/small', 'Small tools, well made', { createdAt: ago(1220), lastActiveAt: ago(1200) }),
-  tab('t7', 's1', 'https://margin.example/reading/november', 'Reading list for November', { createdAt: ago(1355), lastActiveAt: ago(600) }),
-  tab('u1', 's2', 'https://trips.example/lisbon', 'Lisbon in March', { createdAt: ago(2000), lastActiveAt: ago(1900) }),
-  tab('u2', 's2', 'https://tax.example/2026', 'Tax return 2026', { createdAt: ago(2100), lastActiveAt: ago(2050) }),
-  tab('u3', 's2', 'https://bikes.example/fit', 'Bike fit notes', { createdAt: ago(2200), lastActiveAt: ago(2150) }),
-  tab('u4', 's2', 'https://food.example/recipes', 'Recipes', { createdAt: ago(2300), lastActiveAt: ago(2250) })
-]
 // PREVIEW_AGENTS=1 hands four tabs to agents: working, idle, done and unseen, done and seen.
 const AGENT_PREVIEW = [['working', 'omp'], ['idle', 'Claude'], ['done', 'omp', true], ['done', 'Codex']]
 const withAgents = (list, ids) => (!process.env.PREVIEW_AGENTS ? list : list.map((t) => {
   const [agentState, agent, unseen] = AGENT_PREVIEW[ids.indexOf(t.id)] || []
   return agent ? { ...t, agent, agentState, ...(unseen && { agentUnseen: true }) } : t
 }))
-const archived = (id, url, title, minutes) => ({ id, spaceId: 's1', url, title, favicon: '', sessionPartition: 'persist:main', archivedAt: ago(minutes) })
-const archive = [
-  archived('a1', 'https://margin.example/reading/october', 'Reading list for October', 2900),
-  archived('a2', 'https://tides.example/table', 'Tide tables', 2950),
-  archived('a3', 'https://chairs.example/references', 'Chair references', 4300),
-  ...Array.from({ length: 9 }, (_, i) => archived(`a${i + 4}`, `https://older.example/${i + 4}`, `Older page ${i + 4}`, 5000 + i * 700))
-]
-const state = {
-  spaces, activeSpaceId: 's1', tabs: withAgents(tabs, ['t4', 't5', 't6', 't7']), activeTabBySpace: { s1: 't1', s2: 'u1' }, archive, collapsed: {},
-  shells: ['default', 'filmstrip', 'index', 'lacquer', 'ledger', 'quiet', 'timeline'],
-  settings: { autoArchiveHours: 12, searchUrl: 'https://www.google.com/search?q=%s', shell: path.basename(path.resolve(shellDir)) === 'shell' ? 'default' : path.basename(path.resolve(shellDir)), shortcuts: {}, ai: { agents: [], agent: '', model: '', effort: '' } },
-  window: { width: size[0], height: size[1] }
-}
-
-// PREVIEW_EXTENSIONS=1 lists the built-in blocker plus one added extension; =installing or =failed shows the built-in before it is installed.
-const sample = process.env.PREVIEW_EXTENSIONS
-const ubo = { id: 'ubo', name: 'uBlock Origin', version: '1.76.2', description: '', path: '', popup: 'popup-fenix.html', options: 'dashboard.html', builtin: true, state: 'ready', error: '' }
-const missing = { id: '', name: 'uBlock Origin', version: '', description: '', path: '', popup: '', options: '', builtin: true, state: sample, error: sample === 'failed' ? 'api.github.com answered 503' : '' }
-const extensions = !sample ? [] : sample === 'installing' || sample === 'failed' ? [missing] : [
-  ubo,
-  { id: 'x', name: 'Dark Reader', version: '4.9', description: '', path: '', popup: 'popup.html', options: '', builtin: false, state: 'ready', error: '' }
-]
-
-const shim = `(() => {
-  const listeners = {}
-  const state = ${JSON.stringify(state)}
-  window.__skiff = { state, calls: [], emit: (name, data) => (listeners[name] || []).forEach((fn) => fn(data)) }
-  window.skiff = {
-    call(method, params) {
-      window.__skiff.calls.push([method, params])
-      if (method === 'state.get') return Promise.resolve(state)
-      if (method === 'commands.list') return Promise.resolve([])
-      if (method === 'ui.shellPath') return Promise.resolve({ path: '/preview' })
-      if (method === 'extensions.list') return Promise.resolve(${JSON.stringify(extensions)})
-      if (method === 'ai.agents') return Promise.resolve([])
-      if (method === 'ui.capture') return Promise.reject(Object.assign(new Error('No page in preview'), { code: 'not_found' }))
-      return Promise.resolve(null)
-    },
-    on(name, fn) {
-      ;(listeners[name] ||= []).push(fn)
-      if (name === 'state') queueMicrotask(() => fn(state))
-    }
-  }
-})()`
-
-const article = `<div style="height:100%;overflow:hidden;background:#fbfaf7;color:#1f1e1a;font:15px/1.5 system-ui,sans-serif">
-<div style="display:flex;justify-content:space-between;padding:22px 48px;border-bottom:1px solid #e3dfd5"><b style="font:400 24px/1 Georgia,serif">Margin</b><span style="color:#5d5a52;font-size:13px">Journal &nbsp;&nbsp; Places &nbsp;&nbsp; About</span></div>
-<div style="max-width:720px;margin:0 auto;padding:48px 32px 0"><h1 style="font:400 54px/1.02 Georgia,serif;letter-spacing:-.02em;margin:0 0 22px">Looking up,<br>slowing down.</h1>
-<p style="font-size:18px;line-height:1.45;color:#3b3934;max-width:460px;margin:0 0 30px">There is another city above the shopfronts. A few notes on noticing the buildings we pass every day.</p>
-<div style="aspect-ratio:3/2;background:linear-gradient(180deg,#9aa3a8,#5b6469 60%,#2f3538)"></div></div></div>`
-
-/* ---------- desk shells ---------- */
-
 // The desk content: a Work and a Personal space. All fictional.
 const letter = (text, fill, ink = '#fff') => svg(fill, `<text x="8" y="11.8" text-anchor="middle" font-family="Arial,sans-serif" font-size="10" font-weight="700" fill="${ink}">${text}</text>`)
 const DESK_TABS = [
@@ -164,7 +77,7 @@ const DESK_THREADS = [
   thread('c3', 'work', 'Claude', 'Weekly planning', { favorite: true })
 ]
 
-function deskState([W, H], shell) {
+function deskState([W, H]) {
   const sx = W / 1440
   const sy = H / 900
   const rect = ([x, y, w, h, z]) => {
@@ -184,10 +97,9 @@ function deskState([W, H], shell) {
   const gone = (id, url, title, minutes) => ({ id, spaceId: 'work', url, title, favicon: '', sessionPartition: 'persist:main', archivedAt: ago(minutes) })
   return {
     spaces: [{ id: 'work', name: 'Work', color: '#4f6bed' }, { id: 'personal', name: 'Personal', color: '#2f6b4f' }],
-    activeSpaceId: 'work', tabs: withAgents([...tabs, ...DESK_THREADS], ['electron', 'youtube', 'hn', 'figma']).map((t) => ({ ...t, bucket: S.bucketOf(t) })), activeTabBySpace: { work: 'github', personal: 'nytimes' }, collapsed: {},
-    archive: [gone('a1', 'https://linear.app/skiff/issue/SKF-80', 'SKF-80 Buoy notices', 300), gone('a2', 'https://github.com/skiff/skiff/pull/38', 'skiff#38 Quiet pill', 2900)],
-    shells: ['default', 'filmstrip', 'index', 'lacquer', 'layer', 'ledger', 'quiet', 'timeline'],
-    settings: { autoArchiveHours: 12, searchUrl: 'https://www.google.com/search?q=%s', shell, shortcuts: {}, ai: { agents: [], agent: '', model: '', effort: '' } },
+    activeSpaceId: 'work', tabs: withAgents([...tabs, ...DESK_THREADS], ['electron', 'youtube', 'hn', 'figma']).map((t) => ({ ...t, bucket: S.bucketOf(t) })), activeTabBySpace: { work: 'github', personal: 'nytimes' }, collapsed: {}, agentTabs: [], peek: null,
+    archive: [gone('a1', 'https://linear.app/skiff/issue/SKF-80', 'SKF-80 Buoy notices', 300), gone('a2', 'https://github.com/skiff/skiff/pull/38', 'skiff#38 Buoy pill', 2900)],
+    settings: { autoArchiveHours: 12, searchUrl: 'https://www.google.com/search?q=%s', shortcuts: {}, ai: { agents: [], agent: '', model: '', effort: '' } },
     window: { width: 1280, height: 800 },
     deskSize: { width: W, height: H }
   }
@@ -262,7 +174,7 @@ const deskShim = `(() => {
 
 async function previewDesk(dir) {
   const [W, H] = size
-  const st = deskState(size, path.basename(dir))
+  const st = deskState(size)
   const config = JSON.parse(fs.readFileSync(path.join(dir, 'shell.json'), 'utf8'))
   const inset = config.frame && { top: 0, right: 0, bottom: 0, left: 0, ...config.frame }
   const desk = { hit: [], capture: false, preview: null }
@@ -596,81 +508,5 @@ async function previewDesk(dir) {
 ;(async () => {
   const dir = path.resolve(shellDir)
   if (!fs.existsSync(path.join(dir, 'index.html'))) { console.error(`${dir} has no index.html`); process.exit(1) }
-  if (deskShell) return previewDesk(dir)
-  const browser = await chromium.launch({ args: ['--no-sandbox'] }).catch((error) => {
-    console.error(`${error.message.split('\n')[0]}\nRun: npx playwright install chromium`)
-    process.exit(1)
-  })
-  const context = await browser.newContext({ viewport: { width: size[0], height: size[1] }, deviceScaleFactor: 2, bypassCSP: true, colorScheme: dark ? 'dark' : 'light', reducedMotion: 'reduce', userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Skiff preview' })
-  await context.addInitScript(shim)
-  const page = await context.newPage()
-  page.on('pageerror', (error) => console.error('page error:', error.message))
-  page.on('console', (message) => message.type() === 'error' && console.error('console:', message.text()))
-  await page.goto(pathToFileURL(path.join(dir, 'index.html')).href)
-  await page.evaluate(() => document.fonts.ready)
-  await page.waitForTimeout(150)
-  await page.evaluate((html) => {
-    const target = document.getElementById('page')
-    if (!target) return
-    const fake = document.createElement('div')
-    fake.id = 'preview-page'
-    fake.style.cssText = 'position:absolute;inset:0;overflow:hidden;border-radius:inherit'
-    fake.innerHTML = html
-    if (getComputedStyle(target).position === 'static') target.style.position = 'relative'
-    target.append(fake)
-  }, article)
-  if (overlay) {
-    await page.evaluate((file) => {
-      const frame = document.createElement('iframe')
-      frame.id = 'preview-overlay'
-      frame.src = file
-      frame.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;border:0;background:transparent;z-index:2147483647'
-      frame.setAttribute('allowtransparency', 'true')
-      document.body.append(frame)
-    }, overlay)
-    const frame = page.frameLocator('#preview-overlay')
-    await frame.locator('body').waitFor()
-    await page.waitForTimeout(150)
-    const handle = await page.$('#preview-overlay')
-    const content = await handle.contentFrame()
-    await content.evaluate(() => document.fonts.ready)
-    // An overlay that asks for bounds (ui.showOverlay {file, bounds}) sits in that rectangle, as it would in the app.
-    await page.waitForTimeout(100)
-    const bounds = await content.evaluate(() => window.__skiff.calls.filter(([m, p]) => m === 'ui.showOverlay' && p?.bounds).at(-1)?.[1].bounds)
-    if (bounds) {
-      // The core puts a negative edge at size + x, so the rectangle's near edge is |x| minus its own width from that side.
-      await handle.evaluate((frame, b) => {
-        frame.style.inset = 'auto'
-        if (b.x < 0) frame.style.right = `${-b.x - b.width}px`
-        else frame.style.left = `${b.x}px`
-        if (b.y < 0) frame.style.bottom = `${-b.y - b.height}px`
-        else frame.style.top = `${b.y}px`
-        frame.style.width = `${b.width}px`
-        frame.style.height = `${b.height}px`
-      }, bounds)
-    }
-    for (const e of emits) {
-      const [name, json] = e.split(/=(.*)/s)
-      await content.evaluate(([n, d]) => window.__skiff.emit(n, d ? JSON.parse(d) : undefined), [name, json])
-    }
-    if (!emits.length && overlay === 'palette.html') await content.evaluate(() => window.__skiff.emit('palette', { mode: 'new' }))
-    await page.waitForTimeout(100)
-    if (typed) {
-      const input = frame.locator('#palette-input')
-      await input.focus()
-      await input.pressSequentially(typed, { delay: 20 })
-    }
-  } else {
-    for (const e of emits) {
-      const [name, json] = e.split(/=(.*)/s)
-      await page.evaluate(([n, d]) => window.__skiff.emit(n, d ? JSON.parse(d) : undefined), [name, json])
-    }
-  }
-  await page.waitForTimeout(250)
-  fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true })
-  await page.screenshot({ path: out })
-  const bounds = await page.evaluate(() => window.__skiff.calls.filter(([m]) => m === 'ui.setPageBounds').at(-1)?.[1])
-  const fonts = await page.evaluate(() => [...document.fonts].filter((f) => f.status !== 'loaded' && !/italic/i.test(f.style)).map((f) => `${f.family}:${f.status}`))
-  console.log(`wrote ${out}; page bounds ${JSON.stringify(bounds)}${fonts.length ? `; fonts not loaded: ${fonts.join(', ')}` : ''}`)
-  await browser.close()
+  await previewDesk(dir)
 })().catch((error) => { console.error(error); process.exit(1) })

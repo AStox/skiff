@@ -298,7 +298,6 @@ const schemas = {
   'ui.inFront': shape(),
   'ui.reloadShell': shape(),
   'ui.resetShell': shape(),
-  'ui.setShell': shape({ name: id }, ['name']),
   'ui.shellPath': shape(),
   'ui.capture': shape({ target: { enum: ['shell', 'page'] }, id }, ['target']),
   'ui.devtools': shape({ target: { enum: ['shell', 'page'] }, id }, ['target'])

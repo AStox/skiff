@@ -44,8 +44,7 @@ const logger = log.scope('main')
 const shellDir = path.join(dataDir, 'shell')
 const stateFile = path.join(dataDir, 'state.json')
 const faviconDir = path.join(dataDir, 'favicons')
-const bundledShell = path.join(__dirname, '..', 'shell')
-const bundledShells = path.join(__dirname, '..', 'shells')
+const bundledShell = path.join(__dirname, '..', 'shells', 'layer')
 const chatDir = path.join(__dirname, '..', 'chat')
 const controlDir = path.join(__dirname, '..', 'control')
 const toolsDir = path.join(__dirname, '..', 'components', 'browser-tools')
@@ -74,7 +73,6 @@ app.on('open-url', (event, url) => {
   else pendingUrls.push(url)
 })
 const SPARKLE = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#8b5cf6" d="M8 0c.6 4.2 3.8 7.4 8 8-4.2.6-7.4 3.8-8 8-.6-4.2-3.8-7.4-8-8 4.2-.6 7.4-3.8 8-8z"/></svg>'
-const shells = ['layer', 'default', ...(fs.existsSync(bundledShells) ? fs.readdirSync(bundledShells).filter((name) => name !== 'layer' && fs.existsSync(path.join(bundledShells, name, 'index.html'))).sort() : [])]
 const CODES = ['unknown_method', 'bad_params', 'not_found', 'forbidden', 'unauthorized', 'cancelled', 'timeout', 'component_error', 'command_collision', 'bad_schema', 'bad_result', 'user_has_control', 'devtools_attached']
 
 let state
@@ -203,7 +201,7 @@ const naturalScroll = process.platform !== 'darwin' || (() => {
 })()
 const snapshot = () => {
   const rects = S.arrange(state, state.settings.tabLayout)
-  return { ...state, shells, naturalScroll, safeMode, splitBounds, update: updates.state() ?? undefined, browserData: browserData?.snapshot(), deskOnly: desk.only, tabs: state.tabs.map((t) => ({ ...live(t), bucket: S.bucketOf(t), ...(rects[t.id] && { desk: { ...t.desk, ...rects[t.id] } }) })) }
+  return { ...state, naturalScroll, safeMode, splitBounds, update: updates.state() ?? undefined, browserData: browserData?.snapshot(), deskOnly: desk.only, tabs: state.tabs.map((t) => ({ ...live(t), bucket: S.bucketOf(t), ...(rects[t.id] && { desk: { ...t.desk, ...rects[t.id] } }) })) }
 }
 const sseFrame = (snap) => `event: state\ndata: ${JSON.stringify(snap)}\n\n`
 
@@ -844,12 +842,8 @@ function roleFile(role, fallback, spaceId = state.activeSpaceId) {
   return (!safeMode && components?.resolve(role, { spaceId }))?.file || fallback
 }
 
-function stockShellRoot(name = state?.settings.shell) {
-  return !safeMode && name !== 'default' && shells.includes(name) ? path.join(bundledShells, name) : bundledShell
-}
-
 function shellRoot() {
-  return (!safeMode && components?.resolve('shell', { spaceId: state.activeSpaceId }))?.path || stockShellRoot()
+  return (!safeMode && components?.resolve('shell', { spaceId: state.activeSpaceId }))?.path || bundledShell
 }
 
 function loadSurface(wc, file, options) {
@@ -937,7 +931,8 @@ async function replaceSurfaces({ roles = [], owner, action } = {}) {
   for (const [name, overlay] of overlays) {
     if (overlay.role && roles.includes(overlay.role)) {
       const file = roleFile(overlay.role, overlay.fallback)
-      await loadChanged(overlay.host.webContents, file, overlay.loadOptions)
+      if (fs.statSync(file, { throwIfNoEntry: false })?.isFile()) await loadChanged(overlay.host.webContents, file, overlay.loadOptions)
+      else hideOverlay(name)
     } else if (owner && overlay.component?.id === owner) {
       try {
         const next = components.surface(overlay.component)
@@ -1017,23 +1012,8 @@ function watchShell() {
   watcher = watchShellFiles(root, reloadShell)
 }
 
-// Stock sources always remain bundled. Switching selects them without rewriting owned copies.
-async function installShell(name) {
-  await windowReady
-  const source = stockShellRoot(name)
-  watcher?.close()
-  installingShell = true
-  try {
-    await components.refreshStock({ id: 'stock.shell', root: source, manifest: stockShellManifest(source) })
-    for (const role of ['shell', 'launcher', 'frame', 'tablist', 'spaces', 'overview']) {
-      const selected = components.inspect().bindings.global[role]
-      if (selected && !selected.startsWith('stock.') && selected !== 'legacy.shell') continue
-      const id = stockShellManifest(source).surfaces[role] ? 'stock.shell' : `stock.${role}`
-      if (components.list().some((item) => item.id === id)) await components.bind({ role, id })
-    }
-  } finally { installingShell = false }
-  state.settings.shell = name
-  save()
+// Recovery and reset both end here: whichever shell is selected now (the bundled Layer in safe mode) replaces the one on screen.
+async function showShell() {
   closeShellViews()
   setWindowButtons(true)
   watchShell()
@@ -1043,8 +1023,6 @@ async function installShell(name) {
     frameSpec = deskMode ? readFrame(manifest()) : null
     await loadSurface(win.webContents, roleFile('shell', path.join(shellRoot(), 'index.html')))
   }
-  buildMenu()
-  changed()
 }
 
 function closeShellViews() {
@@ -1063,7 +1041,7 @@ function manifest() {
   }
 }
 
-const shellIsDesk = () => !safeMode && manifest()?.window === 'desk'
+const shellIsDesk = () => manifest()?.window === 'desk'
 
 // The new window opens before the old one goes, or the app would quit with no window left.
 async function recreateWindow() {
@@ -1761,16 +1739,20 @@ def('ui.reloadShell', '', 'Reload the shell from disk', () => {
   reloadShell()
   return null
 })
-def('ui.resetShell', '', 'Back up the live shell and restore Layer, the default shell', async () => {
+def('ui.resetShell', '', 'Back up the live shell and restore the bundled Layer', async () => {
+  await windowReady
   const backup = fs.existsSync(shellDir) ? path.join(dataDir, `shell.bak-${Date.now()}`) : null
   if (backup) fs.renameSync(shellDir, backup)
-  await installShell('layer')
+  installingShell = true
+  try {
+    for (const role of ['shell', 'frame', 'tablist', 'overview']) {
+      const selected = components.inspect().bindings.global[role]
+      if (!selected || selected.startsWith('stock.') || selected === 'legacy.shell') await components.bind({ role, id: 'stock.shell' })
+    }
+  } finally { installingShell = false }
+  await showShell()
+  changed()
   return { backup }
-})
-def('ui.setShell', '{name}', 'Replace the live shell while preserving native pages and custom role bindings', async (p) => {
-  if (!shells.includes(p.name)) throw S.err('not_found', `No shell named ${p.name}. Shells: ${shells.join(', ')}`)
-  await installShell(p.name)
-  return { shell: p.name }
 })
 def('ui.shellPath', '', 'Source directory and ownership of the selected shell', () => {
   const selected = components.resolve('shell', { spaceId: state.activeSpaceId })
@@ -1988,14 +1970,7 @@ command('ui.customize', 'Create an owned copy of the selected UI source', { role
 command('ui.safeMode', 'Disable custom execution and recover the stock UI without closing pages', {}, [], async () => {
   safeMode = true
   await components.start({ safeMode: true })
-  // Recovery renders the bundled default, so stock source discovery must name
-  // that same source rather than the previously selected skin.
-  installingShell = true
-  try { await components.refreshStock({ id: 'stock.shell', root: bundledShell, manifest: stockShellManifest(bundledShell) }) }
-  finally { installingShell = false }
-  closeShellViews()
-  if (deskMode) await recreateWindow()
-  else await loadSurface(win.webContents, path.join(bundledShell, 'index.html'))
+  await showShell()
   changed()
   return { safeMode: true }
 })
@@ -2047,18 +2022,9 @@ function agentApi({ agent, chatId }) {
   return { port: api.port, token: grant.token, revoke: () => access.revoke({ id: grant.id }) }
 }
 
-function stockShellManifest(root = stockShellRoot()) {
-  const surfaces = { shell: 'index.html' }
-  for (const [role, file] of Object.entries({ launcher: 'palette.html', frame: 'frame.html', tablist: 'tablist.html', spaces: 'panel.html', overview: 'expose.html' })) if (fs.existsSync(path.join(root, file))) surfaces[role] = file
-  return { apiVersion: 1, id: 'stock.shell', version: '1.0.0', surfaces, capabilities: ['ui', 'host.manage', 'call:*', 'events:*'] }
-}
-
 function registerStockComponents() {
   const register = (id, root, surfaces) => components.registerStock({ root, manifest: { apiVersion: 1, id, version: '1.0.0', surfaces, capabilities: ['ui', 'host.manage', 'call:*', 'events:*'] } })
-  register('stock.shell', stockShellRoot(), stockShellManifest().surfaces)
-  for (const [role, file] of Object.entries({ frame: 'frame.html', tablist: 'tablist.html', overview: 'expose.html' })) {
-    register(`stock.${role}`, path.join(bundledShells, 'layer'), { [role]: file })
-  }
+  register('stock.shell', bundledShell, { shell: 'index.html', frame: 'frame.html', tablist: 'tablist.html', overview: 'expose.html' })
   register('stock.chat', chatDir, { chat: 'chat.html' })
   register('stock.browser-tools', toolsDir, { ...Object.fromEntries(toolSections.map((role) => [role, 'index.html'])), find: 'find.html', reader: 'reader.html', split: 'split.html' })
   for (const name of ['layout', 'search', 'archive']) {
@@ -2252,7 +2218,6 @@ function buildMenu() {
       { label: 'Make Interface Smaller', click: () => zoomShell(win.webContents.getZoomLevel() - 0.5) },
       { label: 'Interface Actual Size', click: () => zoomShell(0) }
     ] },
-    { label: 'Shell', submenu: shells.map((name) => ({ label: name === 'layer' ? 'layer (default)' : name === 'default' ? 'plain' : name, type: 'radio', checked: name === state.settings.shell, click: () => rpc('ui.setShell', { name }) })) },
     { label: 'Recovery', submenu: [
       { label: 'Use Safe Mode (keep tabs)', click: () => rpc('ui.safeMode', {}, { trusted: true }) },
       { label: 'Manage Components', click: () => showHostSurface(path.join(toolsDir, 'index.html'), { query: { section: 'components' } }) },
