@@ -1,6 +1,8 @@
 'use strict'
 const crypto = require('node:crypto')
 
+const settingsCatalog = require('./settings-catalog')
+
 const HOUR = 3600e3
 const COLORS = ['#4f6bed', '#7c5ce0', '#d6336c', '#c2700e', '#2f9e5b', '#5f6b7a']
 const mac = process.platform === 'darwin'
@@ -175,6 +177,7 @@ function load(raw = {}) {
   // Before settings version 1 a saved DuckDuckGo URL is the old untouched default, not a choice
   if (!(s.settings.version >= 1) && s.settings.searchUrl === 'https://duckduckgo.com/?q=%s') s.settings.searchUrl = GOOGLE
   s.settings.version = 1
+  if (!settingsCatalog.get('tabLayout').enum.includes(s.settings.tabLayout)) s.settings.tabLayout = 'free'
   const j = s.settings.shortcuts['CmdOrCtrl+J']
   if (j?.method === 'ui.emit' && j.params?.name === 'toggle-ai') s.settings.shortcuts['CmdOrCtrl+J'] = SHORTCUTS['CmdOrCtrl+J']
   if (!s.spaces.length) s.spaces.push({ id: newId('s'), name: 'Home', color: COLORS[0] })
@@ -993,10 +996,13 @@ function placeDesk(s, p) {
   const tab = getTab(s, p.id)
   const rect = deskRect(p)
   if (!rect) throw bad('x, y, width and height must be numbers, width at least 240 and height at least 160')
-  tab.desk = { ...rect, z: 0 }
+  // An arranged window keeps its own rect, so a drag or tile in a non-Free layout snaps back and Free finds it where it was.
+  const arranged = s.settings.tabLayout !== 'free' && tab.desk
+  const { x, y, width, height } = arranged || rect
+  tab.desk = { x, y, width, height, z: 0 }
   front(s, tab)
   const host = hostOf(tab.url)
-  if (host && !tab.agent && !isIncognito(s, tab.spaceId)) {
+  if (!arranged && host && !tab.agent && !isIncognito(s, tab.spaceId)) {
     delete s.deskHosts[host]
     s.deskHosts[host] = rect
     for (const old of Object.keys(s.deskHosts).slice(0, -HOSTS)) delete s.deskHosts[old]
@@ -1047,6 +1053,65 @@ function tileDesk(s, p) {
   const layouts = deskLayouts(s)
   if (typeof p.layout !== 'string' || !Object.hasOwn(layouts, p.layout)) throw bad(`layout must be one of ${Object.keys(layouts).join(', ')}`)
   return placeDesk(s, { id: p.id, ...layouts[p.layout] })
+}
+
+const gridOf = (a, n, byColumn = true) => Array.from({ length: n }, (_, i) => {
+  const size = ((byColumn ? a.w : a.h) - (n - 1) * MARGIN) / n
+  return byColumn ? { ...a, x: a.x + i * (size + MARGIN), w: size } : { ...a, y: a.y + i * (size + MARGIN), h: size }
+})
+
+// One cell per window, in the desk area inside its margin; a window's frame inset is taken from the top of its cell afterwards.
+const ARRANGEMENTS = {
+  full: (n, a) => Array(n).fill(a),
+  sections: (n, a) => {
+    const sections = gridOf(a, 2, false).flatMap((row) => gridOf(row, 4))
+    return Array.from({ length: n }, (_, i) => sections[i % sections.length])
+  },
+  split: (n, a) => gridOf(a, n),
+  grid: (n, a) => {
+    const columns = Math.ceil(Math.sqrt(n))
+    const rows = Math.ceil(n / columns)
+    return gridOf(a, rows, false).flatMap((row, i) => gridOf(row, i < rows - 1 ? columns : n - columns * (rows - 1)))
+  },
+  'main-stack': (n, a) => {
+    if (n === 1) return [a]
+    const w = (a.w - MARGIN) * 0.6
+    return [{ ...a, w }, ...gridOf({ ...a, x: a.x + w + MARGIN, w: a.w - w - MARGIN }, n - 1, false)]
+  },
+  spiral: (n, a) => {
+    const cells = []
+    for (let i = 0; i < n - 1; i++) {
+      const across = i % 2 === 0
+      const size = ((across ? a.w : a.h) - MARGIN) / 2
+      cells.push(across ? { ...a, w: size } : { ...a, h: size })
+      a = across ? { ...a, x: a.x + size + MARGIN, w: size } : { ...a, y: a.y + size + MARGIN, h: size }
+    }
+    return [...cells, a]
+  },
+  cascade: (n, a) => {
+    const w = a.w * 0.7
+    const h = a.h * 0.7
+    const steps = Math.floor(Math.min(a.w - w, a.h - h) / OFFSET) + 1
+    return Array.from({ length: n }, (_, i) => ({ x: a.x + OFFSET * (i % steps), y: a.y + OFFSET * (i % steps), w, h }))
+  }
+}
+
+// Rect of every shown window of the active space by tab id, as the desk draws it in this layout mode; free is each window's own rect.
+// Window order is tab order, so what is on top is still the stacking (z) order.
+function arrange(s, mode) {
+  const shown = new Set(shownTabs(s))
+  const tabs = s.tabs.filter((t) => shown.has(t) && t.desk)
+  const rects = Object.fromEntries(tabs.map((t) => [t.id, { x: t.desk.x, y: t.desk.y, width: t.desk.width, height: t.desk.height }]))
+  if (!Object.hasOwn(ARRANGEMENTS, mode) || !s.deskSize || !tabs.length) return rects
+  const { width: W, height: H, top: T } = deskOf(s)
+  const active = tabs.find((t) => s.activeTabBySpace[t.spaceId] === t.id)
+  const order = mode === 'main-stack' && active ? [active, ...tabs.filter((t) => t !== active)] : tabs
+  const cells = ARRANGEMENTS[mode](order.length, { x: MARGIN, y: MARGIN, w: W - 2 * MARGIN, h: H - 2 * MARGIN })
+  order.forEach((t, i) => {
+    const { x, y, w, h } = cells[i]
+    rects[t.id] = { x: Math.round(x), y: Math.round(y) + T, width: Math.round(x + w) - Math.round(x), height: Math.round(y + h) - Math.round(y) - T }
+  })
+  return rects
 }
 
 // The largest rectangle of the desk that no rect overlaps: its sides lie on desk edges or rect edges, so trying every pair of those suffices.
@@ -1307,6 +1372,7 @@ function aiSettings(value, current = AI) {
 
 function setSettings(s, p) {
   const next = {}
+  if (p.tabLayout !== undefined) next.tabLayout = settingsCatalog.validate('tabLayout', p.tabLayout)
   for (const key of ['downloadAskWhere', 'memorySaver', 'transcriptRecovery']) {
     if (p[key] === undefined) continue
     if (typeof p[key] !== 'boolean') throw bad(`${key} must be true or false`)
@@ -1352,5 +1418,5 @@ module.exports = {
   createProfile, updateProfile, removeProfile, assignProfile, setLinkRule, removeLinkRule, routeLink,
   setSplit, resizeSplit, clearSplit, createPeek, promotePeek, dismissPeek,
   createTab, closeTab, activateTab, navigateTab, moveTab, setFavorite, setPinned, setBucket, bucketOf, look, settle, chatState, setCollapsed, cycleTab, selectTab,
-  placeDesk, tileDesk, deskLayouts, hideDesk, showDesk, defaultDesk, thumbnailTabs, restore, removeArchived, clearArchive, sweep, setSettings, importSetup
+  placeDesk, tileDesk, deskLayouts, arrange, hideDesk, showDesk, defaultDesk, thumbnailTabs, restore, removeArchived, clearArchive, sweep, setSettings, importSetup
 }

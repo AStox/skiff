@@ -190,7 +190,10 @@ const looking = (id) => S.activeTab(state)?.id === id && frontNow()
 const naturalScroll = process.platform !== 'darwin' || (() => {
   try { return require('node:child_process').execFileSync('defaults', ['read', '-g', 'com.apple.swipescrolldirection'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== '0' } catch { return true }
 })()
-const snapshot = () => ({ ...state, shells, naturalScroll, safeMode, splitBounds, update: updates.state() ?? undefined, browserData: browserData?.snapshot(), deskOnly: desk.only, tabs: state.tabs.map((t) => ({ ...live(t), bucket: S.bucketOf(t) })), agentTabs: state.agentTabs.map(live) })
+const snapshot = () => {
+  const rects = S.arrange(state, state.settings.tabLayout)
+  return { ...state, shells, naturalScroll, safeMode, splitBounds, update: updates.state() ?? undefined, browserData: browserData?.snapshot(), deskOnly: desk.only, tabs: state.tabs.map((t) => ({ ...live(t), bucket: S.bucketOf(t), ...(rects[t.id] && { desk: { ...t.desk, ...rects[t.id] } }) })), agentTabs: state.agentTabs.map(live) }
+}
 const sseFrame = (snap) => `event: state\ndata: ${JSON.stringify(snap)}\n\n`
 
 // Frames hear about state only while shown, so a push costs the shown windows; catchUpFrames serves one that shows again.
@@ -522,8 +525,9 @@ function deskLayout() {
   }
   const radius = Math.round(10 * win.webContents.getZoomFactor())
   const f = frameSpec
+  const rects = S.arrange(state, state.settings.tabLayout)
   return tabs.map((t) => {
-    const r = t === preview ? desk.preview : t.desk || S.defaultDesk(state, t)
+    const r = t === preview ? desk.preview : rects[t.id] || t.desk || S.defaultDesk(state, t)
     return { tab: t, bounds: toDip(r), radius, frame: f && toDip({ x: r.x - f.left, y: r.y - f.top, width: r.width + f.left + f.right, height: r.height + f.top + f.bottom }) }
   })
 }
@@ -1160,7 +1164,10 @@ function createWindow(near = state.window, { quiet = false } = {}) {
     fitOverlays()
     const popup = extensions.popupView()
     if (popup) popup.setBounds(edgeBounds(popupBounds))
-    if (deskMode) syncView()
+    if (deskMode) {
+      syncView()
+      if (state.settings.tabLayout !== 'free') soonTimer ??= setTimeout(pushState, 16)
+    }
   })
   win.on('focus', () => {
     if (win !== w && !parkedWin(w)) return

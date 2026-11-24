@@ -270,25 +270,25 @@ test('settings catalog searches aliases, filters scopes and rejects invalid scal
 })
 
 test('settings catalog quick-panel entries carry values and action status, omit unsupported actions and run', async () => {
-  assert.deepEqual(settings.list({ quickPanel: true }).map((entry) => entry.id), ['autoArchiveHours', 'defaultBrowser', 'update'])
+  assert.deepEqual(settings.list({ quickPanel: true }).map((entry) => entry.id), ['autoArchiveHours', 'tabLayout', 'defaultBrowser', 'update'])
   assert.equal(settings.list({ quickPanel: false }).some((entry) => entry.id === 'defaultBrowser'), false)
   let done = false, supported = true, runs = 0
   const actions = { defaultBrowser: { supported: () => supported, status: () => ({ text: done ? 'Skiff is your default browser.' : '', available: !done }), run: () => { runs++; done = true } } }
   const draw = (values = { autoArchiveHours: 5 }) => settings.present(settings.list({ quickPanel: true }), { values, actions })
-  const [hours, action] = draw()
+  const [hours, layout, action] = draw()
   assert.equal(hours.value, 5)
-  assert.equal(draw({})[0].value, 12)
+  assert.deepEqual([draw({})[0].value, layout.value, layout.enum[0]], [12, 'free', 'free'])
   assert.deepEqual([action.type, action.title, action.actionLabel, action.status, action.available, 'value' in action], ['action', 'Default browser', 'Make Skiff your default browser', '', true, false])
-  assert.deepEqual(draw().map((entry) => entry.id), ['autoArchiveHours', 'defaultBrowser'])
+  assert.deepEqual(draw().map((entry) => entry.id), ['autoArchiveHours', 'tabLayout', 'defaultBrowser'])
   const ran = await settings.run('defaultBrowser', actions)
   assert.deepEqual([runs, ran.status, ran.available], [1, 'Skiff is your default browser.', false])
   await assert.rejects(settings.run('defaultBrowser', actions), { code: 'bad_params' })
   assert.equal(runs, 1)
   supported = false
-  assert.deepEqual(draw().map((entry) => entry.id), ['autoArchiveHours'])
+  assert.deepEqual(draw().map((entry) => entry.id), ['autoArchiveHours', 'tabLayout'])
   await assert.rejects(settings.run('defaultBrowser', actions), { code: 'bad_params' })
-  assert.deepEqual(draw().map((entry) => entry.id), ['autoArchiveHours'])
-  assert.deepEqual(settings.present(settings.list({ quickPanel: true }), { actions: {} }).map((entry) => entry.id), ['autoArchiveHours'])
+  assert.deepEqual(draw().map((entry) => entry.id), ['autoArchiveHours', 'tabLayout'])
+  assert.deepEqual(settings.present(settings.list({ quickPanel: true }), { actions: {} }).map((entry) => entry.id), ['autoArchiveHours', 'tabLayout'])
   for (const id of ['memorySaver', 'unknown']) await assert.rejects(settings.run(id, actions), { code: 'bad_params', message: /Unknown action/ })
   assert.throws(() => settings.validate('defaultBrowser', true), { code: 'bad_params' })
   assert.throws(() => validateSchema(schemaFor('settings.set'), { defaultBrowser: true }), { code: 'bad_params' })
