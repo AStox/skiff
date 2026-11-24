@@ -208,10 +208,18 @@ const test = base.extend({
             await expect.poll(discoverShell, { timeout: 15_000 }).toBe(true)
             return out.result
           }
-          return driver.shell.evaluate(async ({ method, params }) => {
-            try { return await window.skiff.call(method, params) }
-            catch (error) { throw new Error(`${method} [${error?.code || 'unknown'}]: ${error?.message || JSON.stringify(error)}`) }
-          }, { method, params })
+          // A desk shell has one window per macOS desktop, and one that goes takes its page with it.
+          for (let attempt = 0; ; attempt++) {
+            try {
+              return await driver.shell.evaluate(async ({ method, params }) => {
+                try { return await window.skiff.call(method, params) }
+                catch (error) { throw new Error(`${method} [${error?.code || 'unknown'}]: ${error?.message || JSON.stringify(error)}`) }
+              }, { method, params })
+            } catch (error) {
+              if (attempt >= 20 || !/Target page, context or browser has been closed/.test(error.message)) throw error
+              await new Promise((resolve) => setTimeout(resolve, 50))
+            }
+          }
         },
         state: () => driver.rpc('state.get'),
         api: () => JSON.parse(fs.readFileSync(path.join(data, 'api.json'), 'utf8')),

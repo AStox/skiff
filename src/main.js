@@ -74,8 +74,10 @@ const identityForTab = (tab) => tab.browserIdentity || browserIdentity[tab.sessi
 let win = null
 let windowReady = Promise.resolve()
 let deskMode = false
-// macOS desktops (null off macOS): tabs belong to one, and the desk window is present on every desktop.
+// macOS desktops (null off macOS): tabs belong to one. Each desktop has a desk window of its own, never on every desktop, so macOS slides a desktop's own pages in and out. `win`, `shown`, `attached`, `slide`, `laidOutSpace` and `ignoring` are those of the window of the current desktop, `deskId`; the windows of the other desktops wait in `parked`, each with its own values of them.
 let desktops = null
+let deskId = null
+const parked = new Map()
 let attached = null
 let shown = []
 let pageBounds = null
@@ -95,7 +97,6 @@ let soonTimer = null
 // A desk space switch in flight: view -> {from, to, leaving}, stepped from start.
 let slide = null
 let laidOutSpace = null
-let polledDesktop = null
 let heading = 0
 let warmTimer = null
 let frameSpec = null
@@ -232,7 +233,18 @@ function catchUpFrames() {
   }
 }
 
+// A page view is in the window of its desktop only; one that moves or goes leaves a parked window.
+function leaveParked(view) {
+  for (const rec of parked.values()) {
+    if (!rec.shown.includes(view)) continue
+    rec.win.contentView.removeChildView(view)
+    rec.shown = rec.shown.filter((v) => v !== view)
+    if (rec.attached === view) rec.attached = null
+  }
+}
+
 function unshow(view) {
+  leaveParked(view)
   const move = slide?.moves.get(view)
   slide?.moves.delete(view)
   if (!shown.includes(view) && !move?.leaving) return
@@ -584,6 +596,7 @@ function syncView() {
   if (next.length !== shown.length || next.some((view, i) => view !== shown[i])) {
     for (const view of shown) if (!next.includes(view) && !slide?.moves.get(view)?.leaving) win.contentView.removeChildView(view)
     next.forEach((view, i) => {
+      leaveParked(view)
       if (agentViews.has(view)) agentWin?.contentView.removeChildView(view)
       win.contentView.addChildView(view, i)
     })
@@ -618,6 +631,7 @@ function parkAgents() {
   for (const tab of state.agentTabs) {
     const view = views.get(tab.id) || createView(tab)
     if (shown.includes(view) || agentWin.contentView.children.includes(view)) continue
+    leaveParked(view)
     agentWin.contentView.addChildView(view)
     view.setBounds(PARKED)
   }
@@ -800,6 +814,10 @@ async function replaceSurfaces({ roles = [], owner, action } = {}) {
       return
     }
     frameSpec = deskMode ? readFrame(manifest()) : null
+    for (const [id, rec] of parked) {
+      const source = trustedFiles.get(rec.win.webContents)
+      if (source?.invalid || source?.file !== path.resolve(shellFile) || retiredOwners.has(source.owner)) dropParked(id)
+    }
     await loadChanged(win.webContents, shellFile)
   }
   if (roles.includes('frame')) {
@@ -879,6 +897,7 @@ function syncDivider() {
 }
 
 function reloadShell() {
+  dropParked()
   frameSpec = deskMode ? readFrame(manifest()) : null
   for (const wc of shellContents()) if (inShell(wc.getURL())) wc.reloadIgnoringCache()
   syncView()
@@ -913,6 +932,7 @@ async function installShell(name) {
   closeShellViews()
   setWindowButtons(true)
   watchShell()
+  dropParked()
   if (win && shellIsDesk() !== deskMode) await recreateWindow()
   else if (win) {
     frameSpec = deskMode ? readFrame(manifest()) : null
@@ -942,6 +962,7 @@ const shellIsDesk = () => !safeMode && manifest()?.window === 'desk'
 // The new window opens before the old one goes, or the app would quit with no window left.
 async function recreateWindow() {
   const old = win
+  dropParked()
   if (!deskMode) state.window = old.getNormalBounds()
   extensions.closePopup()
   endSlide()
@@ -980,7 +1001,7 @@ function setWindowButtons(visible) {
   if (process.platform === 'darwin' && !deskMode) win?.setWindowButtonVisibility(visible)
 }
 
-function hideOverlay(name = 'main') {
+function hideOverlay(name = 'main', refocus = true) {
   pageToolRequests.delete(name)
   const o = overlays.get(name)
   if (o) o.request = null
@@ -994,7 +1015,7 @@ function hideOverlay(name = 'main') {
   const focused = name === 'main' || o.host.webContents.isFocused()
   o.shown = false
   win?.contentView.removeChildView(o.host)
-  if (focused) (attached || win)?.webContents.focus()
+  if (focused && refocus) (attached || win)?.webContents.focus()
 }
 
 // A floating overlay can be clicked while another app is in front, so the window an overlay lives in comes forward before it takes the keyboard.
@@ -1012,7 +1033,7 @@ function focusShell(o) {
 function focusLeft() {
   setTimeout(() => {
     const focused = BrowserWindow.getFocusedWindow()
-    inFront &&= Boolean(focused && (focused === win || [...overlays.values()].some((o) => o.float && o.host === focused)))
+    inFront &&= Boolean(focused && (focused === win || parkedWin(focused) || [...overlays.values()].some((o) => o.float && o.host === focused)))
   }, 100)
 }
 
@@ -1028,7 +1049,7 @@ function deskFocused() {
 const deskArea = (near) => (['x', 'y', 'width', 'height'].every((key) => Number.isFinite(near?.[key])) ? screen.getDisplayMatching(near) : screen.getPrimaryDisplay()).workArea
 
 function refitDesk() {
-  if (win && deskMode) win.setBounds(deskArea(win.getBounds()))
+  for (const w of [win, ...[...parked.values()].map((rec) => rec.win)]) if (w && deskMode) w.setBounds(deskArea(w.getBounds()))
 }
 
 // Whether the desk window feature is on: a desk shell on a Mac whose desktops can be read; reports whether anything it keeps changed.
@@ -1046,28 +1067,71 @@ function readDesktops() {
 }
 
 function desktopsChanged() {
-  if (readDesktops()) changed()
+  const moved = readDesktops()
+  followDesktop()
+  if (moved) changed()
 }
 
-function createWindow(near = state.window) {
+const parkedWin = (w) => [...parked.values()].some((rec) => rec.win === w)
+
+// Closes the parked window of one desktop, or of every one; a desktop that comes back gets a new window.
+function dropParked(id) {
+  for (const key of id === undefined ? [...parked.keys()] : [id]) {
+    const rec = parked.get(key)
+    parked.delete(key)
+    if (!rec || rec.win.isDestroyed()) continue
+    for (const view of rec.shown) rec.win.contentView.removeChildView(view)
+    rec.win.destroy()
+  }
+}
+
+// The desk follows the current desktop with that desktop's own window. The one just left stays as it is until its desktop is back; a desktop never seen gets a window now, which macOS puts on the active desktop, shown without taking the keyboard from the app in front.
+function followDesktop() {
+  const list = state.desktops?.list
+  if (list) for (const key of [...parked.keys()]) if (!list.some((d) => d.id === key)) dropParked(key)
+  const id = state.desktops?.current
+  if (!win || !deskMode || id === undefined) return
+  if (deskId === null) deskId = id
+  if (id === deskId) return
+  endSlide()
+  extensions.closePopup()
+  for (const [name, o] of overlays) if (o.shown && !o.float) hideOverlay(name, false)
+  parked.set(deskId, { win, shown, attached, laidOutSpace, ignoring })
+  const back = parked.get(id)
+  parked.delete(id)
+  deskId = id
+  if (!back) return void createWindow(win.getBounds(), { quiet: true }).catch(console.error)
+  ;({ win, shown, attached, ignoring } = back)
+  laidOutSpace = null
+  watchPointer()
+}
+
+function createWindow(near = state.window, { quiet = false } = {}) {
   deskMode = shellIsDesk()
   readDesktops()
+  deskId = state.desktops?.current ?? null
   frameSpec = deskMode ? readFrame(manifest()) : null
   for (const view of views.values()) view.webContents.send('skiff:desk-page', deskMode)
   laidOutSpace = null
+  shown = []
+  attached = null
   const w = win = new BrowserWindow(deskMode
-    ? { ...deskArea(near), frame: false, transparent: true, hasShadow: false, resizable: false, movable: false, roundedCorners: false, backgroundColor: '#00000000', webPreferences: shellWebPreferences }
+    ? { ...deskArea(near), show: !quiet, frame: false, transparent: true, hasShadow: false, resizable: false, movable: false, roundedCorners: false, backgroundColor: '#00000000', webPreferences: shellWebPreferences }
     : { ...state.window, minWidth: 560, minHeight: 360, titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default', webPreferences: shellWebPreferences })
   ignoring = false
   guardShell(win.webContents)
-  if (state.desktops) w.setVisibleOnAllWorkspaces(true, { skipTransformProcessType: true })
+  if (quiet) w.showInactive()
+  // A desktop's first window loads beside the live Buoy and tab list, which stay.
+  let keepFloats = quiet
   win.webContents.on('did-start-loading', () => {
     if (win !== w) return
     pageVisible = true
     pageBounds = null
     shellLoads++
     desk = noDesk()
-    for (const name of [...overlays.keys()]) hideOverlay(name)
+    const keep = keepFloats
+    keepFloats = false
+    for (const [name, o] of [...overlays]) if (!(keep && o.float)) hideOverlay(name)
     extensions.closePopup()
     setWindowButtons(true)
     syncView()
@@ -1086,7 +1150,12 @@ function createWindow(near = state.window) {
     if (popup) popup.setBounds(edgeBounds(popupBounds))
     if (deskMode) syncView()
   })
-  win.on('focus', () => { if (win === w) { deskFocused(); if (deskMode) desktopsChanged(); if (S.look(state)) changed() } })
+  win.on('focus', () => {
+    if (win !== w && !parkedWin(w)) return
+    deskFocused()
+    if (deskMode) desktopsChanged()
+    if (S.look(state)) changed()
+  })
   win.on('blur', () => {
     if (win !== w) return
     extensions.windowFocus(false)
@@ -1103,12 +1172,17 @@ function createWindow(near = state.window) {
     save()
   })
   win.on('closed', () => {
-    if (win !== w) return
+    if (win !== w) {
+      for (const [key, rec] of parked) if (rec.win === w) parked.delete(key)
+      return
+    }
     clearInterval(slide?.timer)
     slide = null
     clearTimeout(warmTimer)
     warmTimer = null
     win = null
+    deskId = null
+    dropParked()
     attached = null
     shown = []
     pageBounds = null
@@ -1134,14 +1208,6 @@ function pollPointer() {
     clearInterval(pointerTimer)
     pointerTimer = null
     return
-  }
-  // macOS posts its desktop-changed notification only once the switch has finished, while this window, present on every desktop, still shows the one just left; the active desktop is read each frame so the desk follows as soon as the system reports it.
-  if (desktops && state.desktops) {
-    const now = desktops.current()
-    if (now !== polledDesktop) {
-      polledDesktop = now
-      desktopsChanged()
-    }
   }
   const point = screen.getCursorScreenPoint()
   const ignore = !desk.capture && !overDesk(point)

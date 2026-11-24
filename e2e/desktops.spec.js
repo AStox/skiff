@@ -19,12 +19,11 @@ const shellPage = async (skiff, suffix) => {
   await page.emulateMedia({ colorScheme: 'light' })
   return page
 }
-const children = (skiff) => skiff.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('/index.html')).contentView.children.map((view) => {
-  if (!view.webContents.getURL()) return ''
-  const url = new URL(view.webContents.getURL())
-  return url.protocol.startsWith('http') ? url.pathname : url.pathname.split('/').pop()
-}))
+const deskWindows = async (skiff) => (await skiff.app.evaluate(() => global.__skiffDesktops.windows())).sort((a, b) => a.desktop - b.desktop)
+const childrenOn = async (skiff, desktop) => (await deskWindows(skiff)).find((w) => w.desktop === desktop)?.children ?? []
+const children = async (skiff) => childrenOn(skiff, await skiff.app.evaluate(() => global.__skiffDesktops.current))
 const exposed = async (skiff) => (await children(skiff)).includes('expose.html')
+const pagesOn = async (skiff, desktop) => (await childrenOn(skiff, desktop)).filter((name) => name.startsWith('/')).sort()
 const pages = async (skiff) => (await children(skiff)).filter((name) => name.startsWith('/')).sort()
 const switchTo = async (skiff, id) => {
   await skiff.app.evaluate((_, id) => global.__skiffDesktops.switchTo(id), id)
@@ -35,8 +34,9 @@ const byPath = async (skiff) => Object.fromEntries((await skiff.state()).tabs.ma
 test('tabs belong to the desktop they open on, the desk shows only that desktop\'s pages, and a tab from another desktop moves here when picked', async ({ skiff }) => {
   await useLayer(skiff)
   expect((await skiff.state()).desktops).toEqual({ current: 3, list: [{ id: 3, number: 1 }, { id: 1, number: 2 }] })
-  // The desk window is on every desktop, but not over full-screen apps.
-  expect((await skiff.audit()).allWorkspaces.filter((call) => !call.visibleOnFullScreen)).toEqual([{ id: expect.any(Number), visible: true, skipTransformProcessType: true }])
+  // One desk window per desktop, none visible on every desktop; only the Buoy's float is, over full-screen apps too.
+  expect(await deskWindows(skiff)).toEqual([{ id: expect.any(Number), desktop: 3, allWorkspaces: false, children: expect.any(Array) }])
+  expect((await skiff.audit()).allWorkspaces.filter((call) => !call.visibleOnFullScreen)).toEqual([])
   const one = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/one` })).id
   const two = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/two` })).id
   await expect.poll(() => pages(skiff)).toEqual(['/one', '/two'])
@@ -48,6 +48,11 @@ test('tabs belong to the desktop they open on, the desk shows only that desktop\
   expect(state.activeTabBySpace[state.activeSpaceId]).toBeUndefined()
   const three = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/three` })).id
   await expect.poll(() => pages(skiff)).toEqual(['/three'])
+  // Desktop 2 has its own window; Desktop 1's still holds its own pages and only those.
+  const windows = await deskWindows(skiff)
+  expect(windows.map((w) => [w.desktop, w.allWorkspaces])).toEqual([[1, false], [3, false]])
+  expect(await pagesOn(skiff, 1)).toEqual(['/three'])
+  expect(await pagesOn(skiff, 3)).toEqual(['/one', '/two'])
   state = await skiff.state()
   expect(state.tabs.map((t) => [t.id, t.desktopId])).toEqual([[one, 3], [two, 3], [three, 1]])
   const listed = (await skiff.rpc('tabs.list')).tabs
@@ -56,6 +61,8 @@ test('tabs belong to the desktop they open on, the desk shows only that desktop\
   // Back on Desktop 1 the tab left active there shows again, and Ctrl+Tab order stays on this desktop.
   await switchTo(skiff, 3)
   await expect.poll(() => pages(skiff)).toEqual(['/one', '/two'])
+  expect((await deskWindows(skiff)).map((w) => w.id)).toEqual(windows.map((w) => w.id))
+  expect(await pagesOn(skiff, 1)).toEqual(['/three'])
   state = await skiff.state()
   expect(state.activeTabBySpace[state.activeSpaceId]).toBe(two)
   expect((await skiff.rpc('tabs.select', { index: -1 })).id).toBe(two)
@@ -65,6 +72,7 @@ test('tabs belong to the desktop they open on, the desk shows only that desktop\
   // Picking a tab of Desktop 2 by the API brings it here; Skiff never changes desktops.
   await skiff.rpc('tabs.activate', { id: three })
   await expect.poll(() => pages(skiff)).toEqual(['/one', '/three', '/two'])
+  expect(await pagesOn(skiff, 1)).toEqual([])
   expect((await byPath(skiff))['/three'].desktopId).toBe(3)
   expect((await skiff.state()).desktops.current).toBe(3)
 })
@@ -137,16 +145,17 @@ test('tabs on a desktop that no longer exists join the current one, and with one
   await expect(list.locator('#tablist .desk-head')).toHaveCount(0)
 })
 
-test('the desk drops the old desktop\'s pages as soon as the system reports the new desktop, before the end-of-switch notification', async ({ skiff }) => {
+test('a desktop that no longer exists loses its window, and a desktop that comes back gets a new one', async ({ skiff }) => {
   await useLayer(skiff)
   await skiff.rpc('tabs.create', { url: `${skiff.origin}/one` })
+  await switchTo(skiff, 1)
   await skiff.rpc('tabs.create', { url: `${skiff.origin}/two` })
-  await expect.poll(() => pages(skiff)).toEqual(['/one', '/two'])
-  // macOS reports the desktop first and posts its notification a moment later; no stale page may wait for it.
-  await skiff.app.evaluate(() => global.__skiffDesktops.flip(1))
-  await expect.poll(() => pages(skiff), { timeout: 1000 }).toEqual([])
-  expect((await skiff.state()).desktops.current).toBe(1)
+  await expect.poll(async () => (await deskWindows(skiff)).map((w) => w.desktop)).toEqual([1, 3])
+  await skiff.app.evaluate(() => { global.__skiffDesktops.ids = [1] })
   await skiff.app.evaluate(() => global.__skiffDesktops.switchTo(1))
-  await skiff.app.evaluate(() => global.__skiffDesktops.flip(3))
-  await expect.poll(() => pages(skiff), { timeout: 1000 }).toEqual(['/one', '/two'])
+  await expect.poll(async () => (await deskWindows(skiff)).map((w) => w.desktop)).toEqual([1])
+  await expect.poll(() => pagesOn(skiff, 1)).toEqual(['/one', '/two'])
+  await skiff.app.evaluate(() => { global.__skiffDesktops.ids = [3, 1] })
+  await switchTo(skiff, 3)
+  await expect.poll(async () => (await deskWindows(skiff)).map((w) => w.desktop)).toEqual([1, 3])
 })

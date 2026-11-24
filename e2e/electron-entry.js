@@ -122,15 +122,29 @@ const RecordedWindow = new Proxy(electron.BrowserWindow, {
   construct(target, args) {
     const win = Reflect.construct(target, args)
     audit.windows.push({ ...args[0], webPreferences: undefined, id: win.id })
+    // A desk window belongs to the desktop that is current when it is made, as macOS puts a new window on the active desktop.
+    if (global.__skiffDesktops && !args[0]?.skipTaskbar) win.desktopId = global.__skiffDesktops.current
     return win
   }
 })
 // macOS desktops, which Linux has none of: fixtureOptions.desktops is their ids in order, the first current; a spec calls
 // global.__skiffDesktops.switchTo(id) in the main process, as moving to another desktop does, or reassigns .ids as Mission Control would.
-// flip(id) changes the current desktop without the notification, as macOS does between the start of a switch and its end.
+// windows() lists the desk windows: the desktop each was made on, whether it is visible on all workspaces, and its child views (a page by its path, a shell view by its file).
 const fakeDesktops = (ids) => {
   const listeners = new Set()
-  const fake = global.__skiffDesktops = { ids, current: ids[0], flip(id) { fake.current = id }, switchTo(id) { fake.current = id; for (const listener of listeners) listener() } }
+  const fake = global.__skiffDesktops = {
+    ids, current: ids[0],
+    switchTo(id) { fake.current = id; for (const listener of listeners) listener() },
+    windows: () => electron.BrowserWindow.getAllWindows().filter((w) => w.desktopId !== undefined).map((w) => ({
+      id: w.id, desktop: w.desktopId, allWorkspaces: audit.allWorkspaces.findLast((call) => call.id === w.id)?.visible ?? false,
+      children: w.contentView.children.map((view) => {
+        const href = view.webContents.getURL()
+        if (!href) return ''
+        const url = new URL(href)
+        return url.protocol.startsWith('http') ? url.pathname : url.pathname.split('/').pop()
+      })
+    }))
+  }
   return { open: () => ({ list: () => fake.ids.map((id, i) => ({ id, number: i + 1 })), current: () => fake.current, subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener) } }) }
 }
 const mainFile = path.join(__dirname, '..', 'src', 'main.js')
