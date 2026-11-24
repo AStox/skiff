@@ -6,7 +6,10 @@ const ask = { on: false, agent: '', model: '', effort: '' }
 const ADD = ' add'
 let agents = []
 
-const openUrl = (url) => skiff.call(palette.mode === 'edit' && activeTab() ? 'tabs.navigate' : 'tabs.create', { url })
+const openUrl = (url, intent) => {
+  const navigate = palette.mode === 'edit' && activeTab()
+  return skiff.call(navigate ? 'tabs.navigate' : 'tabs.create', navigate || !intent ? { url } : { url, intent: true })
+}
 const askEntry = () => agents.find((a) => a.name === ask.agent) || agents[0]
 const valueIn = (list, value, fallback) => (list.some((o) => o.value === value) ? value : fallback || '')
 const nameOf = (list, value) => list?.find((o) => o.value === value)?.name
@@ -41,7 +44,7 @@ function connectAgent() {
 function sendAsk() {
   const { entry, model, effort } = askChoice()
   if (!entry) return connectAgent()
-  return skiff.call('ai.ask', { text: palette.typed.trim(), includePage: Boolean(ask.on && pageTab()) && $('palette-include').checked, agent: entry.name, model: model || undefined, effort: effort || undefined })
+  return skiff.call('ai.ask', { text: palette.typed.trim(), intent: true, includePage: Boolean(ask.on && pageTab()) && $('palette-include').checked, agent: entry.name, model: model || undefined, effort: effort || undefined })
 }
 
 function paletteRows() {
@@ -79,9 +82,9 @@ function paletteRows() {
   }
   rows.length = Math.min(rows.length, 7)
   const urlish = !/\s/.test(text) && (HOST.test(text) || SCHEME.test(text))
-  const question = palette.mode === 'new' && /\s/.test(text) && !completion
+  const question = palette.mode === 'new' && !completion && looksLikeQuestion(text)
   if (question) rows.unshift(askRow())
-  rows.push({ label: urlish ? `Go to ${text}` : `Search the web for ${text}`, host: urlish ? '' : hostOf(state.settings.searchUrl), hint, icon: urlish ? 'globe' : 'search', pick: () => openUrl(text) })
+  rows.push({ label: urlish ? `Go to ${text}` : `Search the web for ${text}`, host: urlish ? '' : hostOf(state.settings.searchUrl), hint, icon: urlish ? 'globe' : 'search', pick: () => openUrl(text, !urlish) })
   // An address or a single word still opens on Enter; the agent waits below.
   if (!question) rows.push(askRow())
   return rows

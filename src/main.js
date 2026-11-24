@@ -402,7 +402,7 @@ function createView(tab) {
   wc.on('did-navigate', () => {
     pinch()
     const next = F.originOf(wc.getURL())
-    navigated(next === origin ? {} : { favicon: '' })
+    navigated({ ...(next === origin ? {} : { favicon: '' }), ...(loaded && { intent: undefined }) })
     origin = next
     browserData?.applyZoom(wc, tab)
   })
@@ -418,7 +418,10 @@ function createView(tab) {
     if (mouse.type === 'mouseDown' && views.get(id) === view && state.peek !== id && (state.peek || S.activeTab(state)?.id !== id)) call('tabs.activate', { id }).catch(console.error)
   })
   wc.on('did-start-loading', () => update({}, { loading: true }))
+  // A navigation after the first load finished leaves the page the bar opened, so its reroute offer ends.
+  let loaded = false
   wc.on('did-stop-loading', () => {
+    loaded = true
     if (views.get(id) === view) S.settle(state, id, looking(id))
     update({}, { loading: false })
   })
@@ -1377,12 +1380,23 @@ def('incognito.open', '', 'Open the temporary incognito space, creating it if ne
   return space
 })
 
-def('tabs.create', '{url, spaceId?, parentId?, activate?, agent?}', 'Open a tab using the selected search behavior', async (p, context) => {
+def('tabs.create', '{url, spaceId?, parentId?, activate?, agent?, intent?}', "Open a tab using the selected search behavior; intent: true marks the tab as opened by searching the typed url text from the command bar, so a shell offers tabs.reroute for a short while (kept in memory, never saved, dropped when the tab navigates)", async (p, context) => {
   // Scoped agents supply explicit HTTP URLs; replaceable search must not acquire their browser authority.
   const url = context.accessContext ? S.webUrl(p.url) : (await call('search.resolve', { text: p.url }, context)).url
   context.signal?.throwIfAborted()
   if (context.accessContext) access.assert(context.accessContext, { command: 'tabs.create', params: { ...p, url } })
-  return mutate(S.createTab)({ ...p, url })
+  const intent = p.intent === true && !context.accessContext && p.agent === undefined ? { text: p.url.trim(), sent: 'search', at: Date.now() } : undefined
+  return mutate(S.createTab)({ ...p, url, intent })
+})
+def('tabs.reroute', '{id}', "Close a tab opened from the command bar (its intent) and do the other thing with the same text in its space: a tab that searched asks the default agent (ai.ask), a tab that asked the agent stops that conversation's running turn and searches with settings.searchUrl, even if the text looks like an address; refused for a tab with no intent", async (p, context) => {
+  const tab = S.getTab(state, p.id)
+  if (!tab.intent) throw S.err('bad_params', 'That tab was not opened from the command bar, or has since navigated.')
+  const { text, sent } = tab.intent
+  if (sent === 'ask') {
+    await call('tabs.create', { url: state.settings.searchUrl.replace('%s', () => encodeURIComponent(text)), spaceId: tab.spaceId, ...(tab.parentId && { parentId: tab.parentId }) }, context)
+    if (tab.chat) await call('ai.cancel', { chatId: tab.url.slice('skiff://chat/'.length) }, context)
+  } else await call('ai.ask', { text, tabId: tab.id }, context)
+  return call('tabs.close', { id: tab.id }, context)
 })
 def('tabs.close', '{id?}', 'Close a tab into the archive; favorites and pinned tabs are unloaded and kept; incognito and agent tabs are dropped', (p) => {
   const result = S.closeTab(state, p, Date.now())
@@ -1510,7 +1524,7 @@ def('settings.set', '{autoArchiveHours?, searchUrl?, shortcuts?, globalShortcuts
 
 def('ai.agents', '', 'The configured agents in settings order: name, command, status (idle, starting, ready or error), error, info {name, version}, models and efforts [{value, name}] with the current model and effort of its latest session (null until one exists), loadSession', () => ai.agents())
 def('ai.warm', '{agent}', 'Start an agent and open a spare session for its next ai.ask; resolves with its ai.agents entry once its models and efforts are known or it failed', (p) => ai.warm(p))
-def('ai.ask', '{text, agent?, model?, effort?, includePage?, tabId?}', "Open a conversation tab in the space of tabId (default the active tab), nested under it when it is a plain tab, and send text to the agent (default settings.ai.agent, else the first); returns {tabId, chatId} at once; model and effort default to the last ones used, and the ones used are saved; includePage: true sends the text of that tab along when it is a loaded non-incognito web page; with agent '' or none configured the tab opens in setup holding the text", (p) => ai.ask(p))
+def('ai.ask', '{text, agent?, model?, effort?, includePage?, tabId?, intent?}', "Open a conversation tab in the space of tabId (default the active tab), nested under it when it is a plain tab, and send text to the agent (default settings.ai.agent, else the first); returns {tabId, chatId} at once; model and effort default to the last ones used, and the ones used are saved; includePage: true sends the text of that tab along when it is a loaded non-incognito web page; with agent '' or none configured the tab opens in setup holding the text; intent: true marks the tab as opened by asking from the command bar, so a shell offers tabs.reroute for a short while (kept in memory, never saved)", (p) => ai.ask(p))
 def('ai.chat', '{chatId}', 'A conversation: id, tabId, agent, status (setup, restoring, ready, running or error), error, pending, sessionId, models, model, efforts, effort, permission {id, title, options} and turns; one from an earlier run is restored with session/load when the agent supports it', (p) => ai.chat(p))
 def('ai.prompt', '{chatId, text}', 'Send a follow-up in a conversation; refused while it runs; a conversation in setup adopts the default agent; returns {turnId} of the reply at once', (p) => ai.prompt(p))
 def('ai.configure', '{chatId, model?, effort?}', "Change a conversation's model or effort and save them as the last choices; returns the conversation", (p) => ai.configure(p))

@@ -25,7 +25,7 @@ A small browser host owns sessions, native page views and persistence. Stock and
 ## Capabilities and Constraints
 
 - Spaces, vertical tabs, favorites that belong to one space and show as icon tiles, auto-archive that never touches favorites and can always be undone.
-- A command bar (Cmd+T for a new tab, Cmd+L to edit the current address) that completes the top result inline and lists open tabs, known sites and archived tabs. Tab on a site turns the bar into a search of that site, from a built-in table of sites that is plain data in the shell.
+- A command bar (Cmd+T for a new tab, Cmd+L to edit the current address) that completes the top result inline and lists open tabs, known sites and archived tabs. Tab on a site turns the bar into a search of that site, from a built-in table of sites that is plain data in the shell. Text that reads like a question or request goes to the agent on Enter and plain words to a web search, by a local rule that makes no network or model call; for a few seconds after either opens a tab, a small pill beside the tab offers the other one (`tabs.reroute`), in the Layer ear and the default shell sidebar.
 - Trails can be nested and collapsed. Persisted folders can be nested or empty.
 - Pinning and favoriting by drag, with a preview of the exact result before you let go. No pin or star buttons.
 - Any tab or window can move to another space: drag it onto a space dot, or right-click the page and pick Move to Space (`tabs.move`). It takes that space's profile, so a Dev tab moved to Work reloads signed in as Work; a link peek moved to a space becomes a real tab there. Spaces on one profile keep the live page.

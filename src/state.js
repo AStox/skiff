@@ -743,7 +743,7 @@ function persistable(s) {
   const gone = new Set(s.spaces.filter((x) => x.incognito).map((x) => x.id))
   const keep = (map) => Object.fromEntries(Object.entries(map).filter(([key]) => !gone.has(key.split('/')[0])))
   const { deskSize, deskTop, deskAvoid, desktops, agentTabs, peek, userPeek, ...rest } = s
-  return { ...rest, spaces: s.spaces.filter((x) => !x.incognito), tabs: s.tabs.filter((t) => !gone.has(t.spaceId) && !t.userPeek), folders: s.folders.filter((f) => !gone.has(f.spaceId)), splitBySpace: keep(s.splitBySpace), activeSpaceId: normalSpace(s).id, activeTabBySpace: keep(s.activeTabBySpace), collapsed: keep(s.collapsed) }
+  return { ...rest, spaces: s.spaces.filter((x) => !x.incognito), tabs: s.tabs.filter((t) => !gone.has(t.spaceId) && !t.userPeek).map((t) => { if (!t.intent) return t; const { intent, ...saved } = t; return saved }), folders: s.folders.filter((f) => !gone.has(f.spaceId)), splitBySpace: keep(s.splitBySpace), activeSpaceId: normalSpace(s).id, activeTabBySpace: keep(s.activeTabBySpace), collapsed: keep(s.collapsed) }
 }
 
 // In a desk window (s.deskSize set) a favorite or pinned tab becomes a window when activated and stays one until hidden.
@@ -787,7 +787,7 @@ function createTab(s, p, now, chat) {
   const profile = p.profileId === undefined ? s.profiles.find((x) => x.id === space.profileId) : getProfile(s, p.profileId)
   if (space.incognito && p.profileId !== undefined) throw bad('Incognito tabs cannot use persistent profiles')
   const partition = p.profileId !== undefined ? profile.partition : space.sessionPartition || profile?.partition || 'persist:main'
-  const tab = { id: newId('t'), spaceId, sessionPartition: partition, ...(profile?.partition === partition && { profileId: profile.id }), url, title: chat ? chat.title : url, favicon: chat ? chat.favicon : '', favorite: false, status: chat ? 'active' : 'progress', lastActiveAt: now, createdAt: now, ...here(s), ...(whatsappURL(url) && { browserIdentity: 'compatible' }), ...(chat && { chat: { agent: chat.agent, sessionId: null } }) }
+  const tab = { id: newId('t'), spaceId, sessionPartition: partition, ...(profile?.partition === partition && { profileId: profile.id }), url, title: chat ? chat.title : url, favicon: chat ? chat.favicon : '', favorite: false, status: chat ? 'active' : 'progress', lastActiveAt: now, createdAt: now, ...here(s), ...(whatsappURL(url) && { browserIdentity: 'compatible' }), ...(chat && { chat: { agent: chat.agent, sessionId: null } }), ...(isObject(p.intent) && { intent: p.intent }) }
   if (parent && parent.spaceId === spaceId && isPlain(parent)) tab.parentId = parent.id
   s.tabs.push(tab)
   if (s.deskSize) {
@@ -847,6 +847,7 @@ function navigateTab(s, p, now) {
   const url = navUrl(s, p.url)
   if (p.browserIdentity !== undefined && p.browserIdentity !== null && !validTabIdentity(p.browserIdentity)) throw bad('browserIdentity must be native, compatible or null')
   delete tab.chat
+  delete tab.intent
   if (p.browserIdentity !== undefined) tab.browserIdentity = p.browserIdentity
   return Object.assign(tab, { url, title: url, favicon: origin(url) === origin(tab.url) ? tab.favicon : '', lastActiveAt: now })
 }

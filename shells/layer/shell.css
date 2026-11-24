@@ -140,6 +140,19 @@ html.frame.active #ear, .win.active .ear { background: var(--accent); color: #ff
 #ear:hover { padding-right: 4px; }
 .ear-btn:hover { opacity: 1; background: color-mix(in srgb, currentColor 16%, transparent); }
 .ear-btn:focus-visible { outline-offset: 0; }
+/* The offer to do the other thing with what the bar was given: a pill in the top inset beside the ear, where no page can reach. frame.js sets its left and max-width. */
+#offer { position: fixed; top: 7px; z-index: 2; display: flex; align-items: center; height: 20px; border-radius: 10px; background: var(--buoy-bg); color: var(--buoy-ink); box-shadow: inset 0 0 0 1px var(--buoy-rim), 0 2px 6px rgba(0, 0, 0, .16); font-size: 12px; font-weight: 550; letter-spacing: .005em; line-height: 1; white-space: nowrap; }
+html.earless #offer { display: none; }
+#offer-go { min-width: 0; height: 20px; padding: 0 2px 0 9px; border-radius: 10px 0 0 10px; overflow: hidden; text-overflow: ellipsis; }
+#offer-go:hover { background: color-mix(in srgb, var(--buoy-ink) 7%, transparent); }
+#offer-x { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 0 10px 10px 0; color: var(--buoy-soft); }
+#offer-x:hover { background: color-mix(in srgb, var(--buoy-ink) 7%, transparent); color: var(--buoy-ink); }
+#offer-x .icon { width: 10px; height: 10px; stroke-width: 3.2; }
+#offer :focus-visible { outline-offset: -1px; }
+#offer.fading { animation: offer-fade 600ms linear forwards; }
+@keyframes offer-fade { to { opacity: 0; } }
+@media (prefers-reduced-motion: no-preference) { #offer.fresh { animation: offer-in 160ms ease-out; } }
+@keyframes offer-in { from { opacity: 0; transform: translateX(-6px); } }
 /* Resize handles fill the insets, 12px deep (the top one under the ear's row); corners are 22px squares at each corner of the band. */
 .rz { position: fixed; z-index: 1; touch-action: none; }
 .rz[data-edge='n'] { top: 18px; right: 22px; left: 22px; height: 12px; cursor: ns-resize; }

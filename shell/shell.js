@@ -82,9 +82,57 @@ async function show(tab) {
 const MOVE_HINT = 'Drag to reorder, pin or favorite. Alt+Shift+Up/Down moves it, also between sections. Alt+Shift+Left/Right changes space.'
 const MOVE_KEYS = 'Alt+Shift+ArrowUp Alt+Shift+ArrowDown Alt+Shift+ArrowLeft Alt+Shift+ArrowRight'
 
+// What a tab the bar just opened offers for a few seconds: the other thing to do with the same text. Hovering holds the clock; the list redraws when `offerRev` moves.
+const offers = new Map()
+let offerRev = 0
+let offerTimer = 0
+const offerOf = (tab) => {
+  const key = `${tab.id}/${tab.intent.at}`
+  if (offers.get(tab.id)?.key !== key) offers.set(tab.id, { key, paused: 0, held: 0, dismissed: false })
+  return offers.get(tab.id)
+}
+const offerTime = (tab, o) => offerLeft(tab, o.paused + (o.held ? Date.now() - o.held : 0))
+function offerRedraw() {
+  offerRev++
+  render()
+}
+function offerPill(tab) {
+  if (!tab.intent) return null
+  const o = offerOf(tab)
+  const left = offerTime(tab, o)
+  if (o.dismissed || left <= 0) return null
+  const fading = left <= OFFER_FADE && !o.held
+  const pill = h('div', {
+    class: `offer${fading ? ' fading' : ''}`, style: fading ? `animation-delay: ${left - OFFER_FADE}ms` : null,
+    onpointerenter: () => {
+      if (o.held) return
+      o.held = Date.now()
+      clearTimeout(offerTimer)
+      pill.classList.remove('fading')
+    },
+    onpointerleave: () => {
+      if (!o.held) return
+      o.paused += Date.now() - o.held
+      o.held = 0
+      offerRedraw()
+    }
+  },
+    h('button', { class: 'offer-go', onclick: () => { o.dismissed = true; offerRedraw(); call('tabs.reroute', { id: tab.id }) } }, offerLabel(state, tab)),
+    h('button', { class: 'offer-x', title: 'Dismiss', 'aria-label': 'Dismiss', onclick: () => { o.dismissed = true; offerRedraw() } }, icon('x')))
+  return h('div', { class: 'offer-line' }, pill)
+}
+// The next moment a pill starts to fade or goes.
+function offerSchedule() {
+  clearTimeout(offerTimer)
+  const waits = state.tabs.filter((t) => t.intent).map((t) => ({ t, o: offerOf(t) })).filter(({ t, o }) => !o.dismissed && !o.held && offerTime(t, o) > 0)
+    .map(({ t, o }) => { const left = offerTime(t, o); return left > OFFER_FADE ? left - OFFER_FADE : left + 30 })
+  if (waits.length) offerTimer = setTimeout(offerRedraw, Math.min(...waits))
+}
+
 function tabRow(tab, current, depth) {
+  const pill = offerPill(tab)
   const row = h('li', {
-    class: `row${current ? ' current' : ''}${tab.loading ? ' loading' : ''}${tab.folder ? ' nested' : ''}`,
+    class: `row${current ? ' current' : ''}${tab.loading ? ' loading' : ''}${tab.folder ? ' nested' : ''}${pill ? ' offered' : ''}`,
     'data-tab-id': tab.id, 'data-section': tab.pinned ? 'pinned' : 'tabs', 'data-folder': tab.pinned ? tab.folder || '' : null,
     'data-depth': depth, 'data-parent': depth ? tab.parentId : null, 'aria-level': depth == null ? null : depth + 1, draggable: 'true',
     ondragstart: (event) => startDrag(event, 'tab', tab.id),
@@ -92,7 +140,7 @@ function tabRow(tab, current, depth) {
   },
     h('button', { class: 'row-main', title: `${tab.url}\n${MOVE_HINT}`, 'aria-keyshortcuts': MOVE_KEYS, 'aria-current': current ? 'true' : null, onclick: () => show(tab) },
       favicon(tab), h('span', { class: 'label' }, tab.title || tab.url)),
-    h('button', { class: 'icon-btn reveal', title: 'Close tab', 'aria-label': 'Close tab', onclick: () => call('tabs.close', { id: tab.id }) }, icon('x')))
+    h('button', { class: 'icon-btn reveal', title: 'Close tab', 'aria-label': 'Close tab', onclick: () => call('tabs.close', { id: tab.id }) }, icon('x')), pill)
   if (depth != null) row.style.setProperty('--depth', String(Math.min(depth, 6)))
   return row
 }
@@ -1027,7 +1075,7 @@ function preview(target) {
   const folderHead = target.folder && [...$('list').querySelectorAll('[data-folder-head]')].find((el) => el.dataset.folderHead === target.folder)
   if (target.index === undefined) return caption(`Add to ${target.folder}`, folderHead)
   const depth = target.parent ? Number(source?.dataset.depth) : 0
-  const ghost = target.section === 'favorites' ? favoriteTile(tab, false) : tabRow({ ...tab, pinned: target.section === 'pinned', folder: target.folder }, false, target.section === 'tabs' ? depth : undefined)
+  const ghost = target.section === 'favorites' ? favoriteTile(tab, false) : tabRow({ ...tab, intent: undefined, pinned: target.section === 'pinned', folder: target.folder }, false, target.section === 'tabs' ? depth : undefined)
   ghost.classList.add('ghost')
   ghost.classList.remove('loading')
   for (const name of ['data-tab-id', 'draggable']) ghost.removeAttribute(name)
@@ -1245,11 +1293,12 @@ function render() {
   section('panel', ui.settings && [space, state.spaces.length, ui.quick, state.settings.searchUrl, state.settings.ai, ui.imported, ui.filling, Boolean(tab), ui.extensions, ui.agents, ui.agentError], () => (ui.settings ? panel(space) : []))
   if (ui.settings && ui.quickKey !== JSON.stringify([state.settings, state.update?.status])) refreshQuick()
   if (ui.settings) warmDefault()
-  if (!holds) section('list', ui.archive ? [state.archive] : [tabs, tab?.id, state.collapsed], () => (ui.archive ? archiveRows() : [
+  if (!holds) section('list', ui.archive ? [state.archive] : [tabs, tab?.id, state.collapsed, offerRev, state.settings.searchUrl, state.settings.ai], () => (ui.archive ? archiveRows() : [
     tabRows(space, tabs, (t, depth) => tabRow(t, t.id === tab?.id, depth)),
     h('li', { class: 'row', 'data-new-tab': true }, h('button', { id: 'new-tab', class: 'row-main', onclick: () => openPalette('new') }, icon('plus'), h('span', { class: 'label' }, 'New tab')))
   ]))
 
+  if (!holds) offerSchedule()
   const rename = $('rename')
   if (rename && !importer && document.activeElement !== rename) {
     rename.focus()

@@ -515,7 +515,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
     const effort = choice(p, 'effort') ?? s.settings.ai.effort
     const source = p.tabId === undefined ? S.activeTab(s) : S.getTab(s, p.tabId)
     const id = `c${crypto.randomBytes(6).toString('hex')}`
-    const tab = S.createTab(s, { spaceId: source?.spaceId, parentId: source?.id }, Date.now(), { id, agent: name, title: p.text.trim().slice(0, 80) || 'New chat', favicon })
+    const tab = S.createTab(s, { spaceId: source?.spaceId, parentId: source?.id, ...(p.intent === true && { intent: { text: p.text.trim(), sent: 'ask', at: Date.now() } }) }, Date.now(), { id, agent: name, title: p.text.trim().slice(0, 80) || 'New chat', favicon })
     if (name) S.setSettings(s, { ai: { agent: name, model, effort } })
     changed()
     const c = newChat(id, tab.id, name, null)
