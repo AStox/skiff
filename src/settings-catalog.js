@@ -16,6 +16,7 @@ const catalog = [
   { id: 'transcriptRecovery', type: 'boolean', default: false, scope: 'global', title: 'Save conversation recovery transcripts', description: 'Opt in to local recovery transcripts for normal conversations. Private conversations are never saved.', aliases: ['chat', 'agent', 'transcript', 'recovery', 'privacy'], section: 'transcripts' },
   { id: 'transcriptRetentionDays', type: 'integer', default: 30, scope: 'global', title: 'Transcript retention', description: 'Days to retain opted-in conversation recovery transcripts.', aliases: ['chat', 'agent', 'transcript', 'days'], section: 'transcripts', minimum: 1, maximum: 3650 },
   { id: 'defaultBrowser', type: 'action', scope: 'global', title: 'Default browser', description: 'Open web links from other apps in Skiff.', actionLabel: 'Make Skiff your default browser', aliases: ['default', 'browser', 'links', 'handler'], section: 'general', quickPanel: true },
+  { id: 'revealLogs', type: 'action', scope: 'global', title: 'Logs', description: 'Verbose diagnostic logs of this device, newest in skiff.log. Open the folder to attach them to a bug report.', actionLabel: 'Reveal logs', aliases: ['logs', 'log', 'debug', 'diagnostics', 'bug'], section: 'general', quickPanel: true },
   { id: 'update', type: 'action', scope: 'global', title: 'Update', description: 'Skiff downloads updates in the background. Restart to finish installing one.', actionLabel: 'Restart to update', aliases: ['update', 'upgrade', 'restart', 'version'], section: 'general', quickPanel: true }
 ]
 for (const entry of catalog) {

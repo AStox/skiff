@@ -176,7 +176,7 @@ function load(raw = {}) {
     activeTabBySpace: { ...raw.activeTabBySpace },
     archive: Array.isArray(raw.archive) ? raw.archive : [],
     collapsed: { ...raw.collapsed },
-    settings: { autoArchiveHours: 12, searchUrl: GOOGLE, shell: 'default', historyRetentionDays: 90, downloadAskWhere: true, downloadDirectory: '', memorySaver: false, memorySaverMinutes: 30, transcriptRecovery: false, transcriptRetentionDays: 30, ...raw.settings, browserIdentity: loadBrowserIdentity(raw.settings?.browserIdentity), ai: loadAi(raw.settings?.ai), shortcuts: { ...SHORTCUTS, ...raw.settings?.shortcuts }, globalShortcuts: { ...GLOBAL_SHORTCUTS, ...raw.settings?.globalShortcuts } },
+    settings: { autoArchiveHours: 12, searchUrl: GOOGLE, shell: 'layer', historyRetentionDays: 90, downloadAskWhere: true, downloadDirectory: '', memorySaver: false, memorySaverMinutes: 30, transcriptRecovery: false, transcriptRetentionDays: 30, ...raw.settings, browserIdentity: loadBrowserIdentity(raw.settings?.browserIdentity), ai: loadAi(raw.settings?.ai), shortcuts: { ...SHORTCUTS, ...raw.settings?.shortcuts }, globalShortcuts: { ...GLOBAL_SHORTCUTS, ...raw.settings?.globalShortcuts } },
     window: { width: 1280, height: 800, ...raw.window },
     deskHosts: Object.fromEntries(Object.entries(isObject(raw.deskHosts) ? raw.deskHosts : {}).map(([host, rect]) => [host, deskRect(rect)]).filter(([, rect]) => rect).slice(-HOSTS))
   }
@@ -247,7 +247,7 @@ function load(raw = {}) {
 function release(s, tab) {
   if (s.activeTabBySpace[tab.spaceId] !== tab.id) return
   // Closing the tab you are in never lands you on an agent's tab.
-  const list = visibleTabs(s, tab.spaceId).filter((t) => (!t.pinned || t === tab) && (t === tab || !t.agent) && (!s.desktops || t.desktopId === tab.desktopId))
+  const list = visibleTabs(s, tab.spaceId).filter((t) => (!(t.pinned || t.favorite) || t === tab) && (t === tab || !t.agent) && (!s.desktops || t.desktopId === tab.desktopId))
   // On the desk the window beneath comes forward, the opener first, so no other window changes place.
   const beneath = tab.desk && shownTabs(s, tab.spaceId).filter((t) => t !== tab && t.desk)
   const next = (beneath?.find((t) => t.id === tab.parentId) || beneath?.at(-1)) || list[list.indexOf(tab) + 1] || list[list.indexOf(tab) - 1]
@@ -734,9 +734,12 @@ function cycleSpace(s, p) {
   return null
 }
 
+// A persistent partition, so the built-in blocker runs there; the main process wipes its site data when the space closes and at every start.
+const INCOGNITO_PARTITION = 'persist:incognito'
+
 function openIncognito(s) {
   let space = s.spaces.find((x) => x.incognito)
-  if (!space) s.spaces.push(space = { id: newId('s'), name: 'Incognito', color: '#5f6b7a', incognito: true, sessionPartition: newId('incognito-') })
+  if (!space) s.spaces.push(space = { id: newId('s'), name: 'Incognito', color: '#5f6b7a', incognito: true, sessionPartition: INCOGNITO_PARTITION })
   activateSpace(s, { id: space.id })
   return space
 }
@@ -751,8 +754,12 @@ function persistable(s) {
   const gone = new Set(s.spaces.filter((x) => x.incognito).map((x) => x.id))
   const keep = (map) => Object.fromEntries(Object.entries(map).filter(([key]) => !gone.has(key.split('/')[0])))
   const { deskSize, deskTop, deskAvoid, desktops, userPeek, ...rest } = s
-  // An agent tab is saved with its agent's name only; who is working and who has control is runtime state.
-  const stored = (t) => (t.agent === undefined ? t : Object.fromEntries(Object.entries(t).filter(([key]) => !AGENT_RUNTIME.includes(key))))
+  // A tab is saved without its open-intent; an agent tab with its agent's name only (who is working and who has control is runtime state).
+  const stored = (t) => {
+    if (t.agent === undefined && !t.intent) return t
+    const { intent, ...saved } = t
+    return Object.fromEntries(Object.entries(saved).filter(([key]) => !AGENT_RUNTIME.includes(key)))
+  }
   return { ...rest, spaces: s.spaces.filter((x) => !x.incognito), tabs: storedTabs(s).map(stored), folders: s.folders.filter((f) => !gone.has(f.spaceId)), splitBySpace: keep(s.splitBySpace), activeSpaceId: normalSpace(s).id, activeTabBySpace: keep(s.activeTabBySpace), collapsed: keep(s.collapsed) }
 }
 
@@ -795,7 +802,7 @@ function createTab(s, p, now, chat) {
   const profile = p.profileId === undefined ? s.profiles.find((x) => x.id === space.profileId) : getProfile(s, p.profileId)
   if (space.incognito && p.profileId !== undefined) throw bad('Incognito tabs cannot use persistent profiles')
   const partition = p.profileId !== undefined ? profile.partition : space.sessionPartition || profile?.partition || 'persist:main'
-  const tab = { id: newId('t'), spaceId, sessionPartition: partition, ...(profile?.partition === partition && { profileId: profile.id }), url, title: chat ? chat.title : url, favicon: chat ? chat.favicon : '', favorite: false, status: chat ? 'active' : 'progress', lastActiveAt: now, createdAt: now, ...here(s), ...(whatsappURL(url) && { browserIdentity: 'compatible' }), ...(chat && { chat: { agent: chat.agent, sessionId: null } }), ...(agent && { agent, agentState: 'working', agentControl: 'agent', agentAt: now }) }
+  const tab = { id: newId('t'), spaceId, sessionPartition: partition, ...(profile?.partition === partition && { profileId: profile.id }), url, title: chat ? chat.title : url, favicon: chat ? chat.favicon : '', favorite: false, status: chat ? 'active' : 'progress', lastActiveAt: now, createdAt: now, ...here(s), ...(whatsappURL(url) && { browserIdentity: 'compatible' }), ...(chat && { chat: { agent: chat.agent, sessionId: null } }), ...(isObject(p.intent) && { intent: p.intent }), ...(agent && { agent, agentState: 'working', agentControl: 'agent', agentAt: now }) }
   if (parent && parent.spaceId === spaceId && isPlain(parent)) tab.parentId = parent.id
   s.tabs.push(tab)
   if (s.deskSize) {
@@ -840,6 +847,7 @@ function navigateTab(s, p, now) {
   const url = navUrl(s, p.url)
   if (p.browserIdentity !== undefined && p.browserIdentity !== null && !validTabIdentity(p.browserIdentity)) throw bad('browserIdentity must be native, compatible or null')
   delete tab.chat
+  delete tab.intent
   if (p.browserIdentity !== undefined) tab.browserIdentity = p.browserIdentity
   return Object.assign(tab, { url, title: url, favicon: origin(url) === origin(tab.url) ? tab.favicon : '', lastActiveAt: now })
 }
@@ -1500,7 +1508,7 @@ function setSettings(s, p) {
 }
 
 module.exports = {
-  err, isObject, load, resolveInput, webUrl, findTab, activeTab, getTab, visibleTabs, isIncognito, persistable, storedTabs, deskTabs, shownTabs, onDesktop, desktopNumber, setDesktops,
+  INCOGNITO_PARTITION, err, isObject, load, resolveInput, webUrl, findTab, activeTab, getTab, visibleTabs, isIncognito, persistable, storedTabs, deskTabs, shownTabs, onDesktop, desktopNumber, setDesktops,
   createSpace, updateSpace, moveSpace, removeSpace, activateSpace, cycleSpace, openIncognito,
   createFolder, updateFolder, moveFolder, removeFolder, setTrailCollapsed, refreshFolderLabels,
   createProfile, updateProfile, removeProfile, assignProfile, setLinkRule, removeLinkRule, routeLink,

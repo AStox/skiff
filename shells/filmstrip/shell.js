@@ -596,7 +596,7 @@ function panel(space) {
     if (event.key === 'Escape') { name.value = space.name; name.blur() }
   })
   const shell = h('select', { id: 'shell', onchange: () => call('ui.setShell', { name: shell.value }) },
-    state.shells.map((name) => h('option', { value: name, selected: name === state.settings.shell }, name)))
+    state.shells.map((name) => h('option', { value: name, selected: name === state.settings.shell }, name === 'layer' ? 'layer (default)' : name === 'default' ? 'plain' : name)))
   const preset = SEARCH_ENGINES.find((engine) => engine.url === state.settings.searchUrl)
   const search = h('select', { id: 'search-engine', onchange: () => call('settings.set', { searchUrl: search.value }) },
     !preset && h('option', { value: state.settings.searchUrl, selected: true, disabled: true }, 'Custom'),
@@ -634,14 +634,14 @@ function panel(space) {
   ]
 }
 
-const EXTENSION_STATE = { installing: 'Installing…', updating: 'Updating…', failed: 'Failed' }
+const EXTENSION_STATE = { installing: 'Installing…', updating: 'Updating…', restarting: 'Restarting…', failed: 'Failed' }
 
 function extensionRow(ext) {
   const failed = ext.builtin && ext.state === 'failed'
   return h('li', { class: 'extension' },
     h('div', { class: 'extension-head' },
       h('span', { class: 'label', title: ext.name }, ext.name),
-      ext.version ? h('span', { class: 'when' }, ext.version) : h('span', { class: 'hint' }, EXTENSION_STATE[ext.state] || '')),
+      ext.version && ext.state !== 'restarting' ? h('span', { class: 'when' }, ext.version) : h('span', { class: 'hint' }, EXTENSION_STATE[ext.state] || '')),
     failed && h('p', { class: 'hint' }, `${ext.version ? 'Could not update' : 'Could not install'}: ${ext.error}`),
     h('div', { class: 'extension-actions' },
       h('button', { class: 'text-btn', disabled: !ext.popup, onclick: () => call('extensions.popup', { id: ext.id, bounds: popupBounds() }) }, 'Panel'),

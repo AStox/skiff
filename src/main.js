@@ -35,6 +35,12 @@ app.userAgentFallback = nativeUserAgent.replace(new RegExp(` (Electron|${app.get
 const compatibleUserAgent = app.userAgentFallback
 
 const dataDir = app.getPath('userData')
+const log = require('./log')
+const diag = require('./diagnostics')
+const logDir = process.env.SKIFF_DATA ? path.join(dataDir, 'logs') : app.getPath('logs')
+log.init({ dir: logDir })
+log.captureConsole()
+const logger = log.scope('main')
 const shellDir = path.join(dataDir, 'shell')
 const stateFile = path.join(dataDir, 'state.json')
 const faviconDir = path.join(dataDir, 'favicons')
@@ -68,7 +74,7 @@ app.on('open-url', (event, url) => {
   else pendingUrls.push(url)
 })
 const SPARKLE = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#8b5cf6" d="M8 0c.6 4.2 3.8 7.4 8 8-4.2.6-7.4 3.8-8 8-.6-4.2-3.8-7.4-8-8 4.2-.6 7.4-3.8 8-8z"/></svg>'
-const shells = ['default', ...(fs.existsSync(bundledShells) ? fs.readdirSync(bundledShells).filter((name) => fs.existsSync(path.join(bundledShells, name, 'index.html'))).sort() : [])]
+const shells = ['layer', 'default', ...(fs.existsSync(bundledShells) ? fs.readdirSync(bundledShells).filter((name) => name !== 'layer' && fs.existsSync(path.join(bundledShells, name, 'index.html'))).sort() : [])]
 const CODES = ['unknown_method', 'bad_params', 'not_found', 'forbidden', 'unauthorized', 'cancelled', 'timeout', 'component_error', 'command_collision', 'bad_schema', 'bad_result', 'user_has_control', 'devtools_attached']
 
 let state
@@ -218,7 +224,10 @@ function pushState() {
   components?.emit('state', snap)
 }
 
+const watchState = diag.stateWatcher(S.activeTab)
+
 function changed() {
+  watchState(state)
   save()
   if (installingShell) return
   syncView()
@@ -453,7 +462,7 @@ function createView(tab) {
   wc.on('did-navigate', () => {
     pinch()
     const next = F.originOf(wc.getURL())
-    navigated(next === origin ? {} : { favicon: '' })
+    navigated({ ...(next === origin ? {} : { favicon: '' }), ...(loaded && { intent: undefined }) })
     origin = next
     browserData?.applyZoom(wc, tab)
   })
@@ -473,7 +482,10 @@ function createView(tab) {
   // The user's keys never reach a page an agent is working in. DevTools key events are reported here as well, so the agent's own are told apart by what it is sending.
   wc.on('before-input-event', (event, input) => { if (controlMode(S.findTab(state, id)) === 'lock' && !agentBrowser.sent(id, input)) event.preventDefault() })
   wc.on('did-start-loading', () => update({}, { loading: true }))
+  // A navigation after the first load finished leaves the page the bar opened, so its reroute offer ends.
+  let loaded = false
   wc.on('did-stop-loading', () => {
+    loaded = true
     if (views.get(id) === view) S.settle(state, id, looking(id))
     update({}, { loading: false })
   })
@@ -514,8 +526,8 @@ function createView(tab) {
     }
     return { action: 'deny' }
   })
-  // The first page of a session waits for its extensions, so a blocker is in place before anything loads.
-  extensions.ready(ses).then(() => { if (!wc.isDestroyed()) wc.loadURL(tab.url).catch(() => {}) })
+  // The first page of a session waits for its extensions (the built-in blocker has to be filtering), and the incognito space's for its wipe.
+  Promise.all([extensions.ready(ses), partition === S.INCOGNITO_PARTITION && incognitoWipe]).then(() => { if (!wc.isDestroyed()) wc.loadURL(tab.url).catch(() => {}) })
   return view
 }
 
@@ -878,6 +890,7 @@ function notifyHostSettings({ owner, key, spaceId } = {}) {
 }
 
 async function replaceSurfaces({ roles = [], owner, action } = {}) {
+  logger.info('replace surfaces', { roles, owner, action })
   if (!win || installingShell) return
   const retiredOwners = new Set(action !== 'bind' && owner ? [owner] : [])
   notifyHostSettings({ owner })
@@ -1095,6 +1108,7 @@ function setWindowButtons(visible) {
 }
 
 function hideOverlay(name = 'main', refocus = true) {
+  logger.debug('hide overlay', { name })
   pageToolRequests.delete(name)
   const o = overlays.get(name)
   if (o) o.request = null
@@ -1423,14 +1437,16 @@ def('state.get', '', 'The full current state', snapshot)
 def('spaces.create', '{name, color?}', 'Create a space; color is #rrggbb', mutate(S.createSpace))
 def('spaces.update', '{id, name?, color?}', 'Rename or recolor a space; color overrides its imported Arc background', mutate(S.updateSpace))
 def('spaces.move', '{id, index}', 'Move a space to a zero-based position; integer index is clamped to the space list', mutate(S.moveSpace))
-def('spaces.remove', '{id}', 'Remove a space and archive its tabs; the last normal space is refused; removing the incognito space drops its tabs and clears its session data', async (p) => {
+def('spaces.remove', '{id}', "Remove a space and archive its tabs; the last normal space is refused; removing the incognito space drops its tabs and wipes everything sites stored in its session (cookies, cache, site storage); only the blocker's own data stays", async (p) => {
   const space = state.spaces.find((x) => x.id === p.id)
+  const closing = space?.incognito ? [...views.values()].map((view) => view.webContents).filter((wc) => !wc.isDestroyed() && wc.session === session.fromPartition(space.sessionPartition)) : []
+  if (space?.incognito) browserData.forgetPartition(space.sessionPartition)
   S.removeSpace(state, p, Date.now())
   changed()
   if (space.incognito) {
-    const ses = session.fromPartition(space.sessionPartition)
-    await Promise.all([ses.clearStorageData(), ses.clearCache()])
-    browserData.forgetPartition(space.sessionPartition)
+    // A page still alive could write again after the wipe.
+    await Promise.all(closing.map((wc) => wc.isDestroyed() ? null : new Promise((resolve) => { wc.once('destroyed', resolve); setTimeout(resolve, 3000) })))
+    await wipeIncognito()
   }
   return null
 })
@@ -1448,15 +1464,26 @@ def('incognito.open', '', 'Open the temporary incognito space, creating it if ne
   return space
 })
 
-def('tabs.create', '{url, spaceId?, parentId?, activate?, agent?}', 'Open a tab using the selected search behavior; agent names an agent that opens it as its own tab: an ordinary tab of the space (never activated; saved and archived like any tab, but after a restart it is idle) that only that agent may drive with the browser tools. A scoped grant always opens its own agent tabs', async (p, context) => {
+def('tabs.create', '{url, spaceId?, parentId?, activate?, agent?, intent?}', "Open a tab using the selected search behavior; agent names an agent that opens it as its own tab: an ordinary tab of the space (never activated; saved and archived like any tab, but after a restart it is idle) that only that agent may drive with the browser tools. A scoped grant always opens its own agent tabs. intent: true marks the tab as opened by searching the typed url text from the command bar, so a shell offers tabs.reroute for a short while (kept in memory, never saved, dropped when the tab navigates)", async (p, context) => {
   // Scoped agents supply explicit HTTP URLs; replaceable search must not acquire their browser authority.
   const url = context.accessContext ? S.webUrl(p.url) : (await call('search.resolve', { text: p.url }, context)).url
   context.signal?.throwIfAborted()
   if (context.accessContext) access.assert(context.accessContext, { command: 'tabs.create', params: { ...p, url } })
-  const tab = mutate(S.createTab)({ ...p, url })
+  const intent = p.intent === true && !context.accessContext && p.agent === undefined ? { text: p.url.trim(), sent: 'search', at: Date.now() } : undefined
+  const tab = mutate(S.createTab)({ ...p, url, intent })
   const chat = context.accessContext && access.sessionOf(context.accessContext)
   if (tab.agent && chat) driven.set(chat, (driven.get(chat) || new Set()).add(tab.id))
   return tab
+})
+def('tabs.reroute', '{id}', "Close a tab opened from the command bar (its intent) and do the other thing with the same text in its space: a tab that searched asks the default agent (ai.ask), a tab that asked the agent stops that conversation's running turn and searches with settings.searchUrl, even if the text looks like an address; refused for a tab with no intent", async (p, context) => {
+  const tab = S.getTab(state, p.id)
+  if (!tab.intent) throw S.err('bad_params', 'That tab was not opened from the command bar, or has since navigated.')
+  const { text, sent } = tab.intent
+  if (sent === 'ask') {
+    await call('tabs.create', { url: state.settings.searchUrl.replace('%s', () => encodeURIComponent(text)), spaceId: tab.spaceId, ...(tab.parentId && { parentId: tab.parentId }) }, context)
+    if (tab.chat) await call('ai.cancel', { chatId: tab.url.slice('skiff://chat/'.length) }, context)
+  } else await call('ai.ask', { text, tabId: tab.id }, context)
+  return call('tabs.close', { id: tab.id }, context)
 })
 def('tabs.close', '{id?}', 'Close a tab into the archive; favorites and pinned tabs are unloaded and kept; incognito tabs are dropped. An archived agent tab restores as a plain tab', (p) => {
   const result = S.closeTab(state, p, Date.now())
@@ -1561,6 +1588,10 @@ const settingsActions = {
       return { text: status === 'ready' ? `Skiff ${version} is ready.` : status === 'downloading' ? `Downloading Skiff ${version}...` : '', available: status === 'ready' }
     },
     run: () => updates.install()
+  },
+  revealLogs: {
+    status: () => ({ text: logDir, available: true }),
+    run: () => shell.openPath(logDir).then((failure) => { if (failure) throw new Error(failure) })
   }
 }
 
@@ -1580,7 +1611,7 @@ def('settings.set', '{autoArchiveHours?, searchUrl?, shortcuts?, globalShortcuts
 
 def('ai.agents', '', 'The configured agents in settings order: name, command, status (idle, starting, ready or error), error, info {name, version}, models and efforts [{value, name}] with the current model and effort of its latest session (null until one exists), loadSession', () => ai.agents())
 def('ai.warm', '{agent}', 'Start an agent and open a spare session for its next ai.ask; resolves with its ai.agents entry once its models and efforts are known or it failed', (p) => ai.warm(p))
-def('ai.ask', '{text, agent?, model?, effort?, includePage?, tabId?}', "Open a conversation tab in the space of tabId (default the active tab), nested under it when it is a plain tab, and send text to the agent (default settings.ai.agent, else the first); returns {tabId, chatId} at once; model and effort default to the last ones used, and the ones used are saved; includePage: true sends the text of that tab along when it is a loaded non-incognito web page; with agent '' or none configured the tab opens in setup holding the text", (p) => ai.ask(p))
+def('ai.ask', '{text, agent?, model?, effort?, includePage?, tabId?, intent?}', "Open a conversation tab in the space of tabId (default the active tab), nested under it when it is a plain tab, and send text to the agent (default settings.ai.agent, else the first); returns {tabId, chatId} at once; model and effort default to the last ones used, and the ones used are saved; includePage: true sends the text of that tab along when it is a loaded non-incognito web page; with agent '' or none configured the tab opens in setup holding the text; intent: true marks the tab as opened by asking from the command bar, so a shell offers tabs.reroute for a short while (kept in memory, never saved)", (p) => ai.ask(p))
 def('ai.chat', '{chatId}', 'A conversation: id, tabId, agent, status (setup, restoring, ready, running or error), error, pending, sessionId, models, model, efforts, effort, permission {id, title, options} and turns; one from an earlier run is restored with session/load when the agent supports it', (p) => ai.chat(p))
 def('ai.prompt', '{chatId, text}', 'Send a follow-up in a conversation; refused while it runs; a conversation in setup adopts the default agent; returns {turnId} of the reply at once', (p) => ai.prompt(p))
 def('ai.configure', '{chatId, model?, effort?}', "Change a conversation's model or effort and save them as the last choices; returns the conversation", (p) => ai.configure(p))
@@ -1689,8 +1720,8 @@ def('ui.hideOverlay', '{name?}', "Remove an overlay page, 'main' by default, clo
   return null
 })
 
-def('extensions.list', '', 'Extensions, built-in ones first: id, name, version, description, path, popup page, options page, builtin, state (installing, updating, ready or failed) and error; a built-in that is not installed yet is listed with an empty id', () => extensions.list())
-def('extensions.add', '{path}', 'Copy an unpacked extension folder or a zip of one into the profile and load it in every space except incognito; an extension with the same name is replaced and keeps its storage', (p) => extensions.add(p.path))
+def('extensions.list', '', 'Extensions, built-in ones first: id, name, version, description, path, popup page, options page, builtin, state (installing, updating, restarting while a crashed background page is reloaded in some session, ready or failed) and error; a built-in that is not installed yet is listed with an empty id', () => extensions.list())
+def('extensions.add', '{path}', 'Copy an unpacked extension folder or a zip of one into the profile and load it in every space, incognito included; an extension with the same name is replaced and keeps its storage', (p) => extensions.add(p.path))
 def('extensions.download', '{url}', 'Download a zip of an unpacked extension over https and add it; a GitHub latest-release API URL picks its Chromium zip asset', (p) => extensions.download(p.url))
 def('extensions.update', '', 'Install missing built-in extensions and update installed ones whose release page names a newer version, now; the same check runs at startup and every six hours', () => extensions.update())
 def('extensions.remove', '{id}', 'Unload an extension everywhere and delete its folder; built-in ones cannot be removed', (p) => extensions.remove(p.id))
@@ -1730,10 +1761,10 @@ def('ui.reloadShell', '', 'Reload the shell from disk', () => {
   reloadShell()
   return null
 })
-def('ui.resetShell', '', 'Back up the live shell and restore the default shell', async () => {
+def('ui.resetShell', '', 'Back up the live shell and restore Layer, the default shell', async () => {
   const backup = fs.existsSync(shellDir) ? path.join(dataDir, `shell.bak-${Date.now()}`) : null
   if (backup) fs.renameSync(shellDir, backup)
-  await installShell('default')
+  await installShell('layer')
   return { backup }
 })
 def('ui.setShell', '{name}', 'Replace the live shell while preserving native pages and custom role bindings', async (p) => {
@@ -1885,6 +1916,9 @@ command('settings.catalog', 'Search core and owned component settings metadata; 
 command('settings.run', 'Run a settings action entry from settings.catalog (for example defaultBrowser) and return the refreshed entry', { id: string }, ['id'], (p) => settingsCatalog.run(p.id, settingsActions))
 command('updates.check', 'Check for a new Skiff version now; resolves with the update state (macOS packaged app only)', {}, [], () => updates.check())
 command('updates.install', 'Restart Skiff into a downloaded update: runs the normal shutdown cleanup and state flush once, then quits and relaunches (macOS packaged app only; refused unless state.update.status is ready)', {}, [], () => updates.install())
+command('logs.tail', 'Read the newest log lines as JSON lines, oldest first: lines (default 200, at most 5000), level (minimum: trace, debug, info, warn, error), scope (for example cmd, wc, tab, window, renderer, app, updates), grep (case-insensitive regex over the raw line), since (like 10m, 2h, 1d, or a date)', { lines: { type: 'integer' }, level: { enum: ['trace', 'debug', 'info', 'warn', 'error'] }, scope: string, grep: string, since: string }, [], async (p) => ({ path: log.current().path, lines: await log.current().tail(p) }))
+command('logs.path', 'Where the log files are: the folder, the current file and every existing file, newest first', {}, [], () => ({ dir: logDir, file: log.current().path, files: log.current().files() }))
+command('logs.mark', 'Write a MARK line with a note into the log, to bracket a repro', { note: string }, ['note'], (p) => { log.current().mark(p.note); return { ok: true } })
 command('grants.list', 'List scoped agent grants without credentials', {}, [], () => access.list())
 command('grants.issue', 'Approve explicit browser, customization, and component-tool scopes', { owner: string, sessionId: string, tabIds: strings, spaceIds: strings, read: boolean, mutate: boolean, commands: strings, tools: strings, components: strings }, ['owner'], (p) => access.issue(p))
 command('grants.revoke', 'Revoke a grant and its session credentials', { ...ids, owner: string, sessionId: string }, [], (p) => access.revoke(p))
@@ -2077,7 +2111,40 @@ function closePreview(pid) {
   })
 }
 
+function roleOf(wc) {
+  try {
+    if (!wc || wc.isDestroyed()) return 'destroyed'
+    if (wc === win?.webContents) return deskMode ? 'shell:desk' : 'shell'
+    const tab = tabOfContents(wc.id)
+    if (tab) return `${chatViews.has(views.get(tab)) ? 'chat' : 'tab'}:${tab}@${S.findTab(state, tab)?.sessionPartition || 'persist:main'}`
+    for (const [name, o] of overlays) if (o.host.webContents === wc) return `overlay:${name}`
+    for (const [id, view] of frames) if (view.webContents === wc) return `frame:${id}`
+    if (wc === agentWin?.webContents) return 'agent-window'
+    for (const rec of parked.values()) if (rec.win.webContents === wc) return 'shell:parked'
+    return wc.getType()
+  } catch { return 'unknown' }
+}
+
+function windowRole(w) {
+  if (w === win) return deskMode ? 'desk' : 'main'
+  if (w === agentWin) return 'agent'
+  for (const [name, o] of overlays) if (o.host === w) return `overlay:${name}`
+  return parkedWin(w) ? 'parked' : 'other'
+}
+
 async function call(method, params = {}, context = {}) {
+  const done = diag.commandLog(method, params, context, CODES)
+  try {
+    const result = await dispatch(method, params, context)
+    done(null, result)
+    return result
+  } catch (error) {
+    done(error)
+    throw error
+  }
+}
+
+async function dispatch(method, params, context) {
   if (previewMode && /^(?:components\.(?:apply|enable|revert|stage|create|bind|preview)|ui\.customize|ai\.|grants\.|sync\.|extensions\.|import\.|passwords\.|settings\.(?:set|run)$)/.test(method)) throw S.err('forbidden', 'Disposable previews cannot activate executable code or credentials')
   if (context.component && !context.hostManagement && /^(?:grants\.|sync\.|import\.|passwords\.|components\.(?:apply|enable|revert|bind|stage|create|remove|disable)|ui\.customize)/.test(method)) throw S.err('forbidden', 'This operation requires the explicitly granted host.manage capability')
   if (['components.apply', 'components.enable', 'components.revert'].includes(method)) {
@@ -2136,6 +2203,7 @@ function updateMenuItems() {
 }
 
 async function runGlobalShortcut(method, params) {
+  logger.info('global shortcut', { method })
   if (!win) await createWindow()
   const raised = await rpc('ui.raise')
   if (!raised.ok) return console.error(`Global shortcut could not raise Skiff: ${raised.error.message}`)
@@ -2184,7 +2252,7 @@ function buildMenu() {
       { label: 'Make Interface Smaller', click: () => zoomShell(win.webContents.getZoomLevel() - 0.5) },
       { label: 'Interface Actual Size', click: () => zoomShell(0) }
     ] },
-    { label: 'Shell', submenu: shells.map((name) => ({ label: name, type: 'radio', checked: name === state.settings.shell, click: () => rpc('ui.setShell', { name }) })) },
+    { label: 'Shell', submenu: shells.map((name) => ({ label: name === 'layer' ? 'layer (default)' : name === 'default' ? 'plain' : name, type: 'radio', checked: name === state.settings.shell, click: () => rpc('ui.setShell', { name }) })) },
     { label: 'Recovery', submenu: [
       { label: 'Use Safe Mode (keep tabs)', click: () => rpc('ui.safeMode', {}, { trusted: true }) },
       { label: 'Manage Components', click: () => showHostSurface(path.join(toolsDir, 'index.html'), { query: { section: 'components' } }) },
@@ -2195,6 +2263,33 @@ function buildMenu() {
     // Off macOS the windowMenu role carries Close on CmdOrCtrl+W, which would close the window instead of the tab.
     mac ? { role: 'windowMenu' } : { label: 'Window', submenu: [{ role: 'minimize' }] }
   ]))
+}
+
+// clearData deletes site data logically, but Chromium's leveldb logs keep the old bytes until they compact, and DIPS and
+// service worker records sit outside its reach. Before the session opens at startup, drop every file of the partition
+// except what the extensions own (their settings, state and IndexedDB).
+function purgeIncognitoFiles() {
+  try {
+    const dir = path.join(app.getPath('sessionData'), 'Partitions', S.INCOGNITO_PARTITION.replace(/^persist:/, ''))
+    const own = (name) => name.startsWith('chrome-extension_')
+    for (const name of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+      if (name === 'IndexedDB') {
+        for (const entry of fs.readdirSync(path.join(dir, name))) if (!own(entry)) fs.rmSync(path.join(dir, name, entry), { recursive: true, force: true })
+      } else if (!['Local Extension Settings', 'Extension State'].includes(name)) fs.rmSync(path.join(dir, name), { recursive: true, force: true })
+    }
+  } catch (e) { console.error(`Purging the incognito files failed: ${e.message}`) }
+}
+
+// Everything a site left in the incognito partition goes; only the extensions' own origins stay.
+let incognitoWipe = Promise.resolve()
+function wipeIncognito() {
+  return incognitoWipe = (async () => {
+    try {
+      const ses = session.fromPartition(S.INCOGNITO_PARTITION)
+      await ses.clearData({ excludeOrigins: extensions.ownOrigins() })
+      await Promise.all([ses.clearAuthCache(), ses.clearHostResolverCache()])
+    } catch (e) { console.error(`Wiping the incognito session failed: ${e.message}`) }
+  })()
 }
 
 const configuredSessions = new Set()
@@ -2273,6 +2368,7 @@ function startApi() {
   })
   server.listen(0, '127.0.0.1', () => {
     api = { port: server.address().port, token }
+    logger.info('api listening', { port: api.port })
     const file = path.join(dataDir, 'api.json')
     fs.rmSync(file, { force: true })
     fs.writeFileSync(file, JSON.stringify(api), { mode: 0o600 })
@@ -2284,6 +2380,10 @@ async function start() {
   state = loadState()
   // settings.set replaces this map; every session keeps the identity selected at startup.
   browserIdentity = state.settings.browserIdentity
+  {
+    const { shortcuts, globalShortcuts, ai: aiSettings, ...rest } = state.settings
+    logger.info('state loaded', { settings: { ...rest, shortcuts: Object.keys(shortcuts ?? {}), globalShortcuts: Object.keys(globalShortcuts ?? {}), ai: { agents: aiSettings?.agents?.map((agent) => agent.name), agent: aiSettings?.agent, model: aiSettings?.model, effort: aiSettings?.effort } }, tabs: state.tabs.length, spaces: state.spaces.length, safeMode, previewMode })
+  }
   const legacyShell = fs.existsSync(shellDir) ? shellDir : undefined
   access = createAccess({ state: () => state, changed, emit: pushAi, registry })
   transcripts = createTranscripts({ dir: path.join(dataDir, 'transcripts'), state: () => state, changed, emit: pushAi })
@@ -2325,6 +2425,8 @@ async function start() {
     }
   })
   getSession('persist:main')
+  purgeIncognitoFiles()
+  wipeIncognito()
   ai = createAi({ dir: path.join(dataDir, 'ai'), version: app.getVersion(), state: () => state, changed, favicon: F.storeIcon(faviconDir, 'https://skiff.invalid/agent.svg', Buffer.from(SPARKLE)), api: agentApi, revokeAccess: (selector) => access.revoke(selector), transcripts, pageText, pageGeneration: (id) => runtime.get(id)?.generation, push: pushAi, watching: looking })
   extensions.start()
   ipcMain.handle('skiff:call', async (e, method, params) => {
@@ -2354,7 +2456,7 @@ async function start() {
         return { ok: true, result: result ?? null }
       } catch (error) { return { ok: false, error: { code: error.code || 'forbidden', message: error.message } } }
     }
-    return rpc(method, params ?? undefined, { owner: source.owner, trusted: true })
+    return rpc(method, params ?? undefined, { owner: source.owner, trusted: true, surface: roleOf(e.sender) })
   })
   const pageTab = (e) => e.senderFrame && !e.senderFrame.parent && tabOfContents(e.sender.id)
   ipcMain.on('skiff:page-state', (e, payload) => {
@@ -2424,7 +2526,10 @@ const quitFlow = createQuit({
       }
     ].map((stop) => Promise.resolve().then(stop)))
     try { if (state) flush() }
-    finally { for (const result of results) if (result.status === 'rejected') console.error(result.reason) }
+    finally {
+      for (const result of results) if (result.status === 'rejected') console.error(result.reason)
+      await log.current()?.flush()
+    }
   }
 })
 
@@ -2455,6 +2560,9 @@ function startUpdates() {
 }
 
 app.on('login', createHttpAuth({ BrowserWindow, ipcMain, fallbackWindow: () => win }))
+
+diag.install({ electronApp: app, ipcMain, roleOf, windowRole })
+diag.startup({ electronApp: app, dataDir, logDir })
 
 if (app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => process.platform === 'darwin' || app.quit())

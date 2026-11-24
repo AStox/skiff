@@ -4,6 +4,7 @@ const crypto = require('node:crypto')
 const { spawn } = require('node:child_process')
 const S = require('./state')
 const { connect } = require('./acp')
+const log = require('./log').scope('ai')
 
 const TURNS = 200
 const LONG = 200000
@@ -146,6 +147,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
   // Ends the agent's process. With a message, every chat running on it or holding a session in it ends in that error and keeps its session id for session/load.
   function down(agent, p, message) {
     if (agent.proc !== p) return
+    log.info('agent down', { agent: agent.name, pid: p.child.pid, reason: message ? message.split('\n')[0].slice(0, 200) : 'stopped' })
     for (const c of chats.values()) if (c.agent === agent.name) release(c)
     Object.assign(agent, { proc: null, ready: null, spare: null, status: message ? 'error' : 'idle', error: message })
     p.rpc.close()
@@ -169,14 +171,17 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
   function launch(agent) {
     fs.mkdirSync(dir, { recursive: true })
     const child = spawn(loginShell(), ['-lc', agent.command], { cwd: dir, stdio: 'pipe', detached: true })
+    const started = Date.now()
+    log.info('agent spawn', { agent: agent.name, command: agent.command.trim().split(/\s+/).find((word) => !word.includes('='))?.split('/').pop(), cwd: dir, pid: child.pid })
     const p = { child, sessions: new Map(), http: false, auth: [] }
     let tail = ''
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (data) => {
       tail = (tail + data).slice(-2000)
+      for (const line of data.split('\n')) if (line.trim()) log.debug('agent stderr', { agent: agent.name, pid: child.pid, line: line.slice(0, 500) })
     })
-    child.on('error', (e) => down(agent, p, `Agent could not start: ${e.message}`))
-    child.on('close', (code, signal) => down(agent, p, `Agent exited with code ${code ?? signal}${tail.trim() && `\n${tail.trim()}`}`))
+    child.on('error', (e) => { log.error('agent process error', { agent: agent.name, pid: child.pid, err: e.stack }); down(agent, p, `Agent could not start: ${e.message}`) })
+    child.on('close', (code, signal) => { log.info('agent exit', { agent: agent.name, pid: child.pid, code, signal, ms: Date.now() - started }); down(agent, p, `Agent exited with code ${code ?? signal}${tail.trim() && `\n${tail.trim()}`}`) })
     p.exited = new Promise((resolve) => {
       child.on('close', resolve)
       child.on('error', resolve)
@@ -199,11 +204,12 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
       agent.loadSession = init?.agentCapabilities?.loadSession === true
       p.http = init?.agentCapabilities?.mcpCapabilities?.http === true
       p.auth = Array.isArray(init?.authMethods) ? init.authMethods : []
+      log.info('agent ready', { agent: agent.name, pid: child.pid, name: agent.info?.name, version: agent.info?.version, loadSession: agent.loadSession, http: p.http, authMethods: p.auth.length, ms: Date.now() - started })
       agent.status = 'ready'
       pushAgents()
       return p
     })()
-    agent.ready.catch((e) => e.closed || down(agent, p, `The agent could not start: ${e.message}`))
+    agent.ready.catch((e) => { if (!e.closed) log.error('agent initialize failed', { agent: agent.name, err: e.stack }); return e.closed || down(agent, p, `The agent could not start: ${e.message}`) })
     return agent.ready
   }
   const start = (agent) => halted || !currentAgent(agent) ? Promise.reject(stopped()) : agent.ready || launch(agent)
@@ -234,6 +240,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
   async function newSession(agent, p, c) {
     const created = await open(agent, p, 'session/new', {}, c)
     if (typeof created?.sessionId !== 'string') { if (c) release(c); throw new Error('session/new returned no sessionId') }
+    log.info('session new', { agent: agent.name, chatId: c?.id, sessionId: created.sessionId })
     return { p, sessionId: created.sessionId, configOptions: created.configOptions }
   }
 
@@ -249,12 +256,14 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
 
   // mode 'rebuild' turns the replayed history into turns; 'ignore' drops it because the chat already shows it.
   async function load(c, agent, p, mode) {
+    log.info('session load', { agent: agent.name, chatId: c.id, sessionId: c.sessionId, mode })
     p.sessions.set(c.sessionId, c)
     c.replay = mode
     try {
       const result = await open(agent, p, 'session/load', { sessionId: c.sessionId }, c)
       Object.assign(c, parse(agent, result?.configOptions), { proc: p })
     } catch (e) {
+      log.warn('session load failed', { agent: agent.name, chatId: c.id, sessionId: c.sessionId, err: e.message })
       p.sessions.delete(c.sessionId)
       throw e
     } finally {
@@ -341,11 +350,15 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
       recheckPage()
       if (page) user.context = { url: page.content.url, title: page.content.title }
       touch(c)
+      const t = Date.now()
+      log.info('session prompt', { agent: agent.name, chatId: c.id, sessionId: c.sessionId, length: text.length, page: Boolean(page) })
       const result = await rpc(agent, p, 'session/prompt', { sessionId: c.sessionId, prompt: [...(page ? [{ type: 'text', text: contextBlock(page.content) }] : []), { type: 'text', text }] })
+      log.info('session prompt done', { chatId: c.id, stopReason: str(result?.stopReason, 50) || 'end_turn', ms: Date.now() - t })
       finish(openOf(c) || reply, str(result?.stopReason, 50) || 'end_turn')
       c.status = 'ready'
       if (c.stopping) c.proc = null
     } catch (e) {
+      (e.closed ? log.warn : log.error)('session prompt failed', { agent: agent.name, chatId: c.id, err: e.stack })
       if (!currentAgent(agent)) return
       // A closed connection means the process went down, and down() ends the turn.
       const open = openOf(c)
@@ -404,17 +417,22 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
 
   function request(p, method, params, id) {
     const c = method === 'session/request_permission' && p.sessions.get(params?.sessionId)
-    if (!c || c.stopping || halted || c.status !== 'running') return p.rpc.respond(id, method === 'session/request_permission' ? { outcome: { outcome: 'cancelled' } } : Object.assign(new Error(`Method not found: ${method}`), { code: -32601 }))
+    if (!c || c.stopping || halted || c.status !== 'running') {
+      log.debug('agent request declined', { method, id })
+      return p.rpc.respond(id, method === 'session/request_permission' ? { outcome: { outcome: 'cancelled' } } : Object.assign(new Error(`Method not found: ${method}`), { code: -32601 }))
+    }
     if (c.permission) answer(c, { outcome: 'cancelled' })
     const call = S.isObject(params?.toolCall) ? params.toolCall : {}
     const options = (Array.isArray(params?.options) ? params.options : []).filter(S.isObject).slice(0, 20).map((o) => ({ optionId: str(o.optionId, 200), name: str(o.name, 200), kind: str(o.kind, 50) }))
     c.permission = { id, title: str(call.title, 500) || toolTurn(c, call.toolCallId)?.title || 'The agent asks for permission', options }
+    log.info('permission request', { chatId: c.id, id, toolKind: str(call.kind, 50), options: options.map((o) => o.kind) })
     c.asker = p
     touch(c)
   }
 
   function answer(c, outcome) {
     const { id } = c.permission
+    log.info('permission answered', { chatId: c.id, id, outcome: outcome.outcome })
     c.permission = null
     c.asker?.rpc.respond(id, { outcome })
     touch(c)
@@ -427,6 +445,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
     c.restorePending = true
     const oldTurns = c.turns
     c.turns = []
+    log.info('restore', { chatId: c.id, sessionId: c.sessionId })
     try {
       if (!agent) throw new Error(`No agent named ${c.agent}`)
       const p = await start(agent)
@@ -434,7 +453,8 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
       await load(c, agent, p, 'rebuild')
       c.recovery = null
       c.status = 'ready'
-    } catch {
+    } catch (e) {
+      log.warn('restore failed', { chatId: c.id, err: e?.message })
       if (halted) return
       if (c.stopping) { Object.assign(c, { status: 'ready', turns: oldTurns, proc: null }); return touch(c) }
       c.turns = oldTurns
@@ -495,10 +515,11 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
     const effort = choice(p, 'effort') ?? s.settings.ai.effort
     const source = p.tabId === undefined ? S.activeTab(s) : S.getTab(s, p.tabId)
     const id = `c${crypto.randomBytes(6).toString('hex')}`
-    const tab = S.createTab(s, { spaceId: source?.spaceId, parentId: source?.id }, Date.now(), { id, agent: name, title: p.text.trim().slice(0, 80) || 'New chat', favicon })
+    const tab = S.createTab(s, { spaceId: source?.spaceId, parentId: source?.id, ...(p.intent === true && { intent: { text: p.text.trim(), sent: 'ask', at: Date.now() } }) }, Date.now(), { id, agent: name, title: p.text.trim().slice(0, 80) || 'New chat', favicon })
     if (name) S.setSettings(s, { ai: { agent: name, model, effort } })
     changed()
     const c = newChat(id, tab.id, name, null)
+    log.info('chat new', { chatId: id, agent: name, length: p.text.length, model, effort })
     if (!name) {
       Object.assign(c, { status: 'setup', pending: p.text })
       touch(c)
@@ -549,6 +570,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
     const agent = agentOf(p.agent)
     if (!agent) throw bad(`No agent named ${p.agent}`)
     if (!agent.spare) {
+      log.debug('warm', { agent: agent.name })
       const spare = start(agent).then(async (proc) => {
         const made = await newSession(agent, proc)
         parse(agent, made.configOptions)
@@ -558,6 +580,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
       spare.catch((e) => {
         if (agent.spare === spare) agent.spare = null
         if (e.closed || agent.proc === null) return
+        log.warn('warm failed', { agent: agent.name, err: e.stack })
         Object.assign(agent, { status: 'error', error: e.message })
         pushAgents()
       })
@@ -567,6 +590,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
 
   function cancel(p) {
     const c = find(p)
+    log.info('cancel', { chatId: c.id, status: c.status })
     release(c)
     c.stopping = true
     if (c.status === 'running') {
@@ -591,6 +615,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
     for (const agent of [...agents.values()]) {
       if (configured().find((a) => a.name === agent.name)?.command === agent.command) continue
       revokeAccess({ owner: agent.name })
+      log.info('agent removed or changed', { agent: agent.name })
       if (agent.proc) down(agent, agent.proc, 'Agent stopped')
       for (const c of chats.values()) {
         if (c.agent !== agent.name) continue
@@ -609,6 +634,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
 
   function stop() {
     halted = true
+    log.info('stop', { chats: chats.size, agents: agents.size })
     for (const c of chats.values()) {
       release(c)
       c.stopping = true
@@ -661,7 +687,9 @@ async function handleMcp(message, { tools, version }) {
   const tool = tools.find((t) => t.name === params?.name)
   if (!tool) return error(-32602, `Unknown tool: ${params?.name}`)
   try {
+    const t = Date.now()
     const result = await tool.run(S.isObject(params.arguments) ? params.arguments : {})
+    log.debug('mcp tool call', { tool: tool.name, ms: Date.now() - t })
     // A picture (tabs.screenshot) goes as an image block, not as base64 text.
     if (S.isObject(result) && typeof result.mime === 'string' && result.mime.startsWith('image/') && typeof result.data === 'string') {
       const { data, ...rest } = result
@@ -669,6 +697,7 @@ async function handleMcp(message, { tools, version }) {
     }
     return ok({ content: [{ type: 'text', text: JSON.stringify(result ?? null) }] })
   } catch (e) {
+    log.warn('mcp tool failed', { tool: params.name, err: e.message })
     return ok({ content: [{ type: 'text', text: String(e.message || e) }], isError: true })
   }
 }

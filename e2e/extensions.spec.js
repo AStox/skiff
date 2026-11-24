@@ -175,4 +175,92 @@ test.describe('built in', () => {
       await blockedPage(skiff, 'restarted')
     })
   })
+
+  const requested = (skiff, query) => skiff.requests.some((url) => url.includes(query))
+  const killBackground = (skiff) => skiff.app.evaluate(({ webContents }) => {
+    process.kill(webContents.getAllWebContents().find((wc) => wc.getType() === 'backgroundPage').getOSProcessId(), 'SIGKILL')
+  })
+  const stateOf = async (skiff) => (await entryOf(skiff))?.state
+  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  test('page loads wait until the built-in is ready; a killed background page is reloaded by itself and no open tab reloads', async ({ skiff }) => {
+    await expect.poll(() => stateOf(skiff)).toBe('ready')
+    const { id, path: folder } = await entryOf(skiff)
+    await blockedPage(skiff, 'first')
+    await expect(await installsOf(skiff, id)).toHaveText('1')
+    // The extension now waits 4s before it says it listens for navigations: the window to watch the gate in.
+    fs.writeFileSync(path.join(folder, 'hold.json'), '{"ms": 4000}')
+
+    await test.step('a killed background page', async () => {
+      const open = await skiff.page('/ext/page?first')
+      const origin = await open.evaluate(() => performance.timeOrigin)
+      await killBackground(skiff)
+      await expect.poll(() => stateOf(skiff)).toBe('restarting')
+      await skiff.rpc('tabs.create', { url: `${skiff.origin}/ext/page?crash` })
+      await pause(1500)
+      expect(requested(skiff, 'crash')).toBe(false)
+      await expect.poll(() => stateOf(skiff), { timeout: 15000 }).toBe('ready')
+      await expect.poll(() => requested(skiff, 'crash')).toBe(true)
+      const page = await skiff.page('/ext/page?crash')
+      await expect.poll(() => dataset(page)).toMatchObject({ cs: 'ran', blocked: 'error' })
+      expect(await open.evaluate(() => performance.timeOrigin)).toBe(origin)
+      expect(await entryOf(skiff)).toMatchObject({ id, version: '1.0', error: '' })
+      await expect(await installsOf(skiff, id)).toHaveText('2')
+    })
+
+    await test.step('startup', async () => {
+      await skiff.restart()
+      await skiff.rpc('tabs.create', { url: `${skiff.origin}/ext/page?start` })
+      await pause(1500)
+      expect(requested(skiff, 'start')).toBe(false)
+      await expect.poll(() => requested(skiff, 'start'), { timeout: 15000 }).toBe(true)
+      const page = await skiff.page('/ext/page?start')
+      await expect.poll(() => dataset(page)).toMatchObject({ cs: 'ran', blocked: 'error' })
+      expect(await stateOf(skiff)).toBe('ready')
+    })
+  })
+
+  test('incognito runs the built-in extension and keeps nothing a site stored there after closing it or a restart', async ({ skiff }) => {
+    await expect.poll(() => stateOf(skiff)).toBe('ready')
+    const { id } = await entryOf(skiff)
+    const stored = (page) => page.evaluate(async () => ({ cookie: document.cookie, local: localStorage.getItem('secret'), databases: (await indexedDB.databases()).map((d) => d.name) }))
+    const plant = (page) => page.evaluate(() => new Promise((resolve, reject) => {
+      document.cookie = 'secret=1; path=/'
+      localStorage.setItem('secret', '1')
+      const request = indexedDB.open('secret-db', 1)
+      request.onupgradeneeded = () => request.result.createObjectStore('s')
+      request.onsuccess = () => { request.result.close(); resolve() }
+      request.onerror = () => reject(request.error)
+    }))
+    async function incognitoPage(query) {
+      const space = await skiff.rpc('incognito.open')
+      await skiff.rpc('tabs.create', { url: `${skiff.origin}/ext/page?${query}`, spaceId: space.id })
+      const page = await skiff.page(`/ext/page?${query}`)
+      await expect.poll(() => dataset(page)).toMatchObject({ cs: 'ran', blocked: 'error' })
+      return { space, page }
+    }
+    const empty = { cookie: '', local: null, databases: [] }
+
+    const first = await incognitoPage('private-one')
+    expect((await dataset(first.page)).unexpected).toBeUndefined()
+    expect(await stored(first.page)).toEqual(empty)
+    await plant(first.page)
+    expect(await stored(first.page)).toEqual({ cookie: 'secret=1', local: '1', databases: ['secret-db'] })
+    await expect(await installsOf(skiff, id)).toHaveText('1')
+
+    await test.step('closing the space wipes the site data and leaves the extension alone', async () => {
+      await skiff.rpc('spaces.remove', { id: first.space.id })
+      expect(await skiff.app.evaluate(({ session }) => session.fromPartition('persist:incognito').cookies.get({}))).toEqual([])
+      const again = await incognitoPage('private-two')
+      expect(await stored(again.page)).toEqual(empty)
+      await plant(again.page)
+    })
+
+    await test.step('a restart wipes what a missing close left, and the extension keeps its own storage', async () => {
+      await skiff.restart()
+      const after = await incognitoPage('private-three')
+      expect(await stored(after.page)).toEqual(empty)
+      await expect(await installsOf(skiff, id)).toHaveText('2')
+    })
+  })
 })

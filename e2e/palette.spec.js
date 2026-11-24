@@ -199,3 +199,153 @@ test('Cmd+L edits the active tab address, and the sidebar address opens the same
   await expect.poll(async () => (await skiff.state()).tabs.find((item) => item.id === tab.id).url).toContain('not%20a%20url%20at%20all')
   expect((await skiff.state()).tabs).toHaveLength(1)
 })
+
+const path = require('node:path')
+const agentCommand = (skiff) => `'${process.execPath}' '${path.join(__dirname, 'fake-agent.js')}' '${skiff.root}'`
+const connect = (skiff) => skiff.rpc('settings.set', { ai: { agents: [{ name: 'Fake', command: agentCommand(skiff) }] } })
+const newTab = async (skiff, known) => {
+  await expect.poll(async () => (await skiff.state()).tabs.some((tab) => !known.has(tab.id))).toBe(true)
+  return (await skiff.state()).tabs.find((tab) => !known.has(tab.id))
+}
+const typeAndEnter = async (skiff, bar, text) => {
+  await bar.keyboard.type(text)
+  await bar.keyboard.press('Enter')
+  await closed(skiff, bar)
+}
+
+test('the bar sends a question to the agent and plain words to a search, and the other row waits below', async ({ skiff }) => {
+  await connect(skiff)
+  const bar = await open(skiff)
+  for (const [text, first, second] of [
+    ['best pizza toronto', 'Search the web for best pizza toronto', 'Ask Fake'],
+    ['react useEffect cleanup', 'Search the web for react useEffect cleanup', 'Ask Fake'],
+    ['why is my build failing', 'Ask Fake', 'Search the web for why is my build failing'],
+    ['is rust faster than go?', 'Ask Fake', 'Search the web for is rust faster than go?']
+  ]) {
+    await bar.keyboard.type(text)
+    await expect(rows(bar).first().locator('.label')).toHaveText(first)
+    await expect(rows(bar).last().locator('.label')).toHaveText(second)
+    await input(bar).fill('')
+  }
+})
+
+// A desk shell replaces the window; Layer's Buoy card is the bar and each window's frame draws its ear.
+async function useLayer(skiff) {
+  const gone = skiff.shell.waitForEvent('close')
+  await skiff.shell.evaluate(() => { window.skiff.call('ui.setShell', { name: 'layer' }) })
+  await gone
+  await expect.poll(() => !skiff.shell.isClosed()).toBe(true)
+  await skiff.shell.waitForLoadState()
+  await expect.poll(() => skiff.app.context().pages().some((page) => page.url().endsWith('/buoy.html'))).toBe(true)
+}
+const frameOf = async (skiff, id) => {
+  const at = (page) => !page.isClosed() && page.url().endsWith(`/frame.html?tab=${id}`)
+  await expect.poll(() => skiff.app.context().pages().some(at)).toBe(true)
+  const frame = skiff.app.context().pages().find(at)
+  await frame.emulateMedia({ colorScheme: 'light' })
+  return frame
+}
+// The pill sits in the top inset a few pixels right of the ear (which glides into place first), clear of its buttons and inside the window.
+async function expectBesideEar(frame) {
+  const boxes = async () => ({ ear: await frame.locator('#ear').boundingBox(), offer: await frame.locator('#offer').boundingBox() })
+  const gap = async () => { const { ear, offer } = await boxes(); return offer.x - (ear.x + ear.width) }
+  await expect.poll(gap).toBeGreaterThanOrEqual(5.9)
+  expect(await gap()).toBeLessThan(7.1)
+  const { offer } = await boxes()
+  expect(offer.x + offer.width).toBeLessThanOrEqual(await frame.evaluate(() => innerWidth))
+  expect(offer.y).toBeGreaterThanOrEqual(0)
+  expect(offer.y + offer.height).toBeLessThanOrEqual(30)
+}
+
+test('Layer: a search that read like plain words offers the agent beside its ear, and one click asks it instead', async ({ skiff }) => {
+  await connect(skiff)
+  await skiff.rpc('settings.set', { searchUrl: `${skiff.origin}/search?q=%s` })
+  await useLayer(skiff)
+  const known = new Set((await skiff.state()).tabs.map((tab) => tab.id))
+  const bar = await open(skiff)
+  await typeAndEnter(skiff, bar, 'best pizza toronto')
+  const tab = await newTab(skiff, known)
+  expect(tab.url).toBe(`${skiff.origin}/search?q=best%20pizza%20toronto`)
+  expect(tab.intent).toMatchObject({ text: 'best pizza toronto', sent: 'search' })
+  const frame = await frameOf(skiff, tab.id)
+  await expect(frame.locator('#offer-go')).toHaveText('Meant to ask Fake?')
+  await expectBesideEar(frame)
+  await frame.locator('#offer-go').click()
+  await expect.poll(async () => (await skiff.state()).tabs.some((item) => item.id === tab.id)).toBe(false)
+  const after = (await skiff.state()).tabs.find((item) => item.chat)
+  expect(after.url).toMatch(/^skiff:\/\/chat\//)
+  expect(after.intent, 'A rerouted tab offers nothing back').toBeUndefined()
+  const chat = await skiff.chat(after.url.slice('skiff://chat/'.length))
+  await expect(chat.locator('#chat-name')).toHaveText('Fake')
+  await expect(chat.locator('body')).toContainText('best pizza toronto')
+  expect((await skiff.state()).archive.map((entry) => entry.id)).toContain(tab.id)
+})
+
+test('Layer: a question to the agent offers a search with the engine in use, and one click opens the results', async ({ skiff }) => {
+  await connect(skiff)
+  await useLayer(skiff)
+  const known = new Set((await skiff.state()).tabs.map((tab) => tab.id))
+  const bar = await open(skiff)
+  await typeAndEnter(skiff, bar, 'why is my build failing')
+  const tab = await newTab(skiff, known)
+  expect(tab.chat).toMatchObject({ agent: 'Fake' })
+  expect(tab.intent).toMatchObject({ text: 'why is my build failing', sent: 'ask' })
+  const frame = await frameOf(skiff, tab.id)
+  await expect(frame.locator('#offer-go')).toHaveText('Meant to search Google?')
+  await expectBesideEar(frame)
+  await frame.locator('#offer-go').click()
+  await expect.poll(async () => (await skiff.state()).tabs.map((item) => item.url)).toContain('https://www.google.com/search?q=why%20is%20my%20build%20failing')
+  expect((await skiff.state()).tabs.some((item) => item.id === tab.id)).toBe(false)
+  expect((await skiff.rpc('ai.chat', { chatId: tab.url.slice('skiff://chat/'.length) })).status).not.toBe('running')
+})
+
+test('Layer: the pill waits while hovered, fades out by itself, and its x dismisses it', async ({ skiff }) => {
+  test.setTimeout(60000)
+  await connect(skiff)
+  await skiff.rpc('settings.set', { searchUrl: `${skiff.origin}/search?q=%s` })
+  await useLayer(skiff)
+  const first = await skiff.rpc('tabs.create', { url: 'two words', intent: true })
+  const frame = await frameOf(skiff, first.id)
+  const offer = frame.locator('#offer')
+  await expect(offer).toBeVisible()
+  await frame.locator('#offer-go').hover()
+  await frame.waitForTimeout(9500)
+  await expect(offer, 'Hovering holds the clock past its eight seconds').toBeVisible()
+  await expect(offer).not.toHaveClass(/fading/)
+  await frame.mouse.move(400, 300)
+  await expect(offer).toBeHidden({ timeout: 12000 })
+  const second = await skiff.rpc('tabs.create', { url: 'three more words', intent: true })
+  const other = await frameOf(skiff, second.id)
+  await expect(other.locator('#offer')).toBeVisible()
+  await other.locator('#offer-x').click()
+  await expect(other.locator('#offer')).toBeHidden()
+  expect((await skiff.state()).tabs.map((tab) => tab.id)).toContain(second.id)
+  const third = await skiff.rpc('tabs.create', { url: 'four words here', intent: true })
+  await skiff.rpc('tabs.navigate', { id: third.id, url: `${skiff.origin}/first` })
+  expect((await skiff.state()).tabs.find((tab) => tab.id === third.id).intent).toBeUndefined()
+})
+
+test('the sidebar of the classic shell shows the same pill under a tab the bar just opened', async ({ skiff }) => {
+  await connect(skiff)
+  await skiff.rpc('settings.set', { searchUrl: `${skiff.origin}/search?q=%s` })
+  const known = new Set((await skiff.state()).tabs.map((tab) => tab.id))
+  const bar = await open(skiff)
+  await typeAndEnter(skiff, bar, 'best pizza toronto')
+  const tab = await newTab(skiff, known)
+  const pill = skiff.shell.locator(`li.row[data-tab-id="${tab.id}"] .offer-go`)
+  await expect(pill).toHaveText('Meant to ask Fake?')
+  await pill.click()
+  await expect.poll(async () => (await skiff.state()).tabs.some((item) => item.id === tab.id)).toBe(false)
+  const chat = (await skiff.state()).tabs.find((item) => item.chat)
+  await expect(skiff.shell.locator(`li.row[data-tab-id="${chat.id}"] .offer-go`)).toHaveCount(0)
+  await expect(skiff.shell.locator(`li.row[data-tab-id="${chat.id}"] .label`)).toContainText('best pizza toronto')
+})
+
+test('rerouting refuses a tab the bar did not open and never saves the intent', async ({ skiff }) => {
+  const plain = await skiff.rpc('tabs.create', { url: `${skiff.origin}/first` })
+  await expect(skiff.rpc('tabs.reroute', { id: plain.id })).rejects.toThrow(/not opened from the command bar/)
+  const searched = await skiff.rpc('tabs.create', { url: 'two words', intent: true })
+  expect((await skiff.state()).tabs.find((tab) => tab.id === searched.id).intent).toMatchObject({ text: 'two words', sent: 'search' })
+  await skiff.restart()
+  expect((await skiff.state()).tabs.find((tab) => tab.id === searched.id).intent).toBeUndefined()
+})

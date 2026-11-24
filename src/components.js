@@ -7,6 +7,7 @@ const { fork } = require('node:child_process')
 const { fileURLToPath } = require('node:url')
 const { AsyncLocalStorage } = require('node:async_hooks')
 const settingsCatalog = require('./settings-catalog')
+const log = require('./log').scope('components')
 const ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/
 const NAME = /^[a-zA-Z][a-zA-Z0-9_.-]*$/
 const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key)
@@ -439,6 +440,7 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
         granted(runtime, 'backend')
         const child = fork(path.join(__dirname, 'component-worker.js'), [], { detached: process.platform !== 'win32', stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, execArgv: [] })
         runtime.child = child
+        log.info('component backend spawn', { id, pid: child.pid })
         const ready = new Promise((resolve, reject) => { runtime.ready = { resolve, reject } })
         const workerCall = (name, params, context) => {
           assertLive(runtime)
@@ -494,7 +496,8 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
           }
         })
         child.on('error', (error) => runtime.ready.reject(error))
-        child.on('exit', () => {
+        child.on('exit', (code, signal) => {
+          log.info('component backend exit', { id, pid: child.pid, code, signal, unexpected: runtime.live })
           runtime.ready.reject(fail('Backend exited during activation'))
           if (runtime.live) { record(id).error = 'Backend exited unexpectedly'; deactivate(id).then(save).catch((error) => { record(id).error = error.message; save() }) }
         })
@@ -505,7 +508,7 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
         runtime.dispose = typeof result === 'function' ? result : result?.dispose?.bind(result)
       }
       return runtime
-    } catch (error) { await deactivate(id); throw error }
+    } catch (error) { log.error('component activation failed', { id, err: error.stack }); await deactivate(id); throw error }
   }
   function check({ id, path: directory } = {}) {
     try {
@@ -569,6 +572,7 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
     if (current !== expectedRevision) throw fail('Approved component snapshot changed; review it again', 'cancelled')
   }
   async function restoreAfterFailure(id, previous, properties, error) {
+    log.error('component change failed, rolling back', { id, err: error.stack })
     let cleanupError
     try { await deactivate(id) } catch (cleanup) { cleanupError = cleanup }
     const item = record(id)
@@ -721,6 +725,7 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
     if (started && nextSafeMode === safeMode) return list()
     if (started) await stop()
     safeMode = nextSafeMode
+    log.info('components start', { safeMode })
     fs.mkdirSync(root, { recursive: true })
     if (fs.existsSync(storeFile)) {
       try {
@@ -743,6 +748,7 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
         }
         store = parsed
       } catch (error) {
+        log.error('component composition load failed', { safeMode, err: error.message })
         if (!safeMode) throw fail(`Component composition could not be loaded; restart with --safe-mode. ${error.message}`)
         const backup = path.join(root, 'recovery', `composition-${crypto.randomUUID()}.json`)
         fs.mkdirSync(path.dirname(backup), { recursive: true })
@@ -965,12 +971,14 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
   }, context) }
   async function stop() {
     await queue
+    log.info('components stop', { active: active.size })
     const errors = []
     for (const id of [...active.keys()]) {
       try { await deactivate(id) }
       catch (error) { errors.push(error) }
     }
     started = false
+    if (errors.length) log.error('component shutdown failed', { errors: errors.map((error) => error.message) })
     if (errors.length) throw new AggregateError(errors, `Component shutdown failed: ${errors.map((error) => error.message).join('; ')}`)
   }
   function register(target = registry) {

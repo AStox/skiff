@@ -120,6 +120,16 @@ input { caret-color: var(--ink); }
 .row[data-depth] .row-main::before { content: ''; position: absolute; top: -3px; bottom: 0; left: 14px; width: calc(var(--depth) * 14px); background: repeating-linear-gradient(to right, var(--line) 0 1px, transparent 1px 14px); pointer-events: none; }
 .row.current .row-main::before { opacity: .3; }
 .row .icon-btn { width: 25px; min-width: 25px; min-height: 28px; }
+/* A tab the bar just opened offers the other thing to do with its text, on a line of its own under the row. */
+.row.offered { flex-wrap: wrap; }
+.offer-line { flex: 0 0 100%; min-width: 0; padding: 0 6px 6px 34px; }
+.offer { display: inline-flex; align-items: center; max-width: 100%; height: 22px; border-radius: 11px; background: var(--bg); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); font-size: 12px; font-weight: 550; line-height: 1; }
+.offer-go { min-width: 0; height: 22px; padding: 0 3px 0 9px; border-radius: 11px 0 0 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.offer-x { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 0 11px 11px 0; color: var(--soft); }
+.offer-x .icon { width: 10px; height: 10px; stroke-width: 3.2; }
+.offer-go:hover, .offer-x:hover { background: var(--hover); color: var(--ink); }
+.offer.fading { animation: offer-fade 600ms linear forwards; }
+@keyframes offer-fade { to { opacity: 0; } }
 .current .row-main > .icon, .current .tile-main > .icon, .row.current .icon-btn { color: inherit; }
 .row.current .icon-btn:enabled:hover, .row.current .icon-btn:enabled:active { background: color-mix(in srgb, var(--bg) 18%, var(--ink)); color: var(--bg); }
 .current .favicon.letter { background: color-mix(in srgb, var(--bg) 18%, var(--ink)); color: var(--bg); }

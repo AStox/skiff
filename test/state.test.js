@@ -126,7 +126,7 @@ test('the incognito space is temporary: nothing in it is archived, moved across 
   const space = S.openIncognito(s)
   assert.equal(S.openIncognito(s), space)
   assert.deepEqual([s.activeSpaceId, space.incognito, space.name], [space.id, true, 'Incognito'])
-  assert.match(space.sessionPartition, /^incognito-/)
+  assert.equal(space.sessionPartition, 'persist:incognito', 'persistent, so the blocker can run in it')
   const [a, b] = ['a', 'b'].map((x) => S.createTab(s, { url: `${x}.example` }, 0))
   assert.equal(a.sessionPartition, space.sessionPartition)
   S.setCollapsed(s, { folder: 'Docs', collapsed: true })
@@ -246,6 +246,13 @@ test('resolveInput turns addresses into URLs and everything else into a search',
   assert.equal(S.resolveInput('skiff', search), 'https://www.google.com/search?q=skiff')
 })
 
+test('a profile with no saved shell starts on Layer and one that saved a shell keeps it', () => {
+  assert.equal(S.load().settings.shell, 'layer')
+  assert.equal(S.load({ settings: { searchUrl: 'https://kagi.com/search?q=%s' } }).settings.shell, 'layer')
+  assert.equal(S.load({ settings: { shell: 'default' } }).settings.shell, 'default')
+  assert.equal(S.load({ settings: { shell: 'quiet' } }).settings.shell, 'quiet')
+})
+
 test('search defaults to Google and an old saved DuckDuckGo default moves to Google once', () => {
   const ddg = 'https://duckduckgo.com/?q=%s'
   const google = 'https://www.google.com/search?q=%s'
@@ -303,6 +310,17 @@ test('closing a pinned or favorite tab keeps it and shows the most recent unpinn
   }
   assert.deepEqual(ids(s.tabs), [recent.id, stale.id, pinned.id, fav.id])
   assert.equal(s.archive.length, 0)
+})
+
+test('closing the last ordinary tab never brings a favorite or pinned tab forward', () => {
+  const s = S.load()
+  const home = s.activeSpaceId
+  const [fav, pinned, tab] = ['fav', 'pinned', 'tab'].map((x) => S.createTab(s, { url: `${x}.example` }, 0))
+  S.setFavorite(s, { id: fav.id, favorite: true }, 0)
+  S.setPinned(s, { id: pinned.id, pinned: true }, 0)
+  S.activateTab(s, { id: tab.id }, 1)
+  assert.deepEqual(S.closeTab(s, {}, 2), { archived: tab.id })
+  assert.equal(s.activeTabBySpace[home], undefined)
 })
 
 test('moving spaces changes their order without moving tabs, sessions or the active selection', () => {
@@ -1157,6 +1175,12 @@ test('closing the active tab never lands on an agent tab, and an agent tab witho
   S.closeTab(s, { id: a.id }, 5)
   assert.equal(s.activeTabBySpace[s.activeSpaceId], b.id)
   S.closeTab(s, { id: b.id }, 6)
+  assert.equal(s.activeTabBySpace[s.activeSpaceId], undefined)
+  // With a favorite and an agent tab left, closing the last ordinary tab leaves none active.
+  const fav = S.createTab(s, { url: 'fav.example', activate: false }, 7)
+  S.setFavorite(s, { id: fav.id, favorite: true }, 7)
+  const c = S.createTab(s, { url: 'c.example' }, 8)
+  S.closeTab(s, { id: c.id }, 9)
   assert.equal(s.activeTabBySpace[s.activeSpaceId], undefined)
   // Made where there was no desk, it is still not a window when the desk comes.
   s.deskSize = { width: 1200, height: 800 }

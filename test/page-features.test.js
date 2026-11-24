@@ -231,6 +231,7 @@ test('reader and page scalars are bounded inside the isolated world before reach
   const module = { exports: {} }
   const load = (name) => {
     if (name === './state') return S
+    if (name === './log') return require('../src/log')
     if (name === 'node:fs') return { readFileSync: (file, ...args) => file === readabilityPath ? 'function Readability() {}; Readability.prototype.parse = () => globalThis.articleFixture;' : fs.readFileSync(file, ...args) }
     throw new Error(`Unexpected dependency: ${name}`)
   }

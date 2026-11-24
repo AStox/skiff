@@ -1,6 +1,7 @@
 'use strict'
 
 const path = require('node:path')
+const log = require('./log').scope('http-auth')
 
 // Electron cancels an HTTP auth challenge unless 'login' is handled; this shows a small modal sign-in window per challenge.
 // Credentials go straight from the dialog to the callback: never stored, never logged.
@@ -29,12 +30,16 @@ function createHttpAuth({ BrowserWindow, ipcMain, fallbackWindow }) {
       const dwc = dialog.webContents
       const id = dwc.id
       let done = false
+      const t = Date.now()
+      const where = { host: authInfo.host, isProxy: Boolean(authInfo.isProxy) }
+      log.info('auth prompted', where)
       const settle = (result) => {
         if (done) return
         done = true
         dialogs.delete(id)
         wc?.removeListener('destroyed', onGone)
         if (!dialog.isDestroyed()) dialog.destroy()
+        log.info(result ? 'auth answered' : 'auth cancelled', { ...where, ms: Date.now() - t })
         resolve(result)
       }
       const onGone = () => settle(null)
@@ -46,7 +51,7 @@ function createHttpAuth({ BrowserWindow, ipcMain, fallbackWindow }) {
       dwc.setWindowOpenHandler(() => ({ action: 'deny' }))
       const query = { host: authInfo.port && ![80, 443].includes(authInfo.port) ? `${authInfo.host}:${authInfo.port}` : authInfo.host, realm: authInfo.realm || '' }
       if (authInfo.isProxy) query.proxy = '1'
-      dialog.loadFile(path.join(__dirname, 'http-auth.html'), { query }).catch(() => settle(null))
+      dialog.loadFile(path.join(__dirname, 'http-auth.html'), { query }).catch((e) => { log.error('auth dialog failed to load', { ...where, err: e?.message }); settle(null) })
     })
   }
 
@@ -54,9 +59,10 @@ function createHttpAuth({ BrowserWindow, ipcMain, fallbackWindow }) {
   let queue = Promise.resolve()
   return function onLogin(event, webContents, _details, authInfo, callback) {
     event.preventDefault()
+    log.info('auth requested', { host: authInfo.host, isProxy: Boolean(authInfo.isProxy) })
     queue = queue.then(() => prompt(webContents, authInfo)).then(
       (result) => result ? callback(result.username, result.password) : callback(),
-      () => callback()
+      (e) => { log.error('auth prompt failed', { err: e?.stack }); callback() }
     )
   }
 }

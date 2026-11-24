@@ -562,7 +562,7 @@ function panel(space) {
     if (event.key === 'Escape') { name.value = space.name; name.blur() }
   })
   const shell = h('select', { id: 'shell', onchange: () => call('ui.setShell', { name: shell.value }) },
-    state.shells.map((name) => h('option', { value: name, selected: name === state.settings.shell }, name)))
+    state.shells.map((name) => h('option', { value: name, selected: name === state.settings.shell }, name === 'layer' ? 'layer (default)' : name === 'default' ? 'plain' : name)))
   const preset = SEARCH_ENGINES.find((engine) => engine.url === state.settings.searchUrl)
   const search = h('select', { id: 'search-engine', onchange: () => call('settings.set', { searchUrl: search.value }) },
     !preset && h('option', { value: state.settings.searchUrl, selected: true, disabled: true }, 'Custom'),
@@ -614,14 +614,14 @@ async function openExtensionPopup() {
   call('extensions.popup', { id: entry.id, bounds: popupBounds() })
 }
 
-const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', failed: 'Failed' }
+const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', restarting: 'Restarting…', failed: 'Failed' }
 
 function extensionRow(ext) {
   const failed = ext.builtin && ext.state === 'failed'
   return h('li', { class: 'ext' },
     h('div', { class: 'ext-head' },
       h('span', { class: 'label', title: ext.description || null }, ext.name),
-      ext.version ? h('span', { class: 'mono ext-version' }, `[${ext.version}]`) : h('span', { class: 'ext-version' }, STATE_WORDS[ext.state] || '')),
+      ext.version && ext.state !== 'restarting' ? h('span', { class: 'mono ext-version' }, `[${ext.version}]`) : h('span', { class: 'ext-version' }, STATE_WORDS[ext.state] || '')),
     h('div', { class: 'ext-actions' },
       h('button', { class: 'text-btn', disabled: !ext.popup, onclick: () => call('extensions.popup', { id: ext.id, bounds: popupBounds() }) }, 'Panel'),
       h('button', { class: 'text-btn', disabled: !ext.options, onclick: () => call('extensions.open', { id: ext.id }) }, 'Settings'),

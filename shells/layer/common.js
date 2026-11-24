@@ -3,6 +3,20 @@
 const PLACEHOLDER = 'Search or enter address'
 const HOST = /^(localhost|\[[0-9a-f:]+\]|[\w-]+(\.[\w-]+)+)(:\d+)?([/?#].*)?$/i
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i
+// Whether text typed in the bar reads as a question or request for the agent rather than words to search for; local and synchronous, since it runs on every keystroke.
+const ASK_LEAD = new Set(('who what when where why how which whose whom is are am was were do does did can could should would will shall may might explain write summarize summarise tell help give make show compare translate draft rewrite describe suggest recommend plan').split(' '))
+const ASK_SELF = new Set(['i', "i'm", 'me', 'my', 'you', 'your', 'we', 'our', 'us'])
+const ASK_FUNCTION = new Set('the a an is are was of to for in on with and that this it be from by as at'.split(' '))
+function looksLikeQuestion(text) {
+  const t = text.trim()
+  if (!/\s/.test(t)) return false
+  if (t.endsWith('?')) return true
+  const words = t.split(/\s+/).map((w) => w.toLowerCase().replace(/’/g, "'").replace(/^[^\w']+|[^\w']+$/g, ''))
+  if (words.length >= 3 && ASK_LEAD.has(words[0])) return true
+  if (words.some((w) => ASK_SELF.has(w))) return true
+  if (words.length >= 5 && words.filter((w) => ASK_FUNCTION.has(w)).length >= 2) return true
+  return words.length >= 8
+}
 const SITES = [
   { host: 'google.com', name: 'Google', url: 'https://www.google.com', search: 'https://www.google.com/search?q=%s' },
   { host: 'maps.google.com', name: 'Google Maps', url: 'https://www.google.com/maps', search: 'https://www.google.com/maps/search/%s' },
@@ -269,6 +283,23 @@ function earNatural(title) {
 }
 const earTitle = (tab) => tab.title || hostOf(tab.url) || 'New tab'
 
+/* ---------- the offer on a tab the bar just opened: do the other thing with the same text (tabs.reroute) ---------- */
+
+const OFFER_LIFE = 8000
+const OFFER_FADE = 600
+// The pill's words, or null for a tab with no offer.
+function offerLabel(state, tab) {
+  if (!tab.intent) return null
+  if (tab.intent.sent === 'ask') {
+    const engine = SEARCH_ENGINES.find((e) => e.url === state.settings.searchUrl)
+    return `Meant to search ${engine ? engine.name : hostOf(state.settings.searchUrl) || 'the web'}?`
+  }
+  const { agent, agents } = state.settings.ai
+  return `Meant to ask ${agent || agents[0]?.name || 'an agent'}?`
+}
+// Milliseconds the offer has left; paused is how long hovering held it.
+const offerLeft = (tab, paused = 0) => OFFER_LIFE - (Date.now() - tab.intent.at - paused)
+
 // span: [left, right] of the top edge; occluders: [left, right] of whatever covers the ear's row. The leftmost free stretch that takes the
 // whole ear wins, else the widest one, the ear shrunk to it, else none. Returns {x, width, room}, room being the free stretch from x.
 function earSlot(span, occluders, natural, min = EAR_MIN) {
@@ -288,7 +319,7 @@ function earSlot(span, occluders, natural, min = EAR_MIN) {
   return { x: widest[0], width, room: width }
 }
 
-// windows: back to front, {id, rect, natural, slot?}; a given slot (the window being dragged) is kept. fixed: rects always on top (the Buoy).
+// windows: back to front, {id, rect, natural, after?, slot?}, after being room kept free beside the ear for its offer; a given slot (the window being dragged) is kept. fixed: rects always on top (the Buoy).
 // Front ears are placed first, so each ear dodges the windows, ears, Buoy and panel drawn above it. Returns {id: slot or null}.
 function earLayout(windows, fixed = [], deskWidth = Infinity) {
   // The ring reaches past a page on three sides, not over its top, where the ears stand: a window stacked exactly on another must not hide its ear.
@@ -305,7 +336,7 @@ function earLayout(windows, fixed = [], deskWidth = Infinity) {
     }
     slots[w.id] = slot
     above.push(grow(r, EAR_RIM))
-    if (slot) above.push({ x: slot.x, y: top, width: slot.width, height: EAR_HEIGHT })
+    if (slot) above.push({ x: slot.x, y: top, width: slot.width + (w.after || 0), height: EAR_HEIGHT })
   }
   return slots
 }

@@ -565,7 +565,7 @@ function panel(space) {
     if (event.key === 'Escape') { name.value = space.name; name.blur() }
   })
   const shell = h('select', { id: 'shell', onchange: () => call('ui.setShell', { name: shell.value }) },
-    state.shells.map((name) => h('option', { value: name, selected: name === state.settings.shell }, name)))
+    state.shells.map((name) => h('option', { value: name, selected: name === state.settings.shell }, name === 'layer' ? 'layer (default)' : name === 'default' ? 'plain' : name)))
   const preset = SEARCH_ENGINES.find((engine) => engine.url === state.settings.searchUrl)
   const search = h('select', { id: 'search-engine', onchange: () => call('settings.set', { searchUrl: search.value }) },
     !preset && h('option', { value: state.settings.searchUrl, selected: true, disabled: true }, 'Custom'),
@@ -601,14 +601,14 @@ function panel(space) {
   ]
 }
 
-const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', failed: 'Failed' }
+const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', restarting: 'Restarting…', failed: 'Failed' }
 
 function extensionRow(entry) {
   const failed = entry.builtin && entry.state === 'failed'
   return h('li', { class: 'row extension', 'data-extension-id': entry.id },
     h('div', { class: 'extension-head' },
       h('span', { class: 'label', title: entry.name }, entry.name),
-      h('span', { class: 'mono' }, entry.version || STATE_WORDS[entry.state] || '')),
+      h('span', { class: 'mono' }, (entry.state === 'restarting' ? '' : entry.version) || STATE_WORDS[entry.state] || '')),
     h('div', { class: 'extension-actions' },
       h('button', { class: 'text-btn pill', disabled: !entry.popup, 'aria-label': `${entry.name} panel`, onclick: () => call('extensions.popup', { id: entry.id, bounds: popupBounds() }) }, 'Panel'),
       h('button', { class: 'text-btn pill', disabled: !entry.options, 'aria-label': `${entry.name} settings`, onclick: () => call('extensions.open', { id: entry.id }) }, 'Settings'),

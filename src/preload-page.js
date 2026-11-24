@@ -4,6 +4,19 @@
 // existing swipe and desk-background drag gestures below.
 const { ipcRenderer, webFrame } = require('electron')
 
+// Errors the page itself raises, for the main-process log; capped so a looping page stays cheap.
+{
+  let sent = 0, windowStart = 0
+  const send = (kind, payload) => {
+    const now = Date.now()
+    if (now - windowStart > 1000) { windowStart = now; sent = 0 }
+    if (++sent > 10) return
+    try { ipcRenderer.send('skiff:renderer-error', { kind, url: location.href.slice(0, 2048), ...payload }) } catch {}
+  }
+  addEventListener('error', (e) => { try { send('error', { message: e.message, source: e.filename, line: e.lineno, column: e.colno, stack: e.error?.stack }) } catch {} })
+  addEventListener('unhandledrejection', (e) => { try { send('unhandledrejection', { message: String(e.reason?.message ?? e.reason), stack: e.reason?.stack }) } catch {} })
+}
+
 // Page CSS must not create native window drag regions through sibling views.
 // User-origin rules override author !important, including closed shadow roots.
 webFrame.insertCSS(`

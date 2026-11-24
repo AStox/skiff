@@ -58,7 +58,8 @@ for (const theme of ['light', 'dark']) {
 test('switching shells from Settings closes old overlays and survives a restart', async ({ skiff }) => {
   await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
   await skiff.page('/one')
-  expect((await skiff.state()).shells).toEqual(['default', ...shells.sort()])
+  const ordered = ['layer', 'default', ...shells.filter((name) => name !== 'layer').sort()]
+  expect((await skiff.state()).shells).toEqual(ordered)
   await switchShell(skiff, 'quiet')
   // The quiet shell rests on a pill overlay over the page and opens its sidebar as another; a switch while it is up must drop that overlay with the shell.
   await expect.poll(() => overlayUrls(skiff)).toEqual([expect.stringMatching(/\/pill\.html$/)])
@@ -84,13 +85,30 @@ test('switching shells from Settings closes old overlays and survives a restart'
   await expect(skiff.shell.locator('#dots .dot').first()).toHaveText(/^home$/i)
   // The menu is the way back when a shell's own settings are unreachable.
   const menuItems = () => skiff.app.evaluate(({ Menu }) => Menu.getApplicationMenu().items.find((item) => item.label === 'Shell').submenu.items.map((item) => [item.label, item.checked]))
-  expect(await menuItems()).toEqual(['default', ...shells].map((name) => [name, name === 'ledger']))
+  const label = (name) => name === 'layer' ? 'layer (default)' : name === 'default' ? 'plain' : name
+  expect(await menuItems()).toEqual(ordered.map((name) => [label(name), name === 'ledger']))
   const reloadedByMenu = skiff.shell.waitForEvent('load')
   await skiff.app.evaluate(({ Menu }) => Menu.getApplicationMenu().items.find((item) => item.label === 'Shell').submenu.items.find((item) => item.label === 'lacquer').click())
   await reloadedByMenu
   expect((await skiff.state()).settings.shell).toBe('lacquer')
   expect((await menuItems()).find(([name]) => name === 'lacquer')[1]).toBe(true)
   expect(await skiff.shell.evaluate(() => window.skiff.call('ui.setShell', { name: 'nope' }).then(() => 'ok', (error) => error.message))).toMatch(/No shell named nope/)
+})
+
+test.describe('a profile with no saved shell', () => {
+  test.use({ fixtureOptions: { shell: null } })
+  test('opens in Layer, and ui.resetShell keeps it there', async ({ skiff }) => {
+    const buoy = () => skiff.app.context().pages().some((page) => !page.isClosed() && page.url().endsWith('/buoy.html'))
+    expect((await skiff.state()).settings.shell).toBe('layer')
+    expect((await skiff.rpc('ui.shellPath')).path).toBe(path.join(shellsDir, 'layer'))
+    await expect.poll(buoy).toBe(true)
+    await skiff.rpc('ui.resetShell')
+    expect((await skiff.state()).settings.shell).toBe('layer')
+    await expect.poll(buoy).toBe(true)
+    await skiff.restart()
+    expect((await skiff.state()).settings.shell).toBe('layer')
+    await expect.poll(buoy).toBe(true)
+  })
 })
 
 test('the quiet shell keeps its pill over the page, follows a resize and hands the keyboard back', async ({ skiff }) => {

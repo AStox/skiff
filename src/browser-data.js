@@ -4,6 +4,9 @@ const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
 const os = require('node:os')
+const log = require('./log').scope('browser-data')
+const dlog = require('./log').scope('downloads')
+const plog = require('./log').scope('permissions')
 
 const DAY = 86400000
 const OWNER = 'stock.browser-data'
@@ -15,6 +18,7 @@ const permissionNames = {
 }
 const error = (code, message) => Object.assign(new Error(message), { code })
 const originOf = (url) => { try { const u = new URL(url); return ['http:', 'https:'].includes(u.protocol) ? u.origin : null } catch { return null } }
+const hostOf = (url) => { try { return new URL(url).host } catch { return '' } }
 const keyOf = (partition, origin, permission) => JSON.stringify([partition, origin, permission])
 const clone = (value) => structuredClone(value)
 const string = { type: 'string', minLength: 1 }
@@ -70,7 +74,7 @@ function createBrowserData({ dir, state, changed = () => {}, emit = () => {}, op
   function notify(topic) {
     if (stopped) return
     if (!timer) {
-      timer = setTimeout(() => { try { flush() } catch (e) { emit('browser-data-error', { message: e.message }) } }, 250)
+      timer = setTimeout(() => { try { flush() } catch (e) { log.error('flush failed', { err: e.stack }); emit('browser-data-error', { message: e.message }) } }, 250)
       timer.unref?.()
     }
     // Event payloads deliberately contain no private URLs or filenames.
@@ -137,6 +141,7 @@ function createBrowserData({ dir, state, changed = () => {}, emit = () => {}, op
     const retry = index < 0 ? null : retries.splice(index, 1)[0]
     const source = retry?.source || sourceOf(wc, partition, item, frame)
     const row = { ...source, id: crypto.randomUUID(), url, filename: path.basename(item.getFilename()), path: item.getSavePath() || '', state: 'progressing', receivedBytes: item.getReceivedBytes(), totalBytes: item.getTotalBytes(), startedAt: Date.now(), updatedAt: Date.now(), ...(retry && { retryOf: retry.id }) }
+    dlog.info('download start', { id: row.id, filename: row.filename, host: hostOf(url), totalBytes: row.totalBytes, partition, retry: Boolean(retry) })
     try {
       const directory = settings().downloadDirectory || getDownloadDirectory()
       if (source.private || settings().downloadAskWhere !== false) {
@@ -147,6 +152,7 @@ function createBrowserData({ dir, state, changed = () => {}, emit = () => {}, op
         item.setSavePath(uniquePath(directory, row.filename))
       }
     } catch (e) {
+      dlog.warn('download destination failed', { id: row.id, err: e.message })
       row.state = 'cancelled'
       row.error = `Could not prepare download destination: ${e.message}`
       data.downloads.push(row)
@@ -156,6 +162,7 @@ function createBrowserData({ dir, state, changed = () => {}, emit = () => {}, op
     }
     row.path = item.getSavePath() || row.path
     data.downloads.push(row)
+    let step = 0
     const update = (_event, status) => {
       if (stopped) return
       row.state = status === 'progressing' && item.isPaused?.() ? 'paused' : status
@@ -163,10 +170,15 @@ function createBrowserData({ dir, state, changed = () => {}, emit = () => {}, op
       row.totalBytes = item.getTotalBytes()
       row.path = item.getSavePath() || row.path
       row.updatedAt = Date.now()
+      if (row.totalBytes > 0 && status === 'progressing') {
+        const quarter = Math.floor(row.receivedBytes * 4 / row.totalBytes)
+        if (quarter > step && quarter < 4) { step = quarter; dlog.debug('download progress', { id: row.id, percent: quarter * 25, receivedBytes: row.receivedBytes, totalBytes: row.totalBytes }) }
+      }
       notify('downloads')
     }
     const done = (_event, status) => {
       liveDownloads.delete(row.id)
+      dlog.info('download done', { id: row.id, state: status, savePath: path.basename(item.getSavePath() || ''), receivedBytes: item.getReceivedBytes(), totalBytes: item.getTotalBytes(), ms: Date.now() - row.startedAt })
       item.removeListener('updated', update)
       update(_event, status)
     }
@@ -205,19 +217,22 @@ function createBrowserData({ dir, state, changed = () => {}, emit = () => {}, op
   function requestPermission(partition, wc, permission, callback, details = {}) {
     const topURL = wc?.getURL?.()
     const origin = originOf(Object.hasOwn(details, 'requestingUrl') ? details.requestingUrl : topURL)
+    const host = hostOf(origin)
+    const outcome = (granted, by) => plog.info('permission request', { permission, host, partition, granted, by })
     const reply = (allow) => {
       if (allow && ['media', 'display-capture'].includes(permission)) emit('browser-permission-granted', { tabId: contents.get(wc)?.tab.id || null, permission })
       callback(allow)
     }
-    if (stopped || !origin || !Object.hasOwn(permissionNames, permission)) { callback(false); return }
+    if (stopped || !origin || !Object.hasOwn(permissionNames, permission)) { outcome(false, stopped ? 'stopped' : !origin ? 'no-origin' : 'unsupported'); callback(false); return }
     const grant = grantFor(partition, origin, permission)
     if (grant) {
+      outcome(grant.decision === 'allow', `stored-${grant.lifetime}`)
       if (grant.lifetime === 'once') removeRows('permissions', (r) => r === grant)
       reply(grant.decision === 'allow')
       return
     }
-    if (automatic.has(permission)) { callback(true); return }
-    if (!dialog?.showMessageBox || !wc || wc.isDestroyed?.()) { callback(false); return }
+    if (automatic.has(permission)) { outcome(true, 'automatic'); callback(true); return }
+    if (!dialog?.showMessageBox || !wc || wc.isDestroyed?.()) { outcome(false, 'no-dialog'); callback(false); return }
     const id = crypto.randomUUID()
     const request = { id, partition, origin, permission, tabId: contents.get(wc)?.tab.id || null }
     // Electron supplies a URL, not a requesting-frame ID. Duplicate-URL frames
@@ -225,10 +240,11 @@ function createBrowserData({ dir, state, changed = () => {}, emit = () => {}, op
     const requestFrames = details.isMainFrame === false
       ? (wc.mainFrame?.framesInSubtree || []).filter((frame) => frame !== wc.mainFrame && frame.url === details.requestingUrl)
       : []
-    let finished = false
+    let finished = false, by = 'dismissed'
     const finish = (allow) => {
       if (finished) return
       finished = true
+      outcome(!!allow, by)
       pending.delete(id)
       wc.removeListener?.('destroyed', deny)
       wc.removeListener?.('did-start-navigation', navigate)
@@ -253,6 +269,7 @@ function createBrowserData({ dir, state, changed = () => {}, emit = () => {}, op
     wc.once?.('destroyed', deny)
     wc.on?.('did-start-navigation', navigate)
     notify('permissions')
+    plog.info('permission prompt', { permission, host, partition })
     const options = {
       type: 'question', message: `${origin} wants to ${permissionNames[permission]}`,
       detail: `Profile: ${partition}${privatePartition(partition) ? '\nPrivate browsing: decisions will not be saved.' : ''}\nOnce applies to this request. Session lasts until quit. Remember persists for this profile and origin. Reset/revoke affects future requests.`,
@@ -262,6 +279,7 @@ function createBrowserData({ dir, state, changed = () => {}, emit = () => {}, op
     Promise.resolve().then(() => window ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options)).then(({ response }) => {
       if (finished || stopped || wc.isDestroyed?.() || wc.getURL?.() !== topURL) return finish(false)
       if (requestFrames.some((frame) => frame.isDestroyed?.() || frame.url !== details.requestingUrl)) return finish(false)
+      by = ['user-deny', 'user-once', 'user-session', 'user-remember', 'user-block'][response] || 'user'
       if ([2, 3, 4].includes(response)) {
         // Complete before storing so this request does not invalidate itself.
         pending.delete(id)
@@ -278,10 +296,11 @@ function createBrowserData({ dir, state, changed = () => {}, emit = () => {}, op
     session.setPermissionCheckHandler((wc, permission, requestingOrigin, details = {}) => {
       if (stopped) return false
       const origin = originOf(requestingOrigin || details.requestingUrl)
-      if (!origin) return false
+      if (!origin) { plog.debug('permission check', { permission, granted: false, by: 'no-origin', partition }); return false }
       const grant = grantFor(partition, origin, permission)
       // A true preflight bypasses the request handler, where once is consumed.
       const allow = grant ? grant.decision === 'allow' && grant.lifetime !== 'once' : automatic.has(permission)
+      plog.debug('permission check', { permission, host: hostOf(origin), partition, granted: allow, by: grant ? `stored-${grant.lifetime}` : automatic.has(permission) ? 'automatic' : 'none' })
       if (allow && ['media', 'display-capture'].includes(permission)) emit('browser-permission-granted', { tabId: contents.get(wc)?.tab.id || null, permission })
       return allow
     })
@@ -399,6 +418,7 @@ function createBrowserData({ dir, state, changed = () => {}, emit = () => {}, op
   function stop() {
     if (stopped) return
     stopped = true
+    log.info('browser data stop', { pending: pending.size, liveDownloads: liveDownloads.size })
     for (const request of pending.values()) request.finish(false)
     for (const [session, { onWillDownload }] of sessions) {
       session.removeListener('will-download', onWillDownload)

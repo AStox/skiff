@@ -4,6 +4,7 @@ const path = require('node:path')
 const crypto = require('node:crypto')
 const { parseArc } = require('./arc')
 const S = require('./state')
+const log = require('./log').scope('importer')
 const F = require('./favicons')
 const { discoverArc, readArcSecrets, readArcIcons } = require('./migration')
 
@@ -68,9 +69,11 @@ function createImporter({ home, state, changed, getSession, confirm, vault, favi
     const profiles = [...new Set(p.profileIds)].map((id) => profilesById.get(id))
     if (profiles.some((profile) => !profile)) throw S.err('bad_params', 'Choose Arc profiles from the preview.')
     busy = true
+    const t = Date.now()
+    log.info('import begin', { profiles: profiles.length, categories, keepSpaces: p.keepSpaces })
     try {
       // One consent covers the selection, before any protected database or Keychain access.
-      if ((categories.passwords || categories.logins) && !(await confirm(profiles.map((profile) => profile.name), categories))) return { cancelled: true }
+      if ((categories.passwords || categories.logins) && !(await confirm(profiles.map((profile) => profile.name), categories))) { log.info('import cancelled', { ms: Date.now() - t }); return { cancelled: true } }
       const sourceSidebar = sidebar(source.root)
       const result = { spaces: 0, favorites: 0, pinned: 0, tabs: 0, passwords: { imported: 0, skipped: 0, failed: 0 }, logins: { imported: 0, skipped: 0, failed: 0 }, warnings: [], profiles: [] }
       for (const profile of profiles) {
@@ -90,7 +93,8 @@ function createImporter({ home, state, changed, getSession, confirm, vault, favi
                 try {
                   const stored = vault.import(data.passwords, partition)
                   for (const key of ['imported', 'skipped', 'failed']) imported.passwords[key] += stored[key]
-                } catch {
+                } catch (e) {
+                  log.error('password store failed', { profile: profile.id, err: e?.stack })
                   imported.passwords.failed += data.passwords.length
                   imported.warnings.push('Saved passwords could not be stored securely. No existing passwords were replaced.')
                 }
@@ -113,12 +117,14 @@ function createImporter({ home, state, changed, getSession, confirm, vault, favi
                     }
                   }
                   await cookies.flushStore()
-                } catch {
+                } catch (e) {
+                  log.error('sign-in save failed', { profile: profile.id, err: e?.stack })
                   imported.warnings.push('Website sign-ins could not be saved completely. Retry sign-ins after restarting Skiff.')
                 }
                 imported.warnings.push('Some sites require you to sign in again. Site storage and passkeys are not transferred.')
               }
-            } catch {
+            } catch (e) {
+              log.error('protected data read failed', { profile: profile.id, err: e?.stack })
               imported.warnings.push('Arc protected data could not be read; its records were not counted. Allow the macOS Keychain prompt, then retry the selected categories.')
             }
           }
@@ -136,9 +142,11 @@ function createImporter({ home, state, changed, getSession, confirm, vault, favi
           Object.assign(imported, S.importSetup(state, setup, Date.now()))
           if (categories.tabs || categories.openTabs) fillArcIcons(state, faviconDir, profile.path)
           changed()
-        } catch {
+        } catch (e) {
+          log.error('profile import failed', { profile: profile.id, err: e?.stack })
           imported.warnings.push('This profile could not be imported completely. Any unfinished tab and space additions were not counted; retry this profile.')
         }
+        log.debug('import profile done', { profile: profile.id, spaces: imported.spaces, favorites: imported.favorites, pinned: imported.pinned, tabs: imported.tabs, passwords: imported.passwords, logins: imported.logins, warnings: imported.warnings.length })
         result.profiles.push(imported)
         for (const key of ['spaces', 'favorites', 'pinned', 'tabs']) result[key] += imported[key]
         for (const category of ['passwords', 'logins']) {
@@ -146,7 +154,11 @@ function createImporter({ home, state, changed, getSession, confirm, vault, favi
         }
         result.warnings.push(...imported.warnings.map((warning) => `${profile.name}: ${warning}`))
       }
+      log.info('import end', { ms: Date.now() - t, profiles: result.profiles.length, spaces: result.spaces, favorites: result.favorites, pinned: result.pinned, tabs: result.tabs, passwords: result.passwords, logins: result.logins, warnings: result.warnings.length })
       return result
+    } catch (e) {
+      log.error('import failed', { ms: Date.now() - t, err: e?.stack })
+      throw e
     } finally {
       busy = false
     }

@@ -589,7 +589,7 @@ function panel(space) {
     if (event.key === 'Escape') { name.value = space.name; name.blur() }
   })
   const shell = h('select', { id: 'shell', onchange: () => call('ui.setShell', { name: shell.value }) },
-    state.shells.map((name) => h('option', { value: name, selected: name === state.settings.shell }, name)))
+    state.shells.map((name) => h('option', { value: name, selected: name === state.settings.shell }, name === 'layer' ? 'layer (default)' : name === 'default' ? 'plain' : name)))
   const preset = SEARCH_ENGINES.find((engine) => engine.url === state.settings.searchUrl)
   const search = h('select', { id: 'search-engine', onchange: () => call('settings.set', { searchUrl: search.value }) },
     !preset && h('option', { value: state.settings.searchUrl, selected: true, disabled: true }, 'Custom'),
@@ -636,12 +636,12 @@ function openPopup(id) {
   call('extensions.popup', { id, bounds: { x, y, ...POPUP_SIZE } })
 }
 
-const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', failed: 'Failed' }
+const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', restarting: 'Restarting…', failed: 'Failed' }
 
 function extensionRow(entry) {
   const failure = entry.builtin && entry.state === 'failed' && `Could not ${entry.version ? 'update' : 'install'}: ${entry.error}`
   return h('li', { class: 'row extension', 'data-extension-id': entry.id },
-    h('span', { class: 'row-main' }, h('span', { class: 'label', title: entry.name }, entry.name), h('span', { class: 'when' }, entry.version || STATE_WORDS[entry.state] || '')),
+    h('span', { class: 'row-main' }, h('span', { class: 'label', title: entry.name }, entry.name), h('span', { class: 'when' }, (entry.state === 'restarting' ? '' : entry.version) || STATE_WORDS[entry.state] || '')),
     h('button', { class: 'text-btn', disabled: !entry.popup, onclick: () => openPopup(entry.id) }, 'Panel'),
     h('button', { class: 'text-btn', disabled: !entry.options, onclick: () => call('extensions.open', { id: entry.id }) }, 'Settings'),
     !entry.builtin && h('button', { class: 'text-btn danger', onclick: () => confirmAction(`Remove ${entry.name}?`, 'It stops running everywhere and its files are deleted.', 'Remove', 'extensions.remove', { id: entry.id }) }, 'Remove'),

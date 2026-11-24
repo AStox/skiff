@@ -1,6 +1,7 @@
 'use strict'
 const fs = require('node:fs')
 const S = require('./state')
+const log = require('./log').scope('page-features')
 
 const DEFAULT_TIMEOUT = 15000
 const MAX_TIMEOUT = 30000
@@ -381,9 +382,10 @@ function createPageFeatures({ state, views, runtime, changed = () => {}, emit = 
       const tab = S.findTab(state, id)
       if (!tab || protectedReasons(tab, rec).length || now - Math.max(tab.lastActiveAt || 0, rec.lastShownAt) < idle) continue
       try { discard({ id }); discarded.push(id) } catch (e) {
-        if (e.code !== 'page_protected') emit('page-discard-error', { id, message: text(e.message, 300) })
+        if (e.code !== 'page_protected') { log.warn('memory saver discard failed', { id, err: e.message }); emit('page-discard-error', { id, message: text(e.message, 300) }) }
       }
     }
+    if (discarded.length) log.info('memory saver slept tabs', { count: discarded.length })
     return { discarded }
   }
   function beforeDestroy(id) {
@@ -412,6 +414,7 @@ function createPageFeatures({ state, views, runtime, changed = () => {}, emit = 
   const timer = setInterval(() => sweep(), 60000)
   timer.unref?.()
   function stop() {
+    log.debug('page features stop', { records: records.size })
     stopped = true
     clearInterval(timer)
     for (const id of records.keys()) beforeDestroy(id)

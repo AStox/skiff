@@ -3,6 +3,20 @@
 const PLACEHOLDER = 'Search or enter address'
 const HOST = /^(localhost|\[[0-9a-f:]+\]|[\w-]+(\.[\w-]+)+)(:\d+)?([/?#].*)?$/i
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i
+// Whether text typed in the bar reads as a question or request for the agent rather than words to search for; local and synchronous, since it runs on every keystroke.
+const ASK_LEAD = new Set(('who what when where why how which whose whom is are am was were do does did can could should would will shall may might explain write summarize summarise tell help give make show compare translate draft rewrite describe suggest recommend plan').split(' '))
+const ASK_SELF = new Set(['i', "i'm", 'me', 'my', 'you', 'your', 'we', 'our', 'us'])
+const ASK_FUNCTION = new Set('the a an is are was of to for in on with and that this it be from by as at'.split(' '))
+function looksLikeQuestion(text) {
+  const t = text.trim()
+  if (!/\s/.test(t)) return false
+  if (t.endsWith('?')) return true
+  const words = t.split(/\s+/).map((w) => w.toLowerCase().replace(/’/g, "'").replace(/^[^\w']+|[^\w']+$/g, ''))
+  if (words.length >= 3 && ASK_LEAD.has(words[0])) return true
+  if (words.some((w) => ASK_SELF.has(w))) return true
+  if (words.length >= 5 && words.filter((w) => ASK_FUNCTION.has(w)).length >= 2) return true
+  return words.length >= 8
+}
 const SITES = [
   { host: 'google.com', name: 'Google', url: 'https://www.google.com', search: 'https://www.google.com/search?q=%s' },
   { host: 'maps.google.com', name: 'Google Maps', url: 'https://www.google.com/maps', search: 'https://www.google.com/maps/search/%s' },
@@ -99,3 +113,20 @@ function agentDot(tab) {
   return h('span', { class: 'agent-dot', 'data-state': state, role: 'img', 'aria-label': text, title: text })
 }
 const agentBadge = (tab) => (agentNameOf(tab) ? h('span', { class: 'agent-badge' }, tab.agentRequest ? `${agentNameOf(tab)} asks` : tab.agent) : null)
+
+/* ---------- the offer on a tab the bar just opened: do the other thing with the same text (tabs.reroute) ---------- */
+
+const OFFER_LIFE = 8000
+const OFFER_FADE = 600
+// The pill's words, or null for a tab with no offer.
+function offerLabel(state, tab) {
+  if (!tab.intent) return null
+  if (tab.intent.sent === 'ask') {
+    const engine = SEARCH_ENGINES.find((e) => e.url === state.settings.searchUrl)
+    return `Meant to search ${engine ? engine.name : hostOf(state.settings.searchUrl) || 'the web'}?`
+  }
+  const { agent, agents } = state.settings.ai
+  return `Meant to ask ${agent || agents[0]?.name || 'an agent'}?`
+}
+// Milliseconds the offer has left; paused is how long hovering held it.
+const offerLeft = (tab, paused = 0) => OFFER_LIFE - (Date.now() - tab.intent.at - paused)

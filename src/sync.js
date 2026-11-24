@@ -5,6 +5,7 @@ const crypto = require('node:crypto')
 const http = require('node:http')
 const https = require('node:https')
 const { refreshFolderLabels } = require('./state')
+const log = require('./log').scope('sync')
 
 const VERSION = 1
 const MAX_BYTES = 16 * 1024 * 1024
@@ -16,6 +17,8 @@ const PREFS = {
   memorySaverMinutes: [1, 1440], memorySaver: 'boolean', downloadAskWhere: 'boolean'
 }
 const fail = (message) => Object.assign(new Error(message), { code: 'sync_error' })
+// Never log an unknown error's message: a JSON parse error can quote the payload.
+const why = (e) => e?.code === 'sync_error' ? { err: e.message } : { err: e?.name, code: e?.code, at: String(e?.stack).split('\n').slice(1, 5).join('\n') }
 const plain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 const clone = (v) => JSON.parse(JSON.stringify(v))
 const keyId = (key) => crypto.createHash('sha256').update(key).digest('hex')
@@ -351,8 +354,9 @@ function createSync({ dir, state, changed = () => {}, safeStorage, emit = () => 
           const restored = JSON.parse(safeStorage.decryptString(Buffer.from(config.sealedCredentials, 'base64')))
           if (config.transport === 'webdav' && restored.origin === endpointURL(config.endpoint).origin) credentials = restored
         }
-      } catch { key = null; error = 'Unlock sync with your pairing key' }
+      } catch (e) { key = null; error = 'Unlock sync with your pairing key'; log.warn('sync key unlock failed', why(e)) }
     }
+    log.info('sync start', { enabled: config.enabled, transport: config.transport || null, locked: !key })
     return snapshot()
   }
   function configure(params) {
@@ -377,6 +381,7 @@ function createSync({ dir, state, changed = () => {}, safeStorage, emit = () => 
     config = next
     if (config.transport === 'webdav' && (params.username !== undefined || params.password !== undefined)) setCredentials(params)
     storeSecrets(); persistConfig(); error = null; notify()
+    log.info('sync configured', { transport: config.transport })
     return snapshot()
   }
   function setCredentials(params) {
@@ -395,6 +400,7 @@ function createSync({ dir, state, changed = () => {}, safeStorage, emit = () => 
     if (key) key.fill(0)
     key = candidate; journal = loaded; config.keyId = keyId(key)
     storeSecrets(); persistConfig(); error = null; notify()
+    log.info('sync key set')
     return snapshot()
   }
   function createKey() {
@@ -409,6 +415,7 @@ function createSync({ dir, state, changed = () => {}, safeStorage, emit = () => 
   }
   function unlock(params = {}) {
     available()
+    log.info('sync unlock', { key: params.key !== undefined, credentials: params.username !== undefined || params.password !== undefined })
     if (params.key !== undefined) importKey(params)
     if (params.username !== undefined || params.password !== undefined) { setCredentials(params); storeSecrets(); persistConfig() }
     if (!key) throw fail('A pairing key is required to unlock sync')
@@ -418,6 +425,7 @@ function createSync({ dir, state, changed = () => {}, safeStorage, emit = () => 
     if (!started) start()
     controller?.abort()
     config.enabled = false; persistConfig(); notify()
+    log.info('sync disabled')
     return snapshot()
   }
   async function now() {
@@ -427,9 +435,13 @@ function createSync({ dir, state, changed = () => {}, safeStorage, emit = () => 
     if (config.hasCredentials && (!credentials || config.transport !== 'webdav' || credentials.origin !== endpointURL(config.endpoint).origin)) throw fail('Unlock WebDAV credentials first')
     busy = true; error = null; controller = new AbortController(); notify()
     const signal = controller.signal
+    const t = Date.now()
+    let remote = 0
+    log.info('sync cycle start', { transport: config.transport })
     try {
       const pending = clone(journal)
       observe(pending, s(), config.device)
+      const local = pending.counter - journal.counter
       const working = clone(pending)
       // Reserve locally observed versions durably before publishing. An accepted PUT
       // can lose its response; reusing its clock for a later edit would fork this device.
@@ -444,6 +456,7 @@ function createSync({ dir, state, changed = () => {}, safeStorage, emit = () => 
       const absorb = (envelope, device) => {
         const incoming = validateRecords(unseal(envelope, key, 'records', device))
         merge(working.records, incoming, conflicts)
+        remote += Object.keys(incoming).length
         for (const record of Object.values(incoming)) working.counter = Math.max(working.counter, record.clock)
         if (Object.keys(working.records).length > MAX_RECORDS) throw fail('Sync record count exceeds the limit')
       }
@@ -471,7 +484,7 @@ function createSync({ dir, state, changed = () => {}, safeStorage, emit = () => 
           checkpoint()
           const body = JSON.stringify(seal({ version: VERSION, records: working.records }, key, 'records', config.device))
           const put = await request(url, 'PUT', { ...auth, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...(response.status === 404 ? { 'If-None-Match': '*' } : { 'If-Match': response.etag }) }, body, signal)
-          if ([409, 412].includes(put.status)) continue
+          if ([409, 412].includes(put.status)) { log.debug('webdav write conflict, retrying', { attempt, status: put.status }); continue }
           if (![200, 201, 204].includes(put.status)) throw fail(`WebDAV write failed (${put.status})`)
           written = true; break
         }
@@ -489,13 +502,16 @@ function createSync({ dir, state, changed = () => {}, safeStorage, emit = () => 
       apply(working, s())
       journal = working; lastSync = new Date().toISOString()
       try { changed() } catch { throw fail('Sync was applied, but the browser refresh failed') }
+      log.info('sync cycle done', { transport: config.transport, local, remote, records: Object.keys(journal.records).length, conflicts: conflicts.length, ms: Date.now() - t })
       return { ...snapshot(), busy: false }
     } catch (failure) {
+      log.error('sync cycle failed', { transport: config.transport, ms: Date.now() - t, ...why(failure) })
       error = failure.code === 'sync_error' ? failure.message : 'Sync failed; local browser data was not changed'
       throw fail(error)
     } finally { busy = false; controller = null; notify() }
   }
   function stop() {
+    log.info('sync stop')
     controller?.abort()
     if (key) key.fill(0)
     key = null; credentials = null; started = false

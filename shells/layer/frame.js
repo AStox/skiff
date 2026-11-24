@@ -53,6 +53,7 @@ function render() {
     $('ear-hide').setAttribute('aria-label', `Hide ${title}`)
     $('ear-close').setAttribute('aria-label', `Close ${title}`)
   }
+  drawOffer()
   placeEar()
 }
 
@@ -69,7 +70,7 @@ function placeEar() {
     const own = w.tab.id === id && (gesture?.rect || pinch?.rect)
     const live = own || (moving?.id === w.tab.id && moving)
     const rect = live ? { x: live.x, y: live.y, width: live.width, height: live.height } : w.rect
-    const entry = { id: w.tab.id, rect, natural: earNatural(earTitle(w.tab)) }
+    const entry = { id: w.tab.id, rect, natural: earNatural(earTitle(w.tab)), after: offerReserve(w.tab) }
     if (!own && live && 'ear' in live) entry.slot = live.ear && { x: rect.x + live.ear.dx, width: live.ear.width, room: live.ear.room }
     return entry
   })
@@ -87,6 +88,7 @@ function placeEar() {
   el.classList.toggle('cramped', ear.room < EAR_BUTTONS)
   // The first place is taken at once; later ones glide.
   if (!root.classList.contains('settled')) requestAnimationFrame(() => root.classList.add('settled'))
+  placeOffer()
 }
 
 // The window whose ear lies under a press on this frame's clear parts, frontmost first.
@@ -98,6 +100,101 @@ function earUnder(e) {
   const w = behind.find((b) => slots[b.id] && x >= slots[b.id].x && x < slots[b.id].x + slots[b.id].width && y >= b.rect.y - EAR_HEIGHT && y < b.rect.y)
   return w?.id || null
 }
+
+/* ---------- the offer: do the other thing with what the bar was given, for a few seconds beside the ear ---------- */
+
+// Hovering holds it: offerPaused is the time held so far, offerHeld when the pointer went onto it (0 when off).
+let offerKey = ''
+let offerPaused = 0
+let offerHeld = 0
+let offerDismissed = false
+let offerTimer = 0
+let reserveTimer = 0
+const offerWidths = new Map()
+const textWidth = (text) => {
+  const measure = $('ear-measure')
+  measure.textContent = text
+  return Math.ceil(measure.getBoundingClientRect().width)
+}
+
+// Room the other ears leave beside this tab's, from the clock alone so every frame agrees, whether or not it was dismissed here.
+function offerReserve(tab) {
+  const label = offerLabel(state, tab)
+  if (!label || offerLeft(tab) <= 0) return 0
+  let width = offerWidths.get(label)
+  if (width === undefined) offerWidths.set(label, width = textWidth(label) + 31)
+  return width + 6
+}
+
+// Every frame re-places its ear when any pill's time runs out.
+function reserveEnds() {
+  clearTimeout(reserveTimer)
+  const ends = state.tabs.filter((t) => t.intent).map((t) => offerLeft(t)).filter((ms) => ms > 0)
+  if (ends.length) reserveTimer = setTimeout(placeEar, Math.min(...ends) + 30)
+}
+
+function drawOffer() {
+  clearTimeout(offerTimer)
+  const tab = state.tabs.find((t) => t.id === id)
+  const key = tab?.intent ? `${tab.id}/${tab.intent.at}` : ''
+  if (key !== offerKey) {
+    offerKey = key
+    offerPaused = offerHeld = 0
+    offerDismissed = false
+  }
+  reserveEnds()
+  const el = $('offer')
+  const label = key && !offerDismissed ? offerLabel(state, tab) : null
+  const left = label ? offerLeft(tab, offerPaused + (offerHeld ? Date.now() - offerHeld : 0)) : 0
+  if (!label || left <= 0) {
+    el.hidden = true
+    return
+  }
+  if (el.hidden) {
+    el.hidden = false
+    el.classList.add('fresh')
+  }
+  if ($('offer-go').textContent !== label) $('offer-go').textContent = label
+  const fading = left <= OFFER_FADE && !offerHeld
+  el.classList.toggle('fading', fading)
+  if (fading) el.classList.remove('fresh')
+  el.style.animationDelay = fading ? `${left - OFFER_FADE}ms` : ''
+  if (!offerHeld) offerTimer = setTimeout(drawOffer, left > OFFER_FADE ? left - OFFER_FADE : left + 30)
+  placeOffer()
+}
+
+// Right after the ear, which may be wider while hovered, and only as far as the free stretch of the top edge goes.
+function placeOffer() {
+  const el = $('offer')
+  if (el.hidden || !ear) return
+  const left = Math.ceil($('ear').getBoundingClientRect().right) + 6
+  const room = IN.left + ear.dx + ear.room - left
+  el.style.maxWidth = `${Math.max(0, room)}px`
+  el.style.left = `${left}px`
+  el.style.visibility = room < 90 ? 'hidden' : ''
+}
+new ResizeObserver(placeOffer).observe($('ear'))
+
+const dismissOffer = () => {
+  offerDismissed = true
+  drawOffer()
+}
+$('offer').addEventListener('pointerenter', () => {
+  if (offerHeld) return
+  offerHeld = Date.now()
+  drawOffer()
+})
+$('offer').addEventListener('pointerleave', () => {
+  if (!offerHeld) return
+  offerPaused += Date.now() - offerHeld
+  offerHeld = 0
+  drawOffer()
+})
+$('offer-x').addEventListener('click', dismissOffer)
+$('offer-go').addEventListener('click', () => {
+  dismissOffer()
+  call('tabs.reroute', { id })
+})
 
 /* ---------- snapping, as the prototype's window manager ---------- */
 
@@ -413,7 +510,7 @@ $('ear-close').addEventListener('click', () => call('tabs.close', { id }))
 // Any press on the frame brings its window forward, as a press on its page does; a press on another window's ear, seen through this frame's clear margin, brings that one.
 document.addEventListener('pointerdown', (e) => {
   if (!state) return
-  const other = !e.target.closest('#ear') && !gesture && earUnder(e)
+  const other = !e.target.closest('#ear, #offer') && !gesture && earUnder(e)
   if (other) {
     e.preventDefault()
     e.stopPropagation()
@@ -422,7 +519,7 @@ document.addEventListener('pointerdown', (e) => {
 }, true)
 appearance.addEventListener('change', () => { painted = ''; render() })
 // Titles measured in the fallback font are wrong once the shell's font arrives.
-document.fonts.addEventListener('loadingdone', () => { earWidths.clear(); placeEar() })
+document.fonts.addEventListener('loadingdone', () => { earWidths.clear(); offerWidths.clear(); placeEar() })
 skiff.on('drag-cancel', cancel)
 // A press on the page's empty background drags the window as the ear does; the core sends it here in screen coordinates.
 skiff.on('page-drag', (d) => {
