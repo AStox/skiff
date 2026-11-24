@@ -414,6 +414,14 @@ test('a saved shortcut map gains new defaults and keeps its overrides', () => {
   assert.deepEqual(s.settings.shortcuts['CmdOrCtrl+Shift+C'], { method: 'tabs.copyUrl' })
 })
 
+test('global shortcuts gain the default on load, keep overrides, and are validated like shortcuts', () => {
+  assert.deepEqual(S.load({}).settings.globalShortcuts['Alt+T'], { method: 'ui.emit', params: { name: 'new-tab' } })
+  const s = S.load({ settings: { globalShortcuts: { 'Alt+T': { method: 'tabs.back' }, 'Alt+X': { method: 'tabs.forward' } } } })
+  assert.deepEqual(s.settings.globalShortcuts, { 'Alt+T': { method: 'tabs.back' }, 'Alt+X': { method: 'tabs.forward' } })
+  assert.throws(() => S.setSettings(s, { globalShortcuts: { 'Alt+Y': 'tabs.back' } }), /globalShortcuts must map/)
+  assert.deepEqual(s.settings.globalShortcuts['Alt+X'], { method: 'tabs.forward' })
+})
+
 test('browser identity defaults to compatible and loads only supported persistent overrides', () => {
   assert.deepEqual(S.load().settings.browserIdentity, {})
   for (const value of [null, 'native', [], 1]) assert.deepEqual(S.load({ settings: { browserIdentity: value } }).settings.browserIdentity, {})

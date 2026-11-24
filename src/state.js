@@ -38,6 +38,10 @@ const SHORTCUTS = {
   'CmdOrCtrl+J': { method: 'ui.emit', params: { name: 'ask-agent' } },
   ...Object.fromEntries([['Left', 'left'], ['Right', 'right'], ['Up', 'top'], ['Down', 'bottom'], ['Enter', 'fill'], ['C', 'center']].map(([key, layout]) => [`${mac ? 'Ctrl+Alt' : 'Ctrl+Super'}+${key}`, { method: 'desk.tile', params: { layout } }]))
 }
+// System-wide: these fire while another app is in front, so the handler raises Skiff before running the method.
+const GLOBAL_SHORTCUTS = {
+  'Alt+T': { method: 'ui.emit', params: { name: 'new-tab' } }
+}
 const MARGIN = 8
 const OFFSET = 28
 const HOSTS = 200
@@ -170,7 +174,7 @@ function load(raw = {}) {
     activeTabBySpace: { ...raw.activeTabBySpace },
     archive: Array.isArray(raw.archive) ? raw.archive : [],
     collapsed: { ...raw.collapsed },
-    settings: { autoArchiveHours: 12, searchUrl: GOOGLE, shell: 'default', historyRetentionDays: 90, downloadAskWhere: true, downloadDirectory: '', memorySaver: false, memorySaverMinutes: 30, transcriptRecovery: false, transcriptRetentionDays: 30, ...raw.settings, browserIdentity: loadBrowserIdentity(raw.settings?.browserIdentity), ai: loadAi(raw.settings?.ai), shortcuts: { ...SHORTCUTS, ...raw.settings?.shortcuts } },
+    settings: { autoArchiveHours: 12, searchUrl: GOOGLE, shell: 'default', historyRetentionDays: 90, downloadAskWhere: true, downloadDirectory: '', memorySaver: false, memorySaverMinutes: 30, transcriptRecovery: false, transcriptRetentionDays: 30, ...raw.settings, browserIdentity: loadBrowserIdentity(raw.settings?.browserIdentity), ai: loadAi(raw.settings?.ai), shortcuts: { ...SHORTCUTS, ...raw.settings?.shortcuts }, globalShortcuts: { ...GLOBAL_SHORTCUTS, ...raw.settings?.globalShortcuts } },
     window: { width: 1280, height: 800, ...raw.window },
     deskHosts: Object.fromEntries(Object.entries(isObject(raw.deskHosts) ? raw.deskHosts : {}).map(([host, rect]) => [host, deskRect(rect)]).filter(([, rect]) => rect).slice(-HOSTS))
   }
@@ -1398,10 +1402,11 @@ function setSettings(s, p) {
     webUrl(p.searchUrl)
     next.searchUrl = p.searchUrl
   }
-  if (p.shortcuts !== undefined) {
-    const ok = isObject(p.shortcuts) && Object.values(p.shortcuts).every((v) => isObject(v) && typeof v.method === 'string' && (v.params === undefined || isObject(v.params)))
-    if (!ok) throw bad('shortcuts must map an accelerator to {method, params?}')
-    next.shortcuts = p.shortcuts
+  for (const key of ['shortcuts', 'globalShortcuts']) {
+    if (p[key] === undefined) continue
+    const ok = isObject(p[key]) && Object.values(p[key]).every((v) => isObject(v) && typeof v.method === 'string' && (v.params === undefined || isObject(v.params)))
+    if (!ok) throw bad(`${key} must map an accelerator to {method, params?}`)
+    next[key] = p[key]
   }
   if (p.ai !== undefined) next.ai = aiSettings(p.ai, s.settings.ai)
   if (p.browserIdentity !== undefined) {

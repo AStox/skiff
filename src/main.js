@@ -1,5 +1,5 @@
 'use strict'
-const { app, BrowserWindow, WebContentsView, Menu, ipcMain, session, dialog, safeStorage, net, clipboard, screen, systemPreferences, Notification } = require('electron')
+const { app, BrowserWindow, WebContentsView, Menu, ipcMain, session, dialog, safeStorage, net, clipboard, screen, systemPreferences, Notification, globalShortcut } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
 const http = require('node:http')
@@ -1477,12 +1477,15 @@ const settingsActions = {
   }
 }
 
-def('settings.set', '{autoArchiveHours?, searchUrl?, shortcuts?, ai?, browserIdentity?}', 'Change settings; browserIdentity merges {persistentPartition: "native"|"compatible"} and applies only after restarting Skiff, without changing profile storage; compatible is the default. shortcuts replaces the whole map of accelerator to {method, params?}; autoArchiveHours 0 turns auto-archive off; ai {agents?, agent?, model?, effort?} merges into the agent settings: agents [{name, command}] (at most 10, unique names of at most 40 characters, commands of at most 500 run in the login shell), agent the default one, model and effort the last choices; an agent removed or whose command changed is stopped', (p) => {
-  for (const s of Object.values(S.isObject(p.shortcuts) ? p.shortcuts : {})) {
-    if (!registry.has(s?.method)) throw S.err('bad_params', `Unknown method in shortcuts: ${s?.method}`)
+def('settings.set', '{autoArchiveHours?, searchUrl?, shortcuts?, globalShortcuts?, ai?, browserIdentity?}', 'Change settings; browserIdentity merges {persistentPartition: "native"|"compatible"} and applies only after restarting Skiff, without changing profile storage; compatible is the default. shortcuts replaces the whole map of accelerator to {method, params?}; globalShortcuts does the same for system-wide accelerators that bring Skiff to the front before running their method; autoArchiveHours 0 turns auto-archive off; ai {agents?, agent?, model?, effort?} merges into the agent settings: agents [{name, command}] (at most 10, unique names of at most 40 characters, commands of at most 500 run in the login shell), agent the default one, model and effort the last choices; an agent removed or whose command changed is stopped', (p) => {
+  for (const map of [p.shortcuts, p.globalShortcuts]) {
+    for (const s of Object.values(S.isObject(map) ? map : {})) {
+      if (!registry.has(s?.method)) throw S.err('bad_params', `Unknown method in shortcuts: ${s?.method}`)
+    }
   }
   const settings = S.setSettings(state, p)
   if (p.shortcuts) buildMenu()
+  if (p.globalShortcuts) registerGlobalShortcuts()
   if (p.ai !== undefined) ai.settingsChanged()
   changed()
   return settings
@@ -1965,6 +1968,24 @@ function updateMenuItems() {
   ]
 }
 
+async function runGlobalShortcut(method, params) {
+  if (!win) await createWindow()
+  const raised = await rpc('ui.raise')
+  if (!raised.ok) return console.error(`Global shortcut could not raise Skiff: ${raised.error.message}`)
+  await rpc(method, params)
+}
+
+function registerGlobalShortcuts() {
+  globalShortcut.unregisterAll()
+  for (const [accelerator, { method, params }] of Object.entries(state.settings.globalShortcuts)) {
+    try {
+      if (!globalShortcut.register(accelerator, () => runGlobalShortcut(method, params).catch(console.error))) console.error(`Global shortcut ${accelerator} is taken by another app or not valid`)
+    } catch (e) {
+      console.error(`Global shortcut ${accelerator} failed: ${e.message}`)
+    }
+  }
+}
+
 function buildMenu() {
   const items = Object.entries(state.settings.shortcuts).map(([accelerator, { method, params }]) => ({
     label: [method, ...Object.values(params || {})].join(' '),
@@ -2196,6 +2217,7 @@ async function start() {
     sendEvent(frames.get(id)?.webContents, 'page-drag', { tab: id, phase, screenX, screenY })
   })
   buildMenu()
+  registerGlobalShortcuts()
   startApi()
   screen.on('display-metrics-changed', refitDesk)
   screen.on('display-removed', refitDesk)
@@ -2267,6 +2289,7 @@ app.on('login', createHttpAuth({ BrowserWindow, ipcMain, fallbackWindow: () => w
 if (app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => process.platform === 'darwin' || app.quit())
   app.on('before-quit', quitFlow.beforeQuit)
+  app.on('will-quit', () => globalShortcut.unregisterAll())
   app.whenReady().then(start).catch(console.error)
 } else {
   app.quit()

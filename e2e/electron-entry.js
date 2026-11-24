@@ -79,6 +79,13 @@ app.on('session-created', (created) => {
     callback({ cancel: !allowed })
   })
 })
+// Synthetic keys never fire a system-wide shortcut, so keep each registered callback for a spec to invoke from the main process.
+const registerGlobal = electron.globalShortcut.register
+global.__skiffGlobalShortcuts = new Map()
+electron.globalShortcut.register = function (accelerator, callback) {
+  global.__skiffGlobalShortcuts.set(accelerator, callback)
+  return registerGlobal.call(this, accelerator, callback)
+}
 // Desk windows: the options each window is made with, the calls below with the id of the window they went to, and a cursor the test places.
 // Linux ignores window levels and workspaces, and focuses a window with its web contents, so those are checked by their calls.
 audit.windows = []

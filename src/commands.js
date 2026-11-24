@@ -265,6 +265,7 @@ const schemas = {
   'settings.set': shape({
     ...Object.fromEntries(settings.catalog.filter((entry) => entry.type !== 'action').map((entry) => [entry.id, settings.schemaForSetting(entry.id)])),
     shortcuts: { type: 'object', additionalProperties: shape({ method: id, params: { type: 'object' } }, ['method']) },
+    globalShortcuts: { type: 'object', additionalProperties: shape({ method: id, params: { type: 'object' } }, ['method']) },
     browserIdentity: { type: 'object', additionalProperties: { enum: ['native', 'compatible'] } },
     ai: shape({ agents: array(shape({ name: { type: 'string', minLength: 1, maxLength: 40 }, command: { type: 'string', minLength: 1, maxLength: 500 } }, ['name', 'command']), { maxItems: 10 }), agent: string, model: { type: 'string', maxLength: 200 }, effort: { type: 'string', maxLength: 200 } })
   }),

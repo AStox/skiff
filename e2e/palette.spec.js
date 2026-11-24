@@ -66,6 +66,21 @@ test('Cmd+T floats a centered, dimmed command bar over the live page, completes 
   await closed(skiff, bar)
 })
 
+test('the system-wide Option+T brings a hidden window forward and opens the command bar like Cmd+T', async ({ skiff }) => {
+  const shell = () => skiff.app.evaluate(({ BrowserWindow }) => {
+    const w = BrowserWindow.getAllWindows().find((item) => item.webContents.getURL().endsWith('/index.html'))
+    return [w.isVisible(), w.isFocused()]
+  })
+  expect(await skiff.app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('Alt+T'))).toBe(true)
+  await skiff.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((item) => item.webContents.getURL().endsWith('/index.html')).hide())
+  expect((await shell())[0]).toBe(false)
+  await skiff.app.evaluate(() => global.__skiffGlobalShortcuts.get('Alt+T')())
+  await expect.poll(shell).toEqual([true, true])
+  const bar = await skiff.bar()
+  await expect(input(bar)).toBeFocused()
+  expect(await skiff.barOpen()).toBe(true)
+})
+
 test('open tabs in any space are found by title and activated, archived tabs reopen, and arrows wrap', async ({ skiff }) => {
   const home = (await skiff.state()).activeSpaceId
   const work = await skiff.rpc('spaces.create', { name: 'Work', color: '#2f9e5b' })
