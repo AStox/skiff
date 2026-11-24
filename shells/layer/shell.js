@@ -1,16 +1,12 @@
 'use strict'
 
 const SWATCHES = ['#4f6bed', '#7c5ce0', '#d6336c', '#c2700e', '#2f9e5b', '#5f6b7a']
-const $ = (id) => document.getElementById(id)
-const address = $('address')
 const relative = new Intl.RelativeTimeFormat(undefined, { style: 'narrow' })
 // Fixed to en-GB so the list reads 13:40, Thu 18:20 and 12 Nov whatever the system locale.
 const clock = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
 const weekday = new Intl.DateTimeFormat('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
 const calendar = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' })
 
-overlayName = 'panel'
-let state = null
 const ui = { archive: false, agentList: false, settings: false, renaming: false, imported: '', filling: false, quick: [], quickKey: '', quickRequest: 0, extensions: [], agents: [], agentForm: null, agentError: '', warmed: '' }
 const drawn = {}
 const importDialog = $('arc-import')
@@ -86,7 +82,7 @@ async function show(tab) {
   try {
     if (state.deskOnly) await skiff.call('ui.setDesk', { only: null })
     await skiff.call('tabs.activate', { id: tab.id })
-    call('ui.focusPage')
+    closeCard()
   } catch (error) {
     showError(`${error.message || 'This tab could not open.'} Try again.`)
   }
@@ -196,8 +192,7 @@ async function restore(entry) {
   try {
     await skiff.call('archive.restore', { id: entry.id })
     ui.archive = false
-    render()
-    call('ui.focusPage')
+    closeCard()
   } catch (error) {
     showError(`${error.message || 'This archived tab could not be restored.'} Try again.`)
   }
@@ -404,19 +399,18 @@ async function importArc() {
     trigger: document.activeElement, error: '', notice: ''
   }
   ui.renaming = false
-  // The dialog is modal over the whole window, so the overlay grows to the window while it is open.
-  fitted = ''
-  skiff.call('ui.showOverlay', { name: 'panel', file: 'panel.html', focus: true }).catch(() => {})
   try {
     renderImport(false)
     importDialog.showModal()
+    // The dialog is modal over the whole desk, so the window takes clicks everywhere while it is open.
+    sync()
     $('arc-title').focus()
   } catch {
     importer = null
     ui.settings = true
     ui.archive = false
     ui.imported = 'The import window could not open. Try Import from Arc again.'
-    render()
+    renderPanel()
     return
   }
   await loadArcPreview()
@@ -427,7 +421,7 @@ function closeImport() {
   if (!flow || flow.phase === 'importing') return
   importer = null
   importDialog.close()
-  fit()
+  sync()
   const trigger = flow.trigger?.isConnected ? flow.trigger : $(flow.trigger?.id)
   const target = trigger && trigger !== document.body && trigger.getClientRects().length ? trigger : $('settings-toggle')
   target.focus()
@@ -498,7 +492,7 @@ function refreshQuick() {
   return Promise.resolve(skiff.call('settings.catalog', { quickPanel: true, owner: 'core' })).then((list) => {
     if (request !== ui.quickRequest) return
     ui.quick = Array.isArray(list) ? list : []
-    render()
+    renderPanel()
   }).catch(() => {})
 }
 
@@ -553,7 +547,7 @@ async function fillSavedPassword() {
   if (ui.filling || importer) return
   ui.filling = true
   ui.imported = 'Choose an account in the native confirmation.'
-  render()
+  renderPanel()
   try {
     const result = await skiff.call('passwords.fill', {})
     ui.imported = result.cancelled ? 'Password fill cancelled.'
@@ -565,7 +559,7 @@ async function fillSavedPassword() {
     ui.imported = 'The password could not be filled. Open the website’s sign-in page and try again.'
   }
   ui.filling = false
-  render()
+  renderPanel()
   $('fill-password')?.focus()
 }
 
@@ -623,13 +617,12 @@ function panel(space) {
   ]
 }
 
-// Extension popups open beside the panel.
+// Extension popups open beside the card.
 function openPopup(id) {
   const { width: W } = deskSize(state)
-  const { bounds, card } = anchor(state, PANEL_WIDTH, $('sidebar').offsetHeight)
-  const left = bounds.x + card.x
-  const x = left + card.width + GAP + POPUP_SIZE.width <= W ? left + card.width + GAP : Math.max(0, left - GAP - POPUP_SIZE.width)
-  call('extensions.popup', { id, bounds: { x, y: bounds.y + card.y, ...POPUP_SIZE } })
+  const { x: left, y, width } = at
+  const x = left + width + GAP + POPUP_SIZE.width <= W ? left + width + GAP : Math.max(0, left - GAP - POPUP_SIZE.width)
+  call('extensions.popup', { id, bounds: { x, y, ...POPUP_SIZE } })
 }
 
 const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', failed: 'Failed' }
@@ -647,7 +640,7 @@ function extensionRow(entry) {
 function refreshExtensions() {
   return skiff.call('extensions.list').then((list) => {
     ui.extensions = Array.isArray(list) ? list : []
-    render()
+    renderPanel()
   }).catch(() => {})
 }
 
@@ -665,7 +658,7 @@ function uniqueAgentName(base) {
 function refreshAgents() {
   return skiff.call('ai.agents').then((list) => {
     ui.agents = list || []
-    render()
+    renderPanel()
   }).catch(() => {})
 }
 
@@ -677,7 +670,7 @@ function warmDefault() {
   ui.warmed = name
   skiff.call('ai.warm', { agent: name }).then((next) => {
     ui.agents = ui.agents.map((a) => (a.name === next?.name ? next : a))
-    render()
+    renderPanel()
   }).catch(() => {})
 }
 
@@ -689,7 +682,7 @@ async function saveAgents(ai, done) {
   } catch (error) {
     ui.agentError = error.message || 'That could not be saved. Try again.'
   }
-  render()
+  renderPanel()
   refreshAgents()
 }
 
@@ -697,7 +690,7 @@ function addAgent() {
   const name = ui.agentForm.name.trim()
   const command = ui.agentForm.command.trim()
   ui.agentError = !command ? 'Enter the command that starts your agent.' : !name ? 'Give the agent a name.' : ''
-  if (ui.agentError) return render()
+  if (ui.agentError) return renderPanel()
   saveAgents({ agents: [...state.settings.ai.agents, { name, command }], agent: defaultAgent() || name }, () => { ui.agentForm = null })
 }
 
@@ -772,8 +765,8 @@ function spaceHead(space, count, windows) {
   const dot = !ui.archive && !ui.agentList && h('span', { class: 'space-dot', 'aria-hidden': 'true' })
   if (!ui.renaming) return [
     dot,
-    h('h1', { title: space.name, ondblclick: () => { if (plain && !space.incognito) { ui.renaming = true; render() } } }, ui.settings ? 'Settings' : ui.archive ? 'Archive' : ui.agentList ? 'Agents' : space.name),
-    plain && !space.incognito && h('button', { id: 'rename-space', class: 'icon-btn', title: 'Rename space', 'aria-label': 'Rename space', onclick: () => { ui.renaming = true; render() } }, icon('edit')),
+    h('h1', { title: space.name, ondblclick: () => { if (plain && !space.incognito) { ui.renaming = true; renderPanel() } } }, ui.settings ? 'Settings' : ui.archive ? 'Archive' : ui.agentList ? 'Agents' : space.name),
+    plain && !space.incognito && h('button', { id: 'rename-space', class: 'icon-btn', title: 'Rename space', 'aria-label': 'Rename space', onclick: () => { ui.renaming = true; renderPanel() } }, icon('edit')),
     plain && space.incognito && h('button', { id: 'close-incognito', class: 'icon-btn', title: 'Close Incognito', 'aria-label': 'Close Incognito', onclick: () => call('spaces.remove', { id: space.id }) }, icon('x')),
     plain && h('span', { id: 'space-count', class: 'count' }, `${windowCount(windows)}, ${tabCount(count)}`),
     plain && space.incognito && h('p', { id: 'incognito-hint', class: 'hint' }, 'Nothing here is saved.')
@@ -784,7 +777,7 @@ function spaceHead(space, count, windows) {
     ui.renaming = false
     const name = input.value.trim()
     if (commit && name && name !== space.name) call('spaces.update', { id: space.id, name })
-    render()
+    renderPanel()
   }
   input.addEventListener('blur', () => finish(true))
   input.addEventListener('keydown', (e) => {
@@ -860,7 +853,7 @@ function unfreeze(dragged) {
     delete drawn.list
     stale = false
   }
-  render()
+  renderPanel()
 }
 
 let pressed = false
@@ -912,19 +905,20 @@ function startDrag(event, kind, id) {
   requestAnimationFrame(() => { if (drag?.id === id) showDropZones() })
 }
 
-// A row let go out on the desk becomes a window there, its ear under the pointer.
+// A row let go out on the desk, off the card, becomes a window there, its ear under the pointer.
 function dropOnDesk(event) {
   if (drag?.kind !== 'tab' || event.dataTransfer?.dropEffect !== 'none') return
   const tab = state.tabs.find((t) => t.id === drag.id)
   const x = drag.from.x + event.screenX - drag.from.sx
   const y = drag.from.y + event.screenY - drag.from.sy
-  if (!tab || tab.spaceId !== state.activeSpaceId || (x >= 0 && x < innerWidth && y >= 0 && y < innerHeight)) return
-  const { bounds } = anchor(state, PANEL_WIDTH, $('sidebar').offsetHeight)
+  const { x: left, y: top, width: across } = at
+  if (!tab || tab.spaceId !== state.activeSpaceId || (x >= left && x < left + across && y >= top && y < top + card.offsetHeight)) return
   const { width: W, height: H } = deskSize(state)
   const size = rectOf(state, tab)
   const width = Math.min(size.width, W)
   const height = Math.min(size.height, H - 30)
-  call('desk.place', { id: tab.id, x: Math.round(clamp(bounds.x + x - 60, 0, W - width)), y: Math.round(clamp(bounds.y + y + 14, 30, H - height)), width, height })
+  call('desk.place', { id: tab.id, x: Math.round(clamp(x - 60, 0, W - width)), y: Math.round(clamp(y + 14, 30, H - height)), width, height })
+  closeCard()
 }
 
 function showDropZones() {
@@ -1146,51 +1140,23 @@ async function moveTabWithKeyboard(event, tab) {
   }
 }
 
-const swipe = spaceSwiper()
+const swiper = spaceSwiper()
 function swipeSpaces(event) {
   if (!state || importer || confirmation || drag || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey
     || (event.target.closest('#dots') && $('dots').scrollWidth > $('dots').clientWidth)
     || event.target.closest('input, textarea, select, [contenteditable="true"]')
-    || document.activeElement?.matches('input, textarea, select, [contenteditable="true"]')) return swipe.block(event.timeStamp)
+    || (document.activeElement !== bar && document.activeElement?.matches('input, textarea, select, [contenteditable="true"]'))) return swiper.block(event.timeStamp)
   const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? event.currentTarget.clientWidth : 1
   const x = event.deltaX * unit
   const y = event.deltaY * unit
   if (Math.abs(x) > Math.abs(y) * 1.3) event.preventDefault()
-  swipe.step(event.timeStamp, x, y)
+  swiper.step(event.timeStamp, x, y)
 }
 
-// The command bar opens over the panel; closing it gives the keyboard back here when it was opened from here.
-let barFromPanel = false
-function openPalette(mode) {
-  if (!state || importer || confirmation) return
-  barFromPanel = true
-  buoyAction('palette', { mode })
-}
-
-// The panel's view on the desk, for the ears to keep clear of; null while it is closed.
-let sharedRect = ''
-function sharePlace(rect) {
-  const key = JSON.stringify(rect)
-  if (key === sharedRect) return
-  sharedRect = key
-  writeStore('panel', rect)
-  skiff.call('ui.emit', { name: 'panel-moved', data: rect, focus: false }).catch(() => {})
-}
-
-// Trimmed to the sidebar's natural height beside the Buoy; the import dialog needs the whole window while it is open.
-function fit(focus = false) {
-  if (importer) return
-  const extra = ['list', 'panel', 'favorites'].reduce((sum, id) => sum + Math.max(0, $(id).scrollHeight - $(id).clientHeight), 0)
-  const a = fitOverlay(state, 'panel.html', $('sidebar'), PANEL_WIDTH, $('sidebar').offsetHeight + extra, focus === true)
-  if (a && overlayOpen) sharePlace(a.bounds)
-}
-
-appearance.addEventListener('change', () => render())
+appearance.addEventListener('change', () => renderPanel())
 const still = matchMedia('(prefers-reduced-motion: reduce)')
-const paintedWidth = () => $('sidebar').getBoundingClientRect().right
-addEventListener('resize', () => { if (state) renderBackground(activeSpace(), paintedWidth()) })
 
-function render() {
+function renderPanel() {
   if (!state) return
   const space = activeSpace()
   if (space.incognito) ui.renaming = false
@@ -1199,7 +1165,7 @@ function render() {
   const tabs = state.tabs.filter((t) => !t.favorite && t.spaceId === space.id)
   const favorites = state.tabs.filter((t) => t.favorite && t.spaceId === space.id)
 
-  renderBackground(space, paintedWidth())
+  renderBackground(space, innerWidth)
   $('back').disabled = !tab?.canGoBack
   $('forward').disabled = !tab?.canGoForward
   $('reload').disabled = !tab
@@ -1214,7 +1180,6 @@ function render() {
   $('list').setAttribute('aria-label', ui.archive ? 'Archived tabs' : ui.agentList ? 'Agent tabs' : 'Tabs')
   if (!holds) $('favorites').hidden = !favorites.length || ui.settings || ui.archive || ui.agentList
   $('favorites').classList.toggle('spread', favorites.length >= 5)
-  showAddress(address, tab?.url)
 
   if (!holds) section('favorites', [favorites, tab?.id], () => favorites.map((t) => favoriteTile(t, t.id === tab?.id)))
   const plain = state.tabs.filter((t) => !t.favorite && !t.pinned && t.spaceId === space.id).length
@@ -1238,9 +1203,8 @@ function render() {
   if (ui.settings) warmDefault()
   if (!holds) section('list', ui.archive ? [state.archive] : ui.agentList ? ['agents', state.agentTabs, state.peek, state.spaces.map((s) => s.name)] : [tabs, tab?.id, state.collapsed, state.deskSize], () => (ui.archive ? archiveRows() : ui.agentList ? agentTabRows() : [
     tabRows(space, tabs, (t, depth) => tabRow(t, t.id === tab?.id, depth)),
-    h('li', { class: 'row quiet', 'data-new-tab': true }, h('button', { id: 'new-tab', class: 'row-main', onclick: () => openPalette('new') }, icon('plus'), h('span', { class: 'label' }, 'New tab')))
+    h('li', { class: 'row quiet', 'data-new-tab': true }, h('button', { id: 'new-tab', class: 'row-main', onclick: () => bar.focus() }, icon('plus'), h('span', { class: 'label' }, 'New tab')))
   ]))
-  fit()
 
   const rename = $('rename')
   if (rename && !importer && document.activeElement !== rename) {
@@ -1259,7 +1223,7 @@ function toggleArchive() {
   ui.settings = false
   ui.renaming = false
   ui.imported = ''
-  render()
+  renderPanel()
 }
 
 function toggleAgents() {
@@ -1269,7 +1233,7 @@ function toggleAgents() {
   ui.settings = false
   ui.renaming = false
   ui.imported = ''
-  render()
+  renderPanel()
 }
 
 // data.section 'agents' opens Settings (never closes it) at the Agents group.
@@ -1280,7 +1244,7 @@ function toggleSettings(data) {
   ui.archive = false
   ui.agentList = false
   ui.renaming = false
-  render()
+  renderPanel()
   if (!ui.settings) return
   if (agents) showAgents()
   Promise.all([refreshExtensions(), refreshAgents(), refreshQuick()]).then(() => { if (agents) showAgents() })
@@ -1300,7 +1264,6 @@ $('add-space').addEventListener('click', async () => {
 })
 
 $('settings-toggle').addEventListener('click', toggleSettings)
-address.addEventListener('click', () => openPalette('edit'))
 $('shell-error-dismiss').addEventListener('click', () => { $('shell-error').hidden = true })
 $('confirm-cancel').addEventListener('click', closeConfirmation)
 $('confirm-accept').addEventListener('click', async () => {
@@ -1319,27 +1282,23 @@ $('confirm-accept').addEventListener('click', async () => {
     $('confirm-cancel').disabled = false
   }
 })
-// Hiding resets the view, so the next summons starts from the tab list and a forwarded toggle opens what was asked for.
-function hidePanel() {
+// Opening starts from the tab list, so a section toggled on after it is the one asked for.
+function resetPanel() {
   if (importer || confirmation) return
   if (drag) endDrag()
   Object.assign(ui, { archive: false, agentList: false, settings: false, renaming: false, imported: '' })
   $('shell-error').hidden = true
-  render()
-  sharePlace(null)
-  closeOverlay()
+  renderPanel()
 }
-$('close-panel').addEventListener('click', hidePanel)
-// Escape never closes the panel; it only ends what is going on inside it.
+// Escape only ends what is going on inside the card; with nothing going on it closes the card.
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return
   if (drag) { event.preventDefault(); endDrag() }
-  else if (confirmation && !$('confirm-accept').disabled) { event.preventDefault(); closeConfirmation() }
+  else if (confirmation) {
+    event.preventDefault()
+    if (!$('confirm-accept').disabled) closeConfirmation()
+  } else if (!importer) closeCard()
 })
-addEventListener('resize', () => fit())
-new ResizeObserver(() => fit()).observe($('sidebar'))
-// It stays next to the Buoy while the Buoy is dragged or grows.
-skiff.on('buoy-moved', () => fit())
 document.addEventListener('dragend', (event) => {
   dropOnDesk(event)
   endDrag()
@@ -1401,42 +1360,18 @@ importDialog.addEventListener('cancel', (event) => {
   event.preventDefault()
   closeImport()
 })
-// The base page opens this panel and sends the event again marked forwarded; the original is the base page's to handle.
-// shown: the base page has just shown the overlay window tall, so it is trimmed again; focus: it takes the keyboard.
-const forwarded = (handler) => (data) => {
-  if (!data?.forwarded) return
-  if (!overlayOpen) grow($('sidebar'))
-  overlayOpen = true
-  if (data.shown) fitted = ''
-  handler(data)
-  fit(Boolean(data.focus))
-}
-skiff.on('panel-open', forwarded(() => {
-  if (importer || confirmation) return
-  Object.assign(ui, { archive: false, agentList: false, settings: false, renaming: false, imported: '' })
-  render()
-}))
-skiff.on('toggle-archive', forwarded(toggleArchive))
-skiff.on('toggle-agents', forwarded(toggleAgents))
-skiff.on('toggle-settings', forwarded(toggleSettings))
-skiff.on('import-arc', forwarded(importArc))
-skiff.on('toggle-sidebar', (data) => { if (data?.forwarded && overlayOpen) hidePanel() })
-skiff.on('overlay-closed', (data) => {
-  if (data?.name !== 'main') return
-  if (data.back && barFromPanel && overlayOpen) fit(true)
-  barFromPanel = false
-})
 skiff.on('extensions-changed', () => { if (ui.settings) refreshExtensions() })
 skiff.on('ai-agents', (next) => {
   ui.agents = next || []
-  if (ui.settings) render()
+  if (ui.settings) renderPanel()
 })
-skiff.on('state', (next) => {
-  state = next
-  render()
-})
-skiff.call('state.get').then((first) => {
-  state = first
-  render()
-}).catch(() => showError('Skiff could not load your spaces. Reload the shell or restart Skiff to try again.'))
-skiff.call('ui.emit', { name: 'panel-ready', focus: false }).catch(() => {})
+// A section of the panel's content shows only while the bar is empty, so a query is cleared.
+for (const [name, handler] of [['toggle-settings', toggleSettings], ['toggle-archive', toggleArchive], ['toggle-agents', toggleAgents], ['import-arc', importArc]]) {
+  skiff.on(name, (data) => {
+    if (open) {
+      clearBar()
+      grab()
+    } else openCard('new')
+    handler(data)
+  })
+}

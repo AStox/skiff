@@ -19,7 +19,7 @@ const SHELF_GAP = 18
 const GROUP_GAP = 36
 const TAG = 26
 const groups = $('groups')
-// Kept clear around the Buoy and the open panel, which stay above exposé.
+// Kept clear around the Buoy, which stays above exposé.
 const CLEAR = 12
 const MS = 250
 // Quick off the mark and settling gently, as macOS moves its windows.
@@ -35,7 +35,6 @@ let shown = null
 let closing = false
 // An opening asked for while exposé was closing.
 let again = false
-let panelRect = readStore('panel')
 // The work prepare() started: {at, key, layout, ready}.
 let prepared = null
 
@@ -93,7 +92,7 @@ function shelve(list, box) {
   })
 }
 
-// The largest part of the box beside each rect in turn, so no card lies under the Buoy or the panel.
+// The largest part of the box beside each rect in turn, so no card lies under the Buoy.
 function clearOf(box, rects) {
   for (const r of rects) {
     const o = { x: r.x - CLEAR, y: r.y - CLEAR, right: r.x + r.width + CLEAR, bottom: r.y + r.height + CLEAR }
@@ -110,7 +109,7 @@ function clearOf(box, rects) {
 
 // Each window's ear where its frame draws it, from the windows back to front.
 function placeEars(list) {
-  const slots = earLayout(list.map((c) => ({ id: c.tab.id, rect: c.rect, natural: earNatural(earTitle(c.tab)) })), [buoyRect(state), panelRect].filter(Boolean), deskSize(state).width)
+  const slots = earLayout(list.map((c) => ({ id: c.tab.id, rect: c.rect, natural: earNatural(earTitle(c.tab)) })), [buoyRect(state)], deskSize(state).width)
   for (const c of list) {
     const ear = c.el?.querySelector('.ear')
     if (!ear) continue
@@ -179,7 +178,7 @@ async function plan() {
   const elsewhere = visibleTabs(st, st.activeSpaceId).filter((t) => !t.userPeek && !onDesktop(st, t) && desktopOf(st, t)).map((tab) => ({ tab, rect: rectOf(st, tab), z: 0, hidden: true, group: desktopOf(st, tab) })).sort((a, b) => a.group.number - b.group.number)
   const shelf = [...hidden, ...elsewhere]
   const room = shelf.length ? SHELF + LABEL + CARD_GAP + (elsewhere.length ? TAG : 0) : 0
-  const box = clearOf({ x: PAD.side, y: PAD.top, width: innerWidth - 2 * PAD.side, height: innerHeight - PAD.top - PAD.bottom }, [buoyRect(st), panelRect].filter(Boolean))
+  const box = clearOf({ x: PAD.side, y: PAD.top, width: innerWidth - 2 * PAD.side, height: innerHeight - PAD.top - PAD.bottom }, [buoyRect(st)])
   const cards = [...arrange(wins, { ...box, height: box.height - room }), ...shelve(shelf, box)]
   const slots = placeEars(wins)
   const holes = wins.flatMap((c) => [{ ...c.rect, rx: RADIUS }, ...(slots[c.tab.id] ? [{ ...slots[c.tab.id], y: c.rect.y - EAR_HEIGHT, height: EAR_HEIGHT }] : [])])
@@ -392,8 +391,7 @@ skiff.on('expose', (data) => {
   else if (!data?.close) prepare()
 })
 skiff.on('expose-warm', () => { if (!shown) prepare() })
-skiff.on('panel-moved', (rect) => { panelRect = rect || null })
-// Leaving the space closes; a tab picked elsewhere, such as in the panel, is picked here.
+// Leaving the space closes; a tab picked elsewhere, such as in the card, is picked here.
 skiff.on('state', (next) => {
   state = next
   if (!shown?.space || closing) return

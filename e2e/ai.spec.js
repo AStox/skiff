@@ -53,15 +53,6 @@ async function useLayer(skiff) {
   await skiff.shell.waitForLoadState()
 }
 
-// Layer's sidebar is its own overlay page; it stays loaded after it closes.
-async function layerPanel(skiff) {
-  const at = (page) => page.url().endsWith('/panel.html')
-  await expect.poll(() => skiff.app.context().pages().some(at)).toBe(true)
-  const panel = skiff.app.context().pages().find(at)
-  await panel.emulateMedia({ colorScheme: 'light' })
-  return panel
-}
-
 // Settings > Agents, as a user fills it in: the default preset's name and command typed over.
 async function addAgent(settings, skiff, name = 'Fake') {
   await settings.locator('#agent-name').click()
@@ -121,15 +112,17 @@ test('with no agent the Ask row and a waiting chat tab open Settings at Agents, 
   await expect(shell.locator('#agents-list li[data-agent="Fake"] .agent-dot')).toHaveAttribute('data-status', 'ready')
 })
 
-test('in the Layer shell the Ask row and a waiting chat tab open the panel at Agents, and the agent added there answers', async ({ skiff }) => {
+test('in the Layer shell the Ask row and a waiting chat tab open the card at Agents, and the agent added there answers', async ({ skiff }) => {
   await useLayer(skiff)
   await fixturePage(skiff)
   const bar = await openBar(skiff)
   await bar.keyboard.type('what is a layer')
   await expect(bar.locator('#palette-results li').first().locator('.label')).toHaveText('Ask an agent')
   await bar.keyboard.press('Enter')
-  await expect.poll(() => skiff.barOpen()).toBe(false)
-  const panel = await layerPanel(skiff)
+  // The card stays and shows Settings at Agents, where the bar was.
+  const panel = bar
+  await expect(panel.locator('#palette-input')).toHaveValue('')
+  expect(await skiff.barOpen()).toBe(true)
   await expect(panel.locator('#agents-section')).toBeInViewport()
   await expect(panel.locator('#agent-preset')).toBeFocused()
   await panel.locator('#settings-toggle').click()

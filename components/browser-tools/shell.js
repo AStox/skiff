@@ -16,7 +16,7 @@
   let snapshot = null
   const report = (error) => {
     let node = document.getElementById('tools-error')
-    if (!node) { node = make('p', { id: 'tools-error', role: 'alert', class: 'tools-error' }); (document.querySelector('#sidebar, #panel, #buoy, #ear, #chat-head') || document.body).append(node) }
+    if (!node) { node = make('p', { id: 'tools-error', role: 'alert', class: 'tools-error' }); (document.querySelector('#sidebar') || document.querySelector('#panel, #buoy, #ear, #chat-head') || document.body).append(node) }
     node.textContent = error.message || String(error)
   }
   const call = (name, args = {}) => skiff.call(name, args).catch(report)
@@ -24,7 +24,7 @@
   const button = (label, action, attrs = {}) => make('button', { type: 'button', class: 'text-btn skiff-tool', onclick: (event) => { event.stopPropagation(); action() }, ...attrs }, label)
   function access() {
     if (document.getElementById('browser-tools-open')) return
-    const target = document.querySelector('.sidebar-tools, #buoy, #chat-head, #tablist header') || document.getElementById('settings-toggle')?.parentElement
+    const target = document.querySelector('.sidebar-tools') || document.querySelector('#buoy, #chat-head, #tablist header') || document.getElementById('settings-toggle')?.parentElement
     if (!target) return
     const frameId = new URLSearchParams(location.search).get('id')
     const trigger = button('Tools', () => document.getElementById('chat-head') ? open('settings') : open('page', frameId), { id: 'browser-tools-open', title: 'Browser tools: page, settings, history and components', 'aria-haspopup': 'dialog' })

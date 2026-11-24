@@ -1101,3 +1101,18 @@ test('role resolution falls through inactive bindings to global and registered s
   assert.equal(runtime.inspect({ id: 'stock.shell' }).enabled, false)
   assert.equal(runtime.resolve('unprovided'), null)
 })
+
+test('a stock component an update no longer ships leaves no entry or binding behind', async (t) => {
+  const { dir, registry, runtime } = setup(t)
+  const stockRoot = path.join(__dirname, '..', 'components', 'layout')
+  runtime.registerStock({ root: stockRoot, manifest: JSON.parse(fs.readFileSync(path.join(stockRoot, 'manifest.json'), 'utf8')) })
+  await runtime.start()
+  await runtime.stop()
+  assert.ok(Object.keys(JSON.parse(fs.readFileSync(path.join(dir, 'composition.json'), 'utf8')).components).includes('stock.layout'))
+  const next = createComponents({ dir, registry: createRegistry(), timeouts: { start: 1000, call: 200, stop: 100 } })
+  t.after(() => next.stop())
+  await next.start()
+  const store = next.inspect()
+  assert.deepEqual(Object.keys(store.components || {}).filter((id) => id.startsWith('stock.')), [])
+  assert.deepEqual(Object.values(store.bindings.global).filter((id) => id.startsWith('stock.')), [])
+})

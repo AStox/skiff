@@ -1730,15 +1730,15 @@ function agentApi({ agent, chatId }) {
 }
 
 function stockShellManifest(root = stockShellRoot()) {
-  const surfaces = { shell: 'index.html', launcher: 'palette.html' }
-  for (const [role, file] of Object.entries({ frame: 'frame.html', tablist: 'tablist.html', spaces: 'panel.html', overview: 'expose.html' })) if (fs.existsSync(path.join(root, file))) surfaces[role] = file
+  const surfaces = { shell: 'index.html' }
+  for (const [role, file] of Object.entries({ launcher: 'palette.html', frame: 'frame.html', tablist: 'tablist.html', spaces: 'panel.html', overview: 'expose.html' })) if (fs.existsSync(path.join(root, file))) surfaces[role] = file
   return { apiVersion: 1, id: 'stock.shell', version: '1.0.0', surfaces, capabilities: ['ui', 'host.manage', 'call:*', 'events:*'] }
 }
 
 function registerStockComponents() {
   const register = (id, root, surfaces) => components.registerStock({ root, manifest: { apiVersion: 1, id, version: '1.0.0', surfaces, capabilities: ['ui', 'host.manage', 'call:*', 'events:*'] } })
   register('stock.shell', stockShellRoot(), stockShellManifest().surfaces)
-  for (const [role, file] of Object.entries({ frame: 'frame.html', tablist: 'tablist.html', spaces: 'panel.html', overview: 'expose.html' })) {
+  for (const [role, file] of Object.entries({ frame: 'frame.html', tablist: 'tablist.html', overview: 'expose.html' })) {
     register(`stock.${role}`, path.join(bundledShells, 'layer'), { [role]: file })
   }
   register('stock.chat', chatDir, { chat: 'chat.html' })

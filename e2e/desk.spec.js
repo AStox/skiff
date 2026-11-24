@@ -1050,20 +1050,16 @@ test('a new desk window goes where its host was last put, else into the largest 
 })
 
 test.describe('layer panel and Buoy', () => {
-  const panelShown = async (skiff) => (await children(skiff)).some((c) => c.kind === 'file' && c.name === 'panel.html')
-  // Counts every time the panel's view leaves the window, so a close and reopen (a flicker) shows too.
-  const watchPanel = (skiff) => skiff.app.evaluate(({ BrowserWindow }) => {
-    const view = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('/index.html')).contentView
-    global.__panelHides = 0
-    if (view.__watched) return
-    view.__watched = true
-    const remove = view.removeChildView.bind(view)
-    view.removeChildView = (child) => {
-      if (child.webContents?.getURL().endsWith('/panel.html')) global.__panelHides++
-      return remove(child)
-    }
+  // The expanded Buoy: the pill grown into the card. Settled open has the class and no morph left; settled home is the pill at its place.
+  const isOpen = (buoy) => buoy.locator('#buoy').evaluate((el) => el.classList.contains('open') && !el.classList.contains('morphing'))
+  const isHome = (buoy) => buoy.evaluate(() => {
+    const el = document.getElementById('buoy')
+    const r = el.getBoundingClientRect()
+    const p = buoyRect(state, place)
+    return !el.classList.contains('open') && !el.classList.contains('morphing') && Math.abs(r.x - p.x) < 1 && Math.abs(r.y - p.y) < 1 && Math.abs(r.width - p.width) < 1 && Math.abs(r.height - p.height) < 1
   })
-  const panelHides = (skiff) => skiff.app.evaluate(() => global.__panelHides)
+  const cardRect = (buoy) => buoy.evaluate(() => { const r = document.getElementById('buoy').getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height } })
+  const buoyHit = async (skiff) => (await skiff.audit()).calls.filter((c) => c.method === 'ui.showOverlay' && c.params.name === 'buoy').at(-1).params.hit
   // Real wheel input to one shell view in real time: events [ms, dx, dy?] at a point in its CSS pixels.
   const wheel = (skiff, url, at, events, modifiers = []) => skiff.app.evaluate(({ webContents }, { url, at, events, modifiers }) => new Promise((resolve) => {
     const wc = webContents.getAllWebContents().find((w) => w.getURL() === url)
@@ -1085,111 +1081,252 @@ test.describe('layer panel and Buoy', () => {
   }
   const centre = (page, selector) => page.locator(selector).first().evaluate((el) => { const r = el.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) } })
 
-  test('the panel opens with the shell without the keyboard, and closes only by Cmd+S, the Buoy or its close button', async ({ skiff }) => {
-    const first = (await skiff.state()).activeSpaceId
-    const one = (await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })).id
-    await skiff.rpc('tabs.create', { url: skiff.origin + '/two' })
-    const second = (await skiff.rpc('spaces.create', { name: 'Second' })).id
-    await skiff.rpc('spaces.activate', { id: first })
+  test('the Buoy opens into the command bar in the middle of the desk, with the keyboard, and a pick, Escape, a second press, a press outside or the keyboard leaving close it back into the pill', async ({ skiff }) => {
+    await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
+    const two = (await skiff.rpc('tabs.create', { url: skiff.origin + '/two' })).id
+    const one = (await skiff.state()).tabs.find((t) => t.url.endsWith('/one')).id
     await switchWindow(skiff, deskShell)
-    const panel = await shellPage(skiff, '/panel.html')
     const buoy = await shellPage(skiff, '/buoy.html')
-    await expect(panel.locator('#sidebar')).toBeVisible()
-    await expect.poll(() => panelShown(skiff)).toBe(true)
-    expect(await hasFocus(skiff, panel)).toBe(false)
+    await expect(buoy.locator('#buoy-name')).not.toBeEmpty()
+    await expect.poll(() => isHome(buoy)).toBe(true)
+    // The pill alone shows; the card is there, laid out, and hidden.
+    await expect(buoy.locator('#card')).toBeHidden()
+    await expect(buoy.locator('#buoy-main')).toHaveAttribute('aria-expanded', 'false')
+    const pageTwo = await skiff.page('/two')
+    const closed = () => expect.poll(() => isHome(buoy)).toBe(true)
+    const opened = () => expect.poll(() => isOpen(buoy)).toBe(true)
+
+    // The name opens it: the input has the keyboard, the card is centred on the desk and takes the clicks, and below the input is the panel's content.
+    await buoy.locator('#buoy-main').click()
+    await opened()
+    await expect(buoy.locator('#palette-input')).toBeFocused()
+    await expect.poll(() => hasFocus(skiff, buoy)).toBe(true)
     await expect(buoy.locator('#buoy-main')).toHaveAttribute('aria-expanded', 'true')
-    // Above every window.
-    const order = (await children(skiff)).map((c) => `${c.kind} ${c.name}`)
-    expect(order.indexOf('file panel.html')).toBeGreaterThan(Math.max(order.indexOf('page /one'), order.indexOf('page /two')))
-    await watchPanel(skiff)
-    const stillOpen = async (what) => {
-      await panel.waitForTimeout(300)
-      expect(await panelShown(skiff), what).toBe(true)
-      expect(await panelHides(skiff), what).toBe(0)
-    }
-
-    // A click on a window's page, then on the empty desk.
-    const two = await skiff.page('/two')
-    await two.waitForLoadState()
-    const { text } = await spots(two)
-    await pointer(skiff, two.url(), [['mouseDown', ...text], ['mouseUp', ...text]])
-    await stillOpen('page click')
     const { deskSize } = await skiff.state()
-    await skiff.shell.mouse.click(deskSize.width - 20, 40)
-    await stillOpen('desk click')
+    const card = await cardRect(buoy)
+    expect(card.width).toBe(560)
+    expect(Math.abs(card.x + card.width / 2 - deskSize.width / 2)).toBeLessThanOrEqual(1)
+    expect(Math.abs(card.y + card.height / 2 - deskSize.height / 2)).toBeLessThanOrEqual(1)
+    expect(await buoyHit(skiff)).toEqual([{ ...card, height: Math.round(card.height) }])
+    await expect(buoy.locator(`#list [data-tab-id="${one}"]`)).toBeVisible()
+    await expect(buoy.locator('#palette-results')).toBeHidden()
+    await expect(buoy.locator('footer #settings-toggle')).toBeVisible()
+    // A query shows the bar's rows instead, and clearing it brings the content back.
+    await buoy.keyboard.type('zz')
+    await expect(buoy.locator('#palette-results li').first()).toBeVisible()
+    await expect(buoy.locator('#sidebar')).toBeHidden()
+    await buoy.keyboard.press('Backspace')
+    await buoy.keyboard.press('Backspace')
+    await expect(buoy.locator('#sidebar')).toBeVisible()
+    await expect(buoy.locator('#palette-results')).toBeHidden()
 
-    // Picking a tab gives the keyboard to its page.
-    await panel.locator(`[data-tab-id="${one}"] .row-main`).click()
-    await expect.poll(async () => (await skiff.state()).activeTabBySpace[first]).toBe(one)
+    // Escape closes it into the pill's place and gives the keyboard back to the page.
+    await buoy.keyboard.press('Escape')
+    await closed()
+    expect(await buoyHit(skiff)).toEqual([await buoy.evaluate(() => buoyRect(state, place))])
+    await expect.poll(() => hasFocus(skiff, pageTwo)).toBe(true)
+
+    // Cmd+T and Cmd+S open it, and the same key again closes it; so does the plus.
+    for (const key of ['CmdOrCtrl+T', 'CmdOrCtrl+S']) {
+      await skiff.shortcut(key)
+      await opened()
+      await expect(buoy.locator('#palette-input')).toBeFocused()
+      await skiff.shortcut(key)
+      await closed()
+      await expect.poll(() => hasFocus(skiff, pageTwo)).toBe(true)
+    }
+    await buoy.locator('#buoy-new').click()
+    await opened()
+    await expect(buoy.locator('#palette-input')).toBeFocused()
+    // A press on the desk outside the card closes it.
+    await buoy.mouse.click(5, 5)
+    await closed()
+    // The keyboard leaving it, as for another app, closes it too, but not a blur that is already over.
+    await buoy.locator('#buoy-main').click()
+    await opened()
+    await buoy.evaluate(() => { dispatchEvent(new Event('blur')); dispatchEvent(new Event('focus')) })
+    await buoy.waitForTimeout(250)
+    expect(await isOpen(buoy)).toBe(true)
+    await buoy.evaluate(() => dispatchEvent(new Event('blur')))
+    await closed()
+    // A pick closes it too and shows that window with the keyboard.
+    await buoy.locator('#buoy-main').click()
+    await opened()
+    await buoy.locator(`#list [data-tab-id="${one}"] .row-main`).click()
+    await closed()
+    await expect.poll(async () => (await skiff.state()).activeTabBySpace[(await skiff.state()).activeSpaceId]).toBe(one)
     const pageOne = await skiff.page('/one')
     await expect.poll(() => hasFocus(skiff, pageOne)).toBe(true)
-    await stillOpen('pick')
+    expect(two).not.toBe(one)
+  })
 
-    // The command bar opens above it; Escape closes the bar and gives the keyboard back to where it was.
-    await skiff.shortcut('CmdOrCtrl+T')
-    const palette = await shellPage(skiff, '/palette.html')
-    await expect.poll(() => hasFocus(skiff, palette)).toBe(true)
-    const names = (await children(skiff)).map((c) => c.name)
-    expect(names.indexOf('palette.html')).toBeGreaterThan(names.indexOf('panel.html'))
-    await palette.keyboard.press('Escape')
-    await expect.poll(async () => (await children(skiff)).some((c) => c.name === 'palette.html')).toBe(false)
-    await expect.poll(() => hasFocus(skiff, pageOne)).toBe(true)
-    await stillOpen('command bar from the keyboard')
-    await panel.locator('#address').click()
-    await expect.poll(() => hasFocus(skiff, palette)).toBe(true)
-    await palette.keyboard.press('Escape')
-    await expect.poll(() => hasFocus(skiff, panel)).toBe(true)
-    await stillOpen('command bar from the panel')
+  test('every trigger that opened the panel or the bar opens the card in its own state, or moves an open card there', async ({ skiff }) => {
+    await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
+    await switchWindow(skiff, deskShell)
+    const buoy = await shellPage(skiff, '/buoy.html')
+    await expect(buoy.locator('#buoy-name')).not.toBeEmpty()
+    const closed = () => expect.poll(() => isHome(buoy)).toBe(true)
+    const opened = () => expect.poll(() => isOpen(buoy)).toBe(true)
+    const emit = (name, data) => skiff.rpc('ui.emit', { name, data })
+    const head = () => buoy.locator('#space-head h1')
+    const reset = async () => {
+      await buoy.keyboard.press('Escape')
+      await closed()
+    }
 
-    // Escape in the panel, and a space switch there and back.
-    await panel.keyboard.press('Escape')
-    await stillOpen('Escape')
-    await skiff.rpc('spaces.activate', { id: second })
-    await expect(panel.locator('#space-head')).toContainText('Second')
-    await skiff.rpc('spaces.activate', { id: first })
-    await stillOpen('space switch')
-
-    // Cmd+S closes it and hands the keyboard to the page; again opens it without the keyboard.
-    await skiff.shortcut('CmdOrCtrl+S')
-    await expect.poll(() => panelShown(skiff)).toBe(false)
-    expect(await panelHides(skiff)).toBe(1)
-    await expect(buoy.locator('#buoy-main')).toHaveAttribute('aria-expanded', 'false')
-    await expect.poll(() => hasFocus(skiff, pageOne)).toBe(true)
-    await skiff.shortcut('CmdOrCtrl+S')
-    await expect.poll(() => panelShown(skiff)).toBe(true)
-    await panel.waitForTimeout(200)
-    expect(await hasFocus(skiff, panel)).toBe(false)
-    expect(await hasFocus(skiff, pageOne)).toBe(true)
-
-    // The Buoy toggles it, opening it brings the desk in front of another window; the close button closes it.
+    // Each view of the panel.
+    await emit('toggle-settings')
+    await opened()
+    await expect(head()).toHaveText('Settings')
+    await expect(buoy.locator('#panel')).toBeVisible()
+    // A second one toggles the view off, not the card.
+    await emit('toggle-settings')
+    await expect(head()).not.toHaveText('Settings')
+    expect(await isOpen(buoy)).toBe(true)
+    await reset()
+    await emit('toggle-archive')
+    await opened()
+    await expect(head()).toHaveText('Archive')
+    await reset()
+    await emit('toggle-agents')
+    await opened()
+    await expect(head()).toHaveText('Agents')
+    await reset()
+    // The card starts from the tab list again, whatever it showed when it closed.
     await buoy.locator('#buoy-main').click()
-    await expect.poll(() => panelShown(skiff)).toBe(false)
-    const deskId = await skiff.app.evaluate(({ BrowserWindow }) => {
-      const all = BrowserWindow.getAllWindows()
-      all.find((w) => w.webContents.getURL().endsWith('/buoy.html')).focus()
-      return all.find((w) => w.webContents.getURL().endsWith('/index.html')).id
+    await opened()
+    await expect(head()).toHaveText(/\S/)
+    await expect(head()).not.toHaveText(/Settings|Archive|Agents/)
+    await reset()
+
+    // A bar mode opens it, and moves an open card there without closing it.
+    await emit('focus-address')
+    await opened()
+    await expect(buoy.locator('#palette-input')).toBeFocused()
+    await expect(buoy.locator('#palette-input')).toHaveValue(skiff.origin + '/one')
+    await emit('ask-agent')
+    await expect(buoy.locator('#palette-ask')).toBeVisible()
+    expect(await isOpen(buoy)).toBe(true)
+    await reset()
+    await emit('ask-agent')
+    await opened()
+    await expect(buoy.locator('#palette-ask')).toBeVisible()
+    // While the bar is in a mode, a view of the panel clears it, since it shows only with the bar empty.
+    await emit('toggle-settings')
+    await expect(buoy.locator('#palette-ask')).toBeHidden()
+    await expect(head()).toHaveText('Settings')
+    await reset()
+    await emit('new-tab')
+    await opened()
+    await emit('new-tab')
+    await closed()
+    await emit('toggle-sidebar')
+    await opened()
+    await emit('toggle-sidebar')
+    await closed()
+
+    // The Arc import opens inside the card, as a dialog over the whole desk, and closing it leaves the card.
+    await emit('import-arc')
+    await opened()
+    await expect(buoy.locator('#arc-import')).toBeVisible()
+    const { deskSize } = await skiff.state()
+    expect(await buoyHit(skiff)).toEqual([{ x: 0, y: 0, width: deskSize.width, height: deskSize.height }])
+    await buoy.locator('#arc-cancel').click()
+    await expect(buoy.locator('#arc-import')).toBeHidden()
+    await expect.poll(async () => (await buoyHit(skiff))[0].width).toBe(560)
+    expect(await isOpen(buoy)).toBe(true)
+    // Escape in the dialog closes only the dialog.
+    await emit('import-arc')
+    await expect(buoy.locator('#arc-import')).toBeVisible()
+    await buoy.keyboard.press('Escape')
+    await expect(buoy.locator('#arc-import')).toBeHidden()
+    expect(await isOpen(buoy)).toBe(true)
+  })
+
+  test('opening is one motion: the pill itself grows into the card and shrinks back, never with both showing, in a window that never moves, and with reduced motion it fades', async ({ skiff }) => {
+    await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
+    await switchWindow(skiff, deskShell)
+    const buoy = await shellPage(skiff, '/buoy.html')
+    await expect(buoy.locator('#buoy-name')).not.toBeEmpty()
+    await expect.poll(() => isHome(buoy)).toBe(true)
+    const record = () => buoy.evaluate(() => {
+      window.__frames = []
+      const tick = (t) => {
+        const el = document.getElementById('buoy')
+        const r = el.getBoundingClientRect()
+        const row = getComputedStyle(document.getElementById('buoy-row'))
+        const card = getComputedStyle(document.getElementById('card'))
+        const dot = document.getElementById('buoy-dot').getBoundingClientRect()
+        const style = getComputedStyle(el)
+        window.__frames.push({ t, x: r.x, y: r.y, width: r.width, height: r.height, pill: row.visibility === 'visible' ? Number(row.opacity) : 0, card: card.visibility === 'visible' ? Number(card.opacity) : 0, shape: Number(style.opacity), dx: dot.x - r.x, dy: dot.y - r.y, radius: parseFloat(style.borderTopLeftRadius), morphing: el.classList.contains('morphing') })
+        window.__tick = requestAnimationFrame(tick)
+      }
+      window.__tick = requestAnimationFrame(tick)
     })
-    const focusedBefore = (await skiff.audit()).focused.length
-    await buoy.locator('#buoy-main').click()
-    await expect.poll(() => panelShown(skiff)).toBe(true)
-    expect((await skiff.audit()).focused.slice(focusedBefore)).toContainEqual({ id: deskId })
-    await expect(panel.locator('#sidebar')).toBeVisible()
-    await panel.locator('#close-panel').click()
-    await expect.poll(() => panelShown(skiff)).toBe(false)
-    await skiff.shortcut('CmdOrCtrl+S')
-    await expect.poll(() => panelShown(skiff)).toBe(true)
+    const frames = () => buoy.evaluate(() => { cancelAnimationFrame(window.__tick); return window.__frames })
+    const shown = (f) => f.pill * f.shape > 0.02 && f.card * f.shape > 0.02
+    const pill = await buoy.evaluate(() => buoyRect(state, place))
+    const bounds = async () => (await skiff.audit()).calls.filter((c) => c.method === 'ui.showOverlay' && c.params.name === 'buoy').map((c) => JSON.stringify(c.params.bounds))
 
-    // An ear under the panel slides clear of it, and back once it closes.
-    await expect.poll(() => panel.evaluate(() => sharedRect && JSON.parse(sharedRect))).toBeTruthy()
-    const rect = await panel.evaluate(() => JSON.parse(sharedRect))
-    const placed = { x: rect.x + 40, y: rect.y + 60, width: 700, height: 200 }
-    await skiff.rpc('desk.place', { id: one, ...placed })
-    const frame = await shellPage(skiff, `/frame.html?tab=${one}`)
-    await expect.poll(() => frame.evaluate(() => mine()?.rect)).toEqual(placed)
-    await expect.poll(() => frame.evaluate(() => ear && mine().rect.x + ear.dx)).toBeGreaterThanOrEqual(rect.x + rect.width)
-    await skiff.shortcut('CmdOrCtrl+S')
-    const corner = await frame.evaluate(() => EAR_CORNER)
-    await expect.poll(() => frame.evaluate(() => ear?.dx)).toBe(corner)
+    await record()
+    await skiff.shortcut('CmdOrCtrl+T')
+    await expect.poll(() => isOpen(buoy)).toBe(true)
+    await buoy.waitForTimeout(150)
+    const target = await cardRect(buoy)
+    await skiff.shortcut('CmdOrCtrl+T')
+    await expect.poll(() => isHome(buoy)).toBe(true)
+    await buoy.waitForTimeout(150)
+    const run = await frames()
+
+    // Never the pill's content and the card's together, and one shape throughout.
+    expect(run.filter(shown)).toEqual([])
+    const opening = run.slice(0, run.findIndex((f, i) => i > 0 && f.width === target.width && f.height === target.height) + 1)
+    const closing = run.slice(run.indexOf(opening.at(-1)) + 1)
+    const moving = (list) => list.filter((f, i, all) => i && (f.x !== all[i - 1].x || f.y !== all[i - 1].y || f.width !== all[i - 1].width || f.height !== all[i - 1].height))
+    // From the pill's rect to the card's, steadily, in about a quarter of a second, and no frame in it is further from the end than the one before.
+    const grown = moving(opening)
+    expect(grown.length).toBeGreaterThan(6)
+    expect(grown.at(-1).t - grown[0].t).toBeGreaterThan(150)
+    expect(grown.at(-1).t - grown[0].t).toBeLessThan(450)
+    const gap = (list) => Math.max(...list.slice(1).map((f, i) => f.t - list[i].t))
+    expect(gap(grown)).toBeLessThan(60)
+    expect(opening[0]).toMatchObject({ x: expect.closeTo(pill.x, 0), y: expect.closeTo(pill.y, 0), width: expect.closeTo(pill.width, 0), height: 30 })
+    const order = (key, up) => grown.every((f, i) => !i || (up ? f[key] >= grown[i - 1][key] - 0.5 : f[key] <= grown[i - 1][key] + 0.5))
+    expect(order('width', true) && order('height', true)).toBe(true)
+    expect(order('x', true) === (target.x >= pill.x) || order('x', false)).toBe(true)
+    expect(order('y', false) || order('y', true)).toBe(true)
+    // The radius goes from the pill's to the card's, and the dot stays inside the shape from the first frame to the last.
+    expect(opening[0].radius).toBeCloseTo(15, 0)
+    expect(opening.at(-1).radius).toBeCloseTo(18, 0)
+    expect(run.filter((f) => f.pill * f.shape > 0.02 || f.card * f.shape > 0.02).every((f) => f.dx >= 0 && f.dy >= 0 && f.dx <= f.width && f.dy <= f.height)).toBe(true)
+    // The card takes over once the shape is most of the way there, and the pill's content is gone before.
+    const cardFrom = opening.find((f) => f.card * f.shape > 0.02)
+    expect(cardFrom.width).toBeGreaterThan(pill.width + (target.width - pill.width) * 0.6)
+    expect(opening.find((f) => f.pill * f.shape === 0).t).toBeLessThanOrEqual(cardFrom.t)
+    // Closing runs it back to where it came from.
+    const shrunk = moving(closing)
+    expect(shrunk.length).toBeGreaterThan(6)
+    expect(closing.at(-1)).toMatchObject({ x: expect.closeTo(pill.x, 0), y: expect.closeTo(pill.y, 0), width: expect.closeTo(pill.width, 0), height: 30 })
+    expect(shrunk.every((f, i) => !i || f.width <= shrunk[i - 1].width + 0.5)).toBe(true)
+    // The window never moved or changed size.
+    expect(new Set(await bounds()).size).toBe(1)
+
+    // With reduced motion there is no travel: it fades in at the card's place and out again.
+    await buoy.emulateMedia({ reducedMotion: 'reduce' })
+    await record()
+    await skiff.shortcut('CmdOrCtrl+T')
+    await expect.poll(() => isOpen(buoy)).toBe(true)
+    await buoy.waitForTimeout(250)
+    await skiff.shortcut('CmdOrCtrl+T')
+    await expect.poll(() => isHome(buoy)).toBe(true)
+    await buoy.waitForTimeout(250)
+    const reduced = await frames()
+    expect(reduced.some((f) => f.morphing)).toBe(false)
+    expect(reduced.filter(shown)).toEqual([])
+    expect(reduced.some((f) => f.shape < 1 && f.shape > 0)).toBe(true)
+    const places = new Set(reduced.filter((f) => f.shape > 0.02).map((f) => `${f.x},${f.y},${f.width}`))
+    expect(places.size).toBeLessThanOrEqual(2)
+    expect(new Set(await bounds()).size).toBe(1)
   })
 
   test('the Buoy shows the space\'s favorites: a click brings that window forward, a drag from one moves the Buoy, and too many end in +N', async ({ skiff }) => {
@@ -1208,8 +1345,6 @@ test.describe('layer panel and Buoy', () => {
     await skiff.rpc('tabs.activate', { id: plain })
     await switchWindow(skiff, deskShell)
     const buoy = await shellPage(skiff, '/buoy.html')
-    const panel = await shellPage(skiff, '/panel.html')
-    await expect.poll(() => panelShown(skiff)).toBe(true)
     const shownIds = () => buoy.locator('.buoy-fav[data-tab-id]').evaluateAll((els) => els.map((el) => el.dataset.tabId))
     const order = async (spaceId) => (await skiff.state()).tabs.filter((t) => t.favorite && t.spaceId === spaceId).map((t) => t.id)
     await expect.poll(shownIds).toEqual(await order(first))
@@ -1227,16 +1362,16 @@ test.describe('layer panel and Buoy', () => {
     await skiff.rpc('spaces.activate', { id: first })
     await expect.poll(shownIds).toEqual(favs)
 
-    // The Buoy window takes the wider pill, clicks included.
+    // The Buoy window is as big as the desk, and takes clicks on the wider pill.
     const fits = async () => {
-      const pill = await buoy.evaluate(() => { const r = document.getElementById('buoy').getBoundingClientRect(); return { right: r.right, width: r.width, vw: innerWidth } })
+      const pill = await buoy.evaluate(() => { const r = document.getElementById('buoy').getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, width: r.width, height: r.height, vw: innerWidth } })
       const win = (await floats(skiff)).find((f) => f.file === 'buoy.html').bounds
-      return pill.right <= pill.vw && win.width >= pill.width
+      const [hit] = await buoyHit(skiff)
+      return pill.right <= pill.vw && win.width >= pill.width && hit.width === Math.round(pill.width) && hit.x === pill.x && hit.y === pill.y
     }
     await expect.poll(fits).toBe(true)
 
-    // A click activates that tab, ringed in the space colour, and leaves the panel alone.
-    await watchPanel(skiff)
+    // A click activates that tab, ringed in the space colour, and does not open the card.
     await buoy.locator(`.buoy-fav[data-tab-id="${favs[1]}"]`).click()
     await expect.poll(async () => (await skiff.state()).activeTabBySpace[first]).toBe(favs[1])
     await expect(buoy.locator('.buoy-fav.current')).toHaveAttribute('data-tab-id', favs[1])
@@ -1246,9 +1381,7 @@ test.describe('layer panel and Buoy', () => {
     const rgb = [1, 3, 5].map((i) => parseInt(accent.slice(i, i + 2), 16))
     expect(ring).toContain(`rgb(${rgb.join(', ')})`)
     await buoy.waitForTimeout(300)
-    expect(await panelShown(skiff)).toBe(true)
-    expect(await panelHides(skiff)).toBe(0)
-    await expect(buoy.locator('#buoy-main')).toHaveAttribute('aria-expanded', 'true')
+    await expect(buoy.locator('#buoy-main')).toHaveAttribute('aria-expanded', 'false')
 
     // A drag that starts on a favicon moves the Buoy and picks nothing.
     const from = await centre(buoy, `.buoy-fav[data-tab-id="${favs[2]}"]`)
@@ -1272,9 +1405,9 @@ test.describe('layer panel and Buoy', () => {
     await expect.poll(async () => { const b = await where(); return [b.x - before.x, b.y - before.y] }).toEqual([300, -300])
     await buoy.waitForTimeout(200)
     expect((await skiff.state()).activeTabBySpace[first]).toBe(favs[1])
-    expect(await panelShown(skiff)).toBe(true)
+    expect(await isOpen(buoy)).toBe(false)
 
-    // Too many for 60% of the desk: as many as fit, then +N, which opens the panel.
+    // Too many for 60% of the desk: as many as fit, then +N, which opens the card.
     const more = []
     for (let i = 0; i < 37; i++) more.push(await favorite(`/many${i}`))
     await skiff.rpc('tabs.activate', { id: favs[1] })
@@ -1293,14 +1426,12 @@ test.describe('layer panel and Buoy', () => {
     expect(c.ids.length).toBeGreaterThan(10)
     expect(c.width).toBeLessThanOrEqual(deskSize.width * 0.6)
     await expect.poll(fits).toBe(true)
-    await skiff.shortcut('CmdOrCtrl+S')
-    await expect.poll(() => panelShown(skiff)).toBe(false)
     await buoy.locator('#buoy-more').click()
-    await expect.poll(() => panelShown(skiff)).toBe(true)
-    await expect(panel.locator('#sidebar')).toBeVisible()
+    await expect.poll(() => isOpen(buoy)).toBe(true)
+    await expect(buoy.locator('#sidebar')).toBeVisible()
   })
 
-  test('a two finger swipe anywhere on the panel or on an ear switches one space per gesture; vertical scrolling scrolls the list', async ({ skiff }) => {
+  test('a two finger swipe anywhere on the card or on an ear switches one space per gesture; vertical scrolling scrolls the list', async ({ skiff }) => {
     const first = (await skiff.state()).activeSpaceId
     const one = (await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })).id
     // Enough pinned rows that the list scrolls.
@@ -1313,8 +1444,9 @@ test.describe('layer panel and Buoy', () => {
     await skiff.rpc('spaces.create', { name: 'Third' })
     await skiff.rpc('spaces.activate', { id: first })
     await switchWindow(skiff, deskShell)
-    const panel = await shellPage(skiff, '/panel.html')
-    await expect.poll(() => panelShown(skiff)).toBe(true)
+    const panel = await shellPage(skiff, '/buoy.html')
+    await panel.locator('#buoy-main').click()
+    await expect.poll(() => isOpen(panel)).toBe(true)
     await expect(panel.locator('#list .row').nth(20)).toBeAttached()
     const back = () => skiff.rpc('spaces.activate', { id: first })
 
@@ -1366,8 +1498,6 @@ test.describe('layer panel and Buoy', () => {
     await skiff.rpc('tabs.activate', { id: one })
     await switchWindow(skiff, deskShell)
     const buoy = await shellPage(skiff, '/buoy.html')
-    const panel = await shellPage(skiff, '/panel.html')
-    await expect.poll(() => panelShown(skiff)).toBe(true)
     await skiff.rpc('desk.hide', { id: three })
     const { deskSize } = await skiff.state()
     const empty = { x: deskSize.width - 20, y: 40 }
@@ -1424,7 +1554,7 @@ test.describe('layer panel and Buoy', () => {
     expect(await children(skiff)).toEqual(layout)
     expect(JSON.stringify((await skiff.state()).tabs.map((t) => [t.id, t.desk]))).toBe(tabsBefore)
     expect(await isFocused(skiff, deskId)).toBe(true)
-    // Rows as the panel's: favicon and title, the active one marked, the hidden one dimmed.
+    // Rows as the card's: favicon and title, the active one marked, the hidden one dimmed.
     expect(await list.locator('#tablist .row').evaluateAll((rows) => rows.map((r) => r.dataset.tabId))).toEqual([one, two, three])
     await expect(list.locator('#tablist .row .favicon')).toHaveCount(3)
     await expect(list.locator('#tablist .row.current')).toHaveAttribute('data-tab-id', one)
@@ -1438,8 +1568,6 @@ test.describe('layer panel and Buoy', () => {
     expect(at.y - content.y + card.y + card.height).toBeLessThanOrEqual(pill.y)
     const hit = (await skiff.audit()).calls.filter((c) => c.method === 'ui.showOverlay' && c.params.name === 'tabs').at(-1).params.hit
     expect(hit).toEqual([{ x: card.x, y: card.y, width: card.width, height: card.height }])
-    // It shows over the open panel.
-    expect(await panelShown(skiff)).toBe(true)
 
     // The count again closes it, Escape in it closes it, and so does any other press on the Buoy.
     await count.click()
@@ -1451,7 +1579,7 @@ test.describe('layer panel and Buoy', () => {
     await list.keyboard.press('Escape').catch(() => {})
     await listClosed()
 
-    // A two finger swipe over it switches spaces, as on the panel.
+    // A two finger swipe over it switches spaces, as on the card.
     await count.click()
     list = await listPage()
     const centre = await list.locator('#tablist').evaluate((el) => { const r = el.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + 20) } })
@@ -1507,14 +1635,12 @@ test.describe('layer panel and Buoy', () => {
       await expect.poll(deskOnly).toBeNull()
       await expect.poll(pagesShown).toEqual(expect.arrayContaining(['/one', '/three', '/two']))
     }
-    // The whole desk comes back from a click on the Buoy's name (the panel closes and opens with it),
+    // The whole desk comes back from a click on the Buoy's name (which opens the card),
     await buoy.locator('#buoy-main').click()
     await everyWindow()
-    await expect.poll(() => panelShown(skiff)).toBe(false)
-    await onlyThree()
-    await buoy.locator('#buoy-main').click()
-    await everyWindow()
-    await expect.poll(() => panelShown(skiff)).toBe(true)
+    await expect.poll(() => isOpen(buoy)).toBe(true)
+    await buoy.keyboard.press('Escape')
+    await expect.poll(() => isHome(buoy)).toBe(true)
     // a space switch,
     await onlyThree()
     await skiff.rpc('spaces.activate', { id: second })
@@ -1536,10 +1662,13 @@ test.describe('layer panel and Buoy', () => {
     await buoy.locator(`.buoy-fav[data-tab-id="${fav}"]`).click()
     await listClosed()
     await everyWindow()
-    // and a pick in the panel.
+    // and a pick in the card.
     await onlyThree()
-    await panel.locator(`[data-tab-id="${two}"] .row-main`).click()
+    await buoy.locator('#buoy-main').click()
+    await expect.poll(() => isOpen(buoy)).toBe(true)
+    await buoy.locator(`#list [data-tab-id="${two}"] .row-main`).click()
     await everyWindow()
+    await expect.poll(() => isHome(buoy)).toBe(true)
     // Exposé, which shows every window, ends it too.
     await onlyThree()
     await skiff.rpc('ui.emit', { name: 'expose', focus: false })

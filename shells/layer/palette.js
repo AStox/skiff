@@ -1,27 +1,12 @@
 'use strict'
 
-const $ = (id) => document.getElementById(id)
-const paletteInput = $('palette-input')
 const palette = { mode: 'new', site: null, typed: '', rows: [], selected: 0 }
 const ask = { on: false, agent: '', model: '', effort: '' }
 // Agent names are trimmed, so this value never collides with one.
 const ADD = ' add'
-let state = null
 let agents = []
 
-const activeSpace = () => state.spaces.find((s) => s.id === state.activeSpaceId)
-const activeTab = () => state.tabs.find((t) => t.id === state.activeTabBySpace[state.activeSpaceId])
-const isIncognito = (spaceId) => Boolean(state.spaces.find((space) => space.id === spaceId)?.incognito)
 const openUrl = (url) => skiff.call(palette.mode === 'edit' && activeTab() ? 'tabs.navigate' : 'tabs.create', { url })
-// back: the keyboard goes back to the panel when the bar was opened from it.
-const close = (back = false) => {
-  paletteInput.blur()
-  return closeOverlay('main', { back })
-}
-const paletteEl = $('palette')
-const results = $('palette-results')
-const fit = () => fitOverlay(state, 'palette.html', paletteEl, PALETTE_WIDTH, paletteEl.offsetHeight + Math.max(0, results.scrollHeight - results.clientHeight))
-
 const askEntry = () => agents.find((a) => a.name === ask.agent) || agents[0]
 const valueIn = (list, value, fallback) => (list.some((o) => o.value === value) ? value : fallback || '')
 const nameOf = (list, value) => list?.find((o) => o.value === value)?.name
@@ -40,8 +25,18 @@ function askRow() {
   return { label: entry ? `Ask ${entry.name}` : 'Ask an agent', note: entry ? sub || 'Tab to choose model and effort' : 'Connect your agent', hint: entry ? 'New tab' : 'Settings', icon: 'sparkle', ask: true, pick: sendAsk }
 }
 
-// With no agent yet the bar closes and Settings opens at its Agents group.
-const connectAgent = () => close().then(() => skiff.call('ui.emit', { name: 'toggle-settings', data: { section: 'agents' } }))
+// With no agent yet the card shows Settings at its Agents group; a pick that returns this stays open.
+const STAY = 'stay'
+// Back to an empty bar, so the panel's content shows.
+function clearBar() {
+  if (ask.on) leaveAsk()
+  setSite(null, '')
+}
+function connectAgent() {
+  clearBar()
+  toggleSettings({ section: 'agents' })
+  return STAY
+}
 
 function sendAsk() {
   const { entry, model, effort } = askChoice()
@@ -92,7 +87,7 @@ function paletteRows() {
   return rows
 }
 
-// The first row sits nearest the input, above or below it as the bar opens from the Buoy, so ArrowDown walks away from the input.
+// The panel's content shows while nothing is typed; a query, a site or the agent shows the bar's rows instead.
 function drawPalette() {
   palette.rows = paletteRows()
   palette.selected = Math.max(0, Math.min(palette.selected, palette.rows.length - 1))
@@ -103,18 +98,21 @@ function drawPalette() {
     h('span', { class: 'palette-label' }, h('span', { class: 'label' }, row.label),
       (row.host || row.note) && h('small', {}, row.host && h('span', { class: 'mono' }, row.host), row.host && row.note && ' · ', row.note)),
     h('span', { class: 'when' }, row.hint))))
-  paletteInput.setAttribute('aria-expanded', String(Boolean(palette.rows.length)))
-  if (palette.rows.length) paletteInput.setAttribute('aria-activedescendant', `palette-${palette.selected}`)
-  else paletteInput.removeAttribute('aria-activedescendant')
-  fit()
+  bar.setAttribute('aria-expanded', String(Boolean(palette.rows.length)))
+  if (palette.rows.length) bar.setAttribute('aria-activedescendant', `palette-${palette.selected}`)
+  else bar.removeAttribute('aria-activedescendant')
+  const typed = ask.on || Boolean(palette.site) || palette.typed.trim() !== ''
+  $('palette-results').hidden = !typed
+  $('sidebar').hidden = typed
+  $('palette-hair').hidden = typed && !palette.rows.length
 }
 
 function setSite(site, typed) {
   palette.site = site
   palette.typed = typed
   palette.selected = 0
-  paletteInput.value = typed
-  paletteInput.placeholder = site ? `Search ${site.name}` : PLACEHOLDER
+  bar.value = typed
+  bar.placeholder = site ? `Search ${site.name}` : PLACEHOLDER
   $('palette-site').textContent = site ? `Search ${site.name}` : ''
   $('palette-site').hidden = !site
   drawPalette()
@@ -123,9 +121,9 @@ function setSite(site, typed) {
 // What the bar opens comes with every window of the space.
 async function pickRow(row) {
   try {
-    await row.pick()
+    if (await row.pick() === STAY) return
     if (state.deskOnly) skiff.call('ui.setDesk', { only: null }).catch(() => {})
-    close()
+    closeCard()
   } catch (error) {
     $('palette-error').textContent = error.message || 'That could not open. Try again.'
     $('palette-error').hidden = false
@@ -144,7 +142,7 @@ function fill(select, options, value) {
 
 function drawAsk() {
   $('palette-ask').hidden = $('palette-tools').hidden = !ask.on
-  if (!ask.on) return fit()
+  if (!ask.on) return
   const { entry, model, effort } = askChoice()
   $('palette-ask').textContent = entry ? `Ask ${entry.name}` : 'Ask an agent'
   fill($('palette-agent'), [...agents.map((a) => ({ value: a.name, name: a.name })), ...(entry ? [] : [{ value: '', name: 'No agent' }]), { value: ADD, name: 'Add an agent...' }], entry?.name || '')
@@ -161,7 +159,6 @@ function drawAsk() {
     $('palette-error').textContent = entry.error || `${entry.name} could not start.`
     $('palette-error').hidden = false
   }
-  fit()
 }
 
 function warm() {
@@ -173,59 +170,57 @@ function warm() {
   }, (error) => {
     $('palette-error').textContent = error.message || `${entry.name} could not start.`
     $('palette-error').hidden = false
-    fit()
   })
 }
 
 function enterAsk() {
   ask.on = true
   ask.agent = askEntry()?.name || ''
-  paletteInput.placeholder = 'Ask anything'
+  bar.placeholder = 'Ask anything'
   drawPalette()
   drawAsk()
   warm()
-  paletteInput.focus()
+  bar.focus()
 }
 
 function leaveAsk() {
   ask.on = false
-  paletteInput.placeholder = PLACEHOLDER
+  bar.placeholder = PLACEHOLDER
   $('palette-error').hidden = true
   drawAsk()
   drawPalette()
 }
 
-function openPalette(mode) {
+function openBar(mode) {
   palette.mode = mode === 'edit' ? 'edit' : 'new'
   const saved = state.settings.ai || {}
   Object.assign(ask, { on: false, agent: saved.agent || '', model: saved.model || '', effort: saved.effort || '' })
   $('palette-include').checked = false
-  paintSpace(state)
   $('palette-error').hidden = true
   setSite(null, mode === 'edit' ? activeTab()?.url || '' : '')
   drawAsk()
   if (mode === 'ask') enterAsk()
-  paletteInput.focus()
-  paletteInput.select()
+  bar.focus()
+  bar.select()
 }
 
-paletteInput.addEventListener('input', (event) => {
-  palette.typed = paletteInput.value
+bar.addEventListener('input', (event) => {
+  palette.typed = bar.value
   $('palette-error').hidden = true
-  if (ask.on) return fit()
-  const exact = !palette.site && SITES.find((s) => `${s.host} ` === paletteInput.value.toLowerCase())
+  if (ask.on) return
+  const exact = !palette.site && SITES.find((s) => `${s.host} ` === bar.value.toLowerCase())
   if (exact) return setSite(exact, '')
   palette.selected = 0
   drawPalette()
   const top = palette.rows[0]
   if (event.inputType === 'insertText' && top?.complete) {
-    paletteInput.value = palette.typed + top.label.slice(palette.typed.trim().length)
-    paletteInput.setSelectionRange(palette.typed.length, paletteInput.value.length)
+    bar.value = palette.typed + top.label.slice(palette.typed.trim().length)
+    bar.setSelectionRange(palette.typed.length, bar.value.length)
   }
 })
-paletteInput.addEventListener('keydown', (event) => {
+bar.addEventListener('keydown', (event) => {
   if (ask.on) {
-    if (event.key !== 'Backspace' || paletteInput.value) return
+    if (event.key !== 'Backspace' || bar.value) return
     event.preventDefault()
     return leaveAsk()
   }
@@ -243,27 +238,21 @@ paletteInput.addEventListener('keydown', (event) => {
     if (rows[palette.selected]?.ask && !event.shiftKey) return enterAsk()
     const site = rows[palette.selected]?.site
     if (site?.search && !event.shiftKey) setSite(site, '')
-  } else if (event.key === 'Backspace' && palette.site && !paletteInput.value) {
+  } else if (event.key === 'Backspace' && palette.site && !bar.value) {
     event.preventDefault()
     setSite(null, palette.site.host)
   }
 })
 // In agent mode Enter sends from anywhere in the bar; an open select keeps its own keys.
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') close(true)
-  else if (event.key === 'Enter' && ask.on && !event.isComposing && event.keyCode !== 229) {
+  if (event.key === 'Enter' && ask.on && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault()
     if (palette.typed.trim() || !askEntry()) pickRow({ pick: sendAsk })
   }
 })
-// Bounded to its card, the bar closes when the pointer goes anywhere else: a page, an ear, another app.
-addEventListener('blur', () => { if (overlayOpen) close() })
-// The overlay's shadow margin can lie over the Buoy or a window, so a press there is a press outside the bar.
-document.addEventListener('pointerdown', (event) => { if (!event.target.closest('#palette')) close() })
-addEventListener('resize', fit)
 $('palette-agent').addEventListener('change', () => {
   const value = $('palette-agent').value
-  if (value === ADD) return pickRow({ pick: connectAgent })
+  if (value === ADD) return connectAgent()
   Object.assign(ask, { agent: value, model: '', effort: '' })
   $('palette-error').hidden = true
   drawAsk()
@@ -272,27 +261,10 @@ $('palette-agent').addEventListener('change', () => {
 $('palette-model').addEventListener('change', () => { ask.model = $('palette-model').value })
 $('palette-effort').addEventListener('change', () => { ask.effort = $('palette-effort').value })
 
-const ready = Promise.all([
-  skiff.call('state.get').then((first) => { state = first }),
-  skiff.call('ai.agents').then((list) => { agents = list || [] }, () => {})
-])
-skiff.on('state', (next) => {
-  state = next
-  paintSpace(state)
-})
+skiff.call('ai.agents').then((list) => { agents = list || [] }, () => {})
 skiff.on('ai-agents', (next) => {
   agents = next || []
   if (!state) return
   drawPalette()
   drawAsk()
-})
-skiff.on('palette', ({ mode, forwarded }) => {
-  if (!forwarded) return
-  ready.then(() => {
-    // Cmd+J over an open bar keeps what was typed.
-    if (mode === 'ask' && overlayOpen) return ask.on ? paletteInput.focus() : enterAsk()
-    if (!overlayOpen) grow(paletteEl)
-    overlayOpen = true
-    openPalette(mode)
-  })
 })

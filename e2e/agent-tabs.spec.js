@@ -204,8 +204,15 @@ test('Layer: the Agents list peeks at a tab, which shows in front on the desk wi
   await expect(chip).toHaveText('1 agent · 1 tab')
   await expect(buoy.locator('#buoy-main')).toHaveAttribute('aria-label', /, 1 agent · 1 tab\./)
 
-  const panel = await shellPage(skiff, '/panel.html')
+  // The card closes on a pick, so each look at the Agents list opens it again, on the list.
+  const panel = buoy
   const toggle = panel.locator('#agents-toggle')
+  const openAgents = async () => {
+    if (!(await buoy.locator('#buoy').evaluate((el) => el.classList.contains('open')))) await buoy.locator('#buoy-main').click()
+    await expect.poll(() => buoy.locator('#buoy').evaluate((el) => el.classList.contains('open') && !el.classList.contains('morphing'))).toBe(true)
+    if ((await toggle.getAttribute('aria-pressed')) !== 'true') await toggle.click()
+  }
+  await buoy.locator('#buoy-main').click()
   await expect(toggle).toBeVisible()
   await expect(panel.locator('#agents-count')).toHaveText('1')
   await toggle.click()
@@ -224,7 +231,10 @@ test('Layer: the Agents list peeks at a tab, which shows in front on the desk wi
   const rect = peeked.agentTabs[0].desk
   expect(rect).toMatchObject(await skiff.rpc('desk.layouts').then((l) => l.center))
   await expect.poll(() => where(skiff, '/agent/one')).toMatchObject({ user: true, front: true, bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } })
+  await expect(buoy.locator('#buoy')).not.toHaveClass(/open/)
+  await openAgents()
   await expect(row).toHaveClass(/current/)
+  await buoy.keyboard.press('Escape')
   expect(await inPage(skiff, '/agent/one', 'window.__mark')).toBe(42)
   expect(requested(skiff, '/agent/one')).toBe(loads)
   // Its frame lies right under it and names it.
@@ -245,6 +255,7 @@ test('Layer: the Agents list peeks at a tab, which shows in front on the desk wi
   expect((await skiff.state()).activeTabBySpace).toEqual(before.activeTabBySpace)
 
   // Peeked again, its frame's hide button ends the peek.
+  await openAgents()
   await row.locator('.row-main').click()
   await expect.poll(() => where(skiff, '/agent/one')).toMatchObject({ user: true, front: true })
   await frame.locator('#ear').hover()
@@ -259,6 +270,7 @@ test('Layer: the Agents list peeks at a tab, which shows in front on the desk wi
     await skiff.rpc('tabs.create', { url: skiff.origin + '/agent/three', agent: 'claude' })
   ]
   await expect(chip).toHaveText('2 agents · 3 tabs')
+  await openAgents()
   await expect(panel.locator('#agents-count')).toHaveText('3')
   await expect(panel.locator('#list .list-head')).toHaveText(['omp · 2 tabs', 'claude · 1 tab'])
   const claude = panel.locator(`#list [data-tab-id="${more[1].id}"]`)

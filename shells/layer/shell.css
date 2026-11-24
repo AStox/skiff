@@ -33,6 +33,10 @@
   --shadow: 0 8px 22px rgba(0, 0, 0, .28), 0 1px 4px rgba(0, 0, 0, .14);
   --ear: color-mix(in srgb, var(--accent) 20%, #fbfaf7);
   --ear-ink: #1c1a16;
+  --morph: 280ms;
+  --settle: cubic-bezier(.32, .72, 0, 1);
+  --card-width: 560px;
+  --card-max: 640px;
   --buoy-bg: #f4f1ea;
   --buoy-ink: #1c1a16;
   --buoy-soft: #625d54;
@@ -47,8 +51,7 @@
   }
 }
 :root.incognito { --canvas: #1d1d1f; --ink: #ececee; --soft: color-mix(in srgb, var(--ink) 68%, var(--bg)); --accent: #8e8e93 !important; --danger: #ffb3b7; color-scheme: dark; --buoy-bg: #1d1d1f; --buoy-ink: #ececee; --buoy-soft: #a8a8ad; --buoy-rim: rgba(236, 236, 238, .2); }
-/* Imported themes paint the panel only; the frames and the Buoy keep the plain theme. */
-.imported-background #sidebar { background-image: var(--space-background); background-attachment: fixed; }
+/* Imported themes paint the card only; the frames and the pill keep the plain theme. */
 
 * { box-sizing: border-box; margin: 0; padding: 0; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 [hidden] { display: none !important; }
@@ -84,15 +87,8 @@ input { caret-color: var(--accent); }
 .favicon.letter { display: grid; place-items: center; background: var(--current); color: var(--ink); font-size: 11px; font-weight: 600; line-height: 1; }
 .space-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
 
-/* Address: host in ink, path tinted; data, so mono. */
-#address { display: flex; align-items: center; min-width: 0; height: 24px; padding: 0 10px; border-radius: 6px; overflow: hidden; color: var(--soft); font-family: var(--data); font-variation-settings: var(--fv-data); font-feature-settings: var(--ff-data); font-size: 11px; white-space: nowrap; text-align: left; }
-#address > span { flex: 1 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-#address b { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--ink); font-weight: 500; text-overflow: ellipsis; }
-#address.placeholder { font-family: var(--sans); font-variation-settings: var(--fv-ui); font-feature-settings: var(--ff-ui); font-size: 12px; }
-#address:enabled:hover { background: var(--hover); color: var(--ink); }
-
 /* Every view of the desk is transparent: only what each one draws shows, the rest is the desktop. */
-html.layer, html.layer body, html.frame, html.frame body, html.buoy, html.buoy body, html.panel body, html.tablist body, html.overlay body { background: transparent; }
+html.layer, html.layer body, html.frame, html.frame body, html.buoy, html.buoy body, html.tablist body { background: transparent; }
 
 /* The base page under every window: snapping guides and the zone a window will fill. */
 #desk { position: fixed; inset: 0; pointer-events: none; }
@@ -171,47 +167,63 @@ html[data-gesture='ne'] *, html[data-gesture='sw'] * { cursor: nesw-resize !impo
 @media (prefers-reduced-motion: no-preference) { #strip.fresh { animation: strip-in .14s ease-out; } }
 @keyframes strip-in { from { opacity: 0; transform: translateY(-6px); } }
 
-/* The Buoy: Quiet's pill in its own overlay, wherever it was dragged. */
-#buoy { position: fixed; display: flex; align-items: center; width: max-content; height: 30px; padding: 0 3px 0 0; border-radius: 999px; background: var(--buoy-bg); color: var(--buoy-ink); box-shadow: inset 0 0 0 1px var(--buoy-rim), 0 4px 10px rgba(0, 0, 0, .2), 0 1px 3px rgba(0, 0, 0, .12); font-size: 12px; line-height: 1; white-space: nowrap; touch-action: none; }
+/* The Buoy: Quiet's pill in a window of its own, wherever it was dragged. Open, the same shape grows into the card in the middle of the desk. */
+#buoy { position: fixed; width: max-content; height: 30px; border-radius: 15px; background: var(--buoy-bg); color: var(--buoy-ink); box-shadow: inset 0 0 0 1px var(--buoy-rim), 0 4px 10px rgba(0, 0, 0, .2), 0 1px 3px rgba(0, 0, 0, .12); font-size: 12px; line-height: 1; white-space: nowrap; }
+#buoy-row { display: flex; align-items: center; width: max-content; height: 30px; padding: 0 3px 0 0; touch-action: none; }
 html.dragging #buoy, html.dragging #buoy * { cursor: grabbing !important; }
 #buoy.drop { background: var(--accent); color: #fff; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent), 0 4px 10px rgba(0, 0, 0, .2); transform: scale(1.06); }
 #buoy.drop #buoy-notice, #buoy.drop .buoy-ic { color: #fff; }
-#buoy button { color: inherit; }
-#buoy :focus-visible { outline-offset: 2px; }
+#buoy-row button { color: inherit; }
+#buoy-row :focus-visible { outline-offset: 2px; }
 #buoy-main { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px 0 11px; border-radius: 999px; }
 #buoy-main:hover { background: color-mix(in srgb, var(--buoy-ink) 5%, transparent); }
 #buoy-main[aria-expanded='true'] { background: color-mix(in srgb, var(--buoy-ink) 10%, transparent); }
 #buoy-name { max-width: 200px; overflow: hidden; font-weight: 600; letter-spacing: .005em; text-overflow: ellipsis; }
 #buoy-notice, #buoy-agents { font-size: 11px; color: var(--buoy-soft); }
 #buoy-agents { padding: 3px 7px; border-radius: 999px; background: color-mix(in srgb, var(--buoy-ink) 8%, transparent); }
-#buoy .update-pill { flex: none; height: 22px; margin: 0 4px 0 3px; padding: 0 9px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 600; }
-#buoy .update-pill[hidden] { display: none; }
-#buoy .update-pill:hover { background: color-mix(in srgb, var(--accent) 85%, #000); }
+#buoy-row .update-pill { flex: none; height: 22px; margin: 0 4px 0 3px; padding: 0 9px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 600; }
+#buoy-row .update-pill[hidden] { display: none; }
+#buoy-row .update-pill:hover { background: color-mix(in srgb, var(--accent) 85%, #000); }
 #buoy-favs { display: flex; align-items: center; gap: 2px; padding: 0 4px 0 2px; }
 #buoy-favs[hidden] { display: none; }
-#buoy .buoy-fav { display: inline-flex; flex: none; align-items: center; justify-content: center; min-width: 22px; height: 22px; border-radius: 6px; }
-#buoy .buoy-fav:hover { background: color-mix(in srgb, var(--buoy-ink) 8%, transparent); }
-#buoy .buoy-fav.current { box-shadow: inset 0 0 0 1.5px var(--accent); }
+#buoy-row .buoy-fav { display: inline-flex; flex: none; align-items: center; justify-content: center; min-width: 22px; height: 22px; border-radius: 6px; }
+#buoy-row .buoy-fav:hover { background: color-mix(in srgb, var(--buoy-ink) 8%, transparent); }
+#buoy-row .buoy-fav.current { box-shadow: inset 0 0 0 1.5px var(--accent); }
 .buoy-fav .favicon { width: 16px; height: 16px; border-radius: 4px; }
 .buoy-fav .favicon.letter { background: color-mix(in srgb, var(--buoy-ink) 14%, transparent); color: var(--buoy-ink); font-size: 9px; }
-#buoy #buoy-more { padding: 0 5px; font-size: 11px; color: var(--buoy-soft); }
-#buoy #buoy-more:hover { color: var(--buoy-ink); }
+#buoy-row #buoy-more { padding: 0 5px; font-size: 11px; color: var(--buoy-soft); }
+#buoy-row #buoy-more:hover { color: var(--buoy-ink); }
 .buoy-sep { width: 1px; height: 14px; margin: 0 2px; background: var(--buoy-rim); }
-#buoy .buoy-ic { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 24px; border-radius: 999px; color: var(--buoy-soft); }
-#buoy .buoy-ic:hover { background: color-mix(in srgb, var(--buoy-ink) 5%, transparent); color: var(--buoy-ink); }
+#buoy-row .buoy-ic { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 24px; border-radius: 999px; color: var(--buoy-soft); }
+#buoy-row .buoy-ic:hover { background: color-mix(in srgb, var(--buoy-ink) 5%, transparent); color: var(--buoy-ink); }
 .buoy-ic .icon { width: 16px; height: 16px; stroke-width: 1.7; }
-#buoy #buoy-tabs { width: auto; min-width: 26px; padding: 0 7px; font-size: 12px; }
-#buoy #buoy-tabs[aria-expanded='true'] { background: color-mix(in srgb, var(--buoy-ink) 10%, transparent); color: var(--buoy-ink); }
+#buoy-row #buoy-tabs { width: auto; min-width: 26px; padding: 0 7px; font-size: 12px; }
+#buoy-row #buoy-tabs[aria-expanded='true'] { background: color-mix(in srgb, var(--buoy-ink) 10%, transparent); color: var(--buoy-ink); }
 @media (prefers-color-scheme: dark) {
   #buoy { box-shadow: inset 0 0 0 1px var(--buoy-rim), 0 4px 10px rgba(0, 0, 0, .55), 0 0 0 .5px rgba(0, 0, 0, .8); }
 }
 
-/* The panel opens from the Buoy: above it from the lower half of the desk, below it from the upper half. The overlay sets its place. */
-#sidebar, #palette { --ox: 30px; --oy: calc(100% + 20px); transform-origin: var(--ox) var(--oy); }
-html:not(.above) { --oy: -20px; }
-html[data-side='right'] { --ox: calc(100% - 30px); }
-html[data-side='centre'] { --ox: 50%; }
-#sidebar { position: fixed; display: flex; flex-direction: column; min-width: 0; padding: 12px 10px; border: 1px solid var(--line); border-radius: 16px; background: var(--bg); color: var(--ink); box-shadow: var(--shadow); overflow-x: clip; }
+
+/* The pill itself is the card: its geometry grows from the pill's to the card's, the pill's content fades out early and the card's in late, and the space dot travels from one place to the other. */
+#buoy.morphing, #buoy.open { overflow: clip; }
+#buoy.open { width: var(--card-width); height: auto; max-height: var(--card-max); border-radius: 18px; background: var(--bg); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line), var(--shadow); }
+#buoy::before { content: ''; position: absolute; inset: 0; border-radius: inherit; background-image: var(--space-background); opacity: 0; pointer-events: none; }
+.imported-background #buoy.open::before { opacity: 1; transition: opacity 130ms ease-out 140ms; }
+#buoy-dot { position: absolute; z-index: 2; left: 11px; top: 11px; pointer-events: none; }
+#buoy-main .space-dot, .palette-field .space-dot { visibility: hidden; }
+#buoy-row { transition: opacity 100ms ease-out 140ms, visibility 0s 140ms; }
+#buoy.open #buoy-row { position: absolute; left: 0; top: 0; visibility: hidden; opacity: 0; pointer-events: none; transition: opacity 80ms ease-out, visibility 0s 80ms; }
+#card { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; width: var(--card-width); max-height: var(--card-max); padding: 0 8px 8px; color: var(--ink); visibility: hidden; opacity: 0; pointer-events: none; transition: opacity 80ms ease-out, visibility 0s 80ms; }
+#buoy.open #card { position: relative; visibility: visible; opacity: 1; pointer-events: auto; transition: opacity 130ms ease-out 140ms, visibility 0s; }
+@media (prefers-reduced-motion: no-preference) {
+  #buoy.morphing { transition: left var(--morph) var(--settle), top var(--morph) var(--settle), width var(--morph) var(--settle), height var(--morph) var(--settle), border-radius var(--morph) var(--settle), background-color var(--morph) var(--settle), box-shadow var(--morph) var(--settle); }
+  #buoy.morphing #buoy-dot { transition: left var(--morph) var(--settle), top var(--morph) var(--settle); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #buoy-row, #buoy.open #buoy-row, #card, #buoy.open #card, .imported-background #buoy.open::before { transition: none; }
+}
+
+#sidebar { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 0 2px; overflow-x: clip; }
 
 /* The tab list opens from the count in the Buoy, placed like the panel, its rows as the panel's. */
 #tablist { --ox: 50%; --oy: calc(100% + 20px); position: fixed; display: flex; flex-direction: column; padding: 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg); color: var(--ink); box-shadow: var(--shadow); transform-origin: var(--ox) var(--oy); }
@@ -224,9 +236,6 @@ html.tablist:not(.above) #tablist { --oy: -20px; }
 #tablist .desk-head:first-child { padding-top: 4px; }
 #top { flex: none; display: flex; align-items: center; gap: 2px; height: 30px; padding: 0 4px; }
 #top .icon-btn:disabled { color: var(--soft); opacity: .7; }
-#close-panel { margin-left: auto; }
-#address-box { flex: none; display: flex; min-width: 0; }
-#address-box #address { flex: 1; }
 
 #favorites { flex: 0 1 auto; max-height: 28vh; overflow-y: auto; display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 14px; padding: 0 10px; }
 #favorites.spread { justify-content: space-between; }
@@ -414,13 +423,8 @@ input.setting-input[type='number'] { width: 80px; font-family: var(--data); font
 .import-working { display: flex; align-items: center; gap: 12px; min-height: 72px; }
 .import-spinner { flex: none; width: 18px; height: 18px; border: 2px solid var(--line); border-top-color: var(--ink); border-radius: 50%; }
 
-/* The command bar opens from the Buoy too, its input nearest the Buoy. */
-#palette { position: fixed; display: flex; flex-direction: column; padding: 8px 8px 0; border: 1px solid var(--line); border-radius: 18px; background: var(--bg); color: var(--ink); box-shadow: var(--shadow); }
-#palette-results { display: flex; flex-direction: column-reverse; min-height: 0; overflow-y: auto; overscroll-behavior: contain; list-style: none; }
-/* Opened below the Buoy, the input comes first and the results run down from it. */
-html:not(.above) #palette { flex-direction: column-reverse; padding: 0 8px 8px; }
-html:not(.above) #palette-results { flex-direction: column; }
-html:not(.above) .palette-hair { margin: 0 6px 8px; }
+/* The command bar is the card's top: the input, then the rows of a query, or the panel's content while the input is empty. */
+#palette-results { flex: 0 1 auto; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; overscroll-behavior: contain; list-style: none; }
 #palette-results li { display: grid; flex: none; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 12px; height: 46px; padding: 0 12px; border-radius: 10px; }
 #palette-results li:hover { background: var(--hover); }
 #palette-results li.pick { background: var(--current); }
@@ -433,14 +437,11 @@ html:not(.above) .palette-hair { margin: 0 6px 8px; }
 .palette-label small .mono { font-size: 11px; }
 #palette-results .when { font-family: var(--sans); font-variation-settings: var(--fv-ui); font-feature-settings: var(--ff-ui); font-size: 12px; }
 #palette-results .pick .when { color: var(--ink); }
-.palette-hair { flex: none; height: 1px; margin: 8px 6px 0; background: var(--line); }
-#palette-results:empty ~ .palette-hair { display: none; }
-#palette-error { padding: 8px 14px 0; color: var(--danger); overflow-wrap: anywhere; }
+#palette-hair { flex: none; height: 1px; margin: 0 6px 8px; background: var(--line); }
+#palette-error { padding: 0 14px 8px; color: var(--danger); overflow-wrap: anywhere; }
 .palette-field { flex: none; display: flex; align-items: center; gap: 12px; min-height: 62px; padding: 0 12px 2px 14px; }
 #palette-site, #palette-ask { flex: none; padding: 3px 9px; border-radius: 6px; background: var(--ink); color: var(--bg); font-size: 12px; font-weight: 600; white-space: nowrap; }
 #palette-tools { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 12px 12px 14px; }
-/* Opened below the Buoy the bar runs upside down, so the toolbar takes the last place to stay under the input. */
-html:not(.above) #palette-tools { order: -1; padding-bottom: 6px; }
 .palette-pill { position: relative; flex: none; display: inline-flex; align-items: center; max-width: 200px; border-radius: 6px; background: var(--hover); color: var(--ink); font-size: 12px; font-weight: 600; }
 .palette-pill:hover { background: var(--press); }
 .palette-pill:has(:disabled) { color: var(--soft); }

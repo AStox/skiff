@@ -18,9 +18,8 @@ let state = null
 let gesture = null
 let pinch = null
 let painted = ''
-// Another window mid-drag or resize, as it last said where it is; and the panel's view while it is open, which stays above every window.
+// Another window mid-drag or resize, as it last said where it is.
 let moving = null
-let panelRect = readStore('panel')
 // This window's ear, relative to its page: {dx, width, room} or null when nothing of its top edge shows.
 let ear = null
 // Every window's ear on the desk, and the windows behind this one, for a press that lands on an ear seen through this frame.
@@ -74,7 +73,7 @@ function placeEar() {
     if (!own && live && 'ear' in live) entry.slot = live.ear && { x: rect.x + live.ear.dx, width: live.ear.width, room: live.ear.room }
     return entry
   })
-  slots = earLayout(wins, [buoyRect(state), panelRect].filter(Boolean), deskSize(state).width)
+  slots = earLayout(wins, [buoyRect(state)], deskSize(state).width)
   behind = wins.slice(0, me).reverse()
   const r = wins[me].rect
   const s = slots[id]
@@ -425,10 +424,6 @@ skiff.on('desk-guides', (data) => {
   placeEar()
 })
 skiff.on('buoy-moved', placeEar)
-skiff.on('panel-moved', (rect) => {
-  panelRect = rect || null
-  placeEar()
-})
 skiff.on('state', (next) => {
   state = next
   render()

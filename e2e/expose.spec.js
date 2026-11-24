@@ -140,13 +140,10 @@ test('a two finger swipe up on the Buoy spreads the windows out with live pictur
   const opened = (await skiff.audit()).overlayCalls.slice(calls).map(({ method, params }) => [method, params.name ?? params.visible]).filter(([method, value]) => value === 'expose' || method === 'ui.setPageVisible')
   expect(opened).toEqual([['ui.showOverlay', 'expose'], ['ui.setPageVisible', false]])
   expect(await spaceCalls(skiff), 'A vertical swipe never switches spaces').toBe(switches)
-  // The panel stays above exposé, as the Dock does over Mission Control, and no card lies under it.
-  const views = await children(skiff)
-  expect(views.indexOf('expose.html')).toBeLessThan(views.indexOf('panel.html'))
-  const panel = await expose.evaluate(() => panelRect)
-  expect(panel).toBeTruthy()
+  // The Buoy stays above exposé, as the Dock does over Mission Control, and no card lies under it.
+  const pill = await expose.evaluate(() => buoyRect(state))
   for (const box of await expose.locator('.slot').evaluateAll((slots) => slots.map((s) => s.getBoundingClientRect().toJSON()))) {
-    expect(box.x >= panel.x + panel.width || box.y + box.height <= panel.y || box.y >= panel.y + panel.height).toBe(true)
+    expect(box.x >= pill.x + pill.width || box.x + box.width <= pill.x || box.y + box.height <= pill.y || box.y >= pill.y + pill.height).toBe(true)
   }
   await expect(expose.locator('html')).toHaveClass(/\bsettled\b/)
   // Once the windows are gone the veil is a plain fill: a masked full-screen layer is dear to fade.

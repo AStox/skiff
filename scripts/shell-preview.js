@@ -410,16 +410,19 @@ async function previewDesk(dir) {
     // A second call while the file still loads must not load it again, or the events it heard so far are lost.
     const same = o.file === file
     if (!same) Object.assign(o, { file, ready: loaded((url) => url.endsWith(`/${file}`)) })
-    await page.evaluate(({ id, src, same, rect, z }) => {
+    // A float window takes clicks only on its hit rectangles; the room for a shadow around them stays clickable through it.
+    const hit = p.float && Array.isArray(p.hit) && p.hit.length ? p.hit : null
+    const clip = hit ? { top: Math.min(...hit.map((r) => r.y)) - 40, left: Math.min(...hit.map((r) => r.x)) - 40, right: rect.width - Math.max(...hit.map((r) => r.x + r.width)) - 40, bottom: rect.height - Math.max(...hit.map((r) => r.y + r.height)) - 40 } : null
+    await page.evaluate(({ id, src, same, rect, z, clip }) => {
       let f = document.getElementById(id)
       if (!f) {
         f = Object.assign(document.createElement('iframe'), { id })
         f.setAttribute('allowtransparency', 'true')
         document.body.append(f)
       }
-      f.style.cssText = `position:fixed;border:0;background:transparent;z-index:${z};left:${rect.x}px;top:${rect.y}px;width:${rect.width}px;height:${rect.height}px`
+      f.style.cssText = `position:fixed;border:0;background:transparent;z-index:${z};left:${rect.x}px;top:${rect.y}px;width:${rect.width}px;height:${rect.height}px${clip ? `;clip-path:inset(${Math.max(0, clip.top)}px ${Math.max(0, clip.right)}px ${Math.max(0, clip.bottom)}px ${Math.max(0, clip.left)}px)` : ''}`
       if (!same) f.src = src
-    }, { id: `preview-overlay-${name}`, src: pathToFileURL(path.join(dir, file)).href, same, rect, z: p.float ? 2147483646 : name === 'main' ? 2147483600 : 2147483500 })
+    }, { id: `preview-overlay-${name}`, src: pathToFileURL(path.join(dir, file)).href, same, rect, z: p.float ? 2147483646 : name === 'main' ? 2147483600 : 2147483500, clip })
     o.frame = await o.ready
     const wasShown = o.shown
     o.shown = true
@@ -449,6 +452,7 @@ async function previewDesk(dir) {
     'ui.shellPath': () => ({ path: '/preview' }),
     'ui.focusPage': () => null,
     'ui.inFront': () => ({ front: false }),
+    'ui.raise': () => null,
     'ui.showOverlay': showOverlay,
     'ui.hideOverlay': hideOverlay,
     'ui.emit': async (p) => { await emit(p.name, p.data); return null },

@@ -234,16 +234,16 @@ const test = base.extend({
           await expect.poll(() => app.context().pages().filter(at).length).toBeGreaterThan(0)
           return app.context().pages().find(at)
         },
-        // The command bar is its own transparent page over the window; it stays loaded after it closes.
+        // The command bar is its own transparent page over the window, or the card of Layer's Buoy; it stays loaded after it closes.
         bar: async () => {
-          const at = (page) => page.url().endsWith('/palette.html')
+          const at = (page) => !page.isClosed() && /\/(palette|buoy)\.html$/.test(page.url())
           await expect.poll(() => app.context().pages().filter(at).length).toBeGreaterThan(0)
           const bar = app.context().pages().find(at)
           await bar.emulateMedia({ colorScheme: fixtureOptions.theme || 'light' })
           return bar
         },
-        // A desk shell replaces the app window, so the window is the one showing the shell.
-        barOpen: () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('/index.html')).contentView.children.some((view) => view.webContents?.getURL().endsWith('/palette.html'))),
+        // A desk shell replaces the app window, so the window is the one showing the shell; Layer's card is open once the Buoy has grown into it.
+        barOpen: () => app.context().pages().find((page) => !page.isClosed() && page.url().endsWith('/buoy.html'))?.evaluate(() => document.getElementById('buoy').classList.contains('open')) ?? app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('/index.html')).contentView.children.some((view) => view.webContents?.getURL().endsWith('/palette.html'))),
         // A conversation tab is the bundled chat page in its own view; it stays loaded while its tab is hidden.
         chat: async (chatId) => {
           const at = (page) => page.url().includes(`/chat/chat.html?id=${chatId}`)

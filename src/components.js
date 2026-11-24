@@ -798,6 +798,12 @@ function createComponents({ dir, bundledRoot, legacyShellDir, registry, call, st
         store.legacyImported.rolesBound = true
       }
     }
+    // A stock component an update no longer ships leaves no entry or binding behind.
+    for (const id of Object.keys(store.components)) {
+      if (!id.startsWith('stock.') || stocks.has(id)) continue
+      delete store.components[id]
+      for (const bindings of [store.bindings.global, ...Object.values(store.bindings.spaces)]) for (const role of Object.keys(bindings)) if (bindings[role] === id) delete bindings[role]
+    }
     for (const [id, stock] of stocks) {
       const rev = stockRevision(stock)
       const item = store.components[id] ||= { enabled: true, origin: { type: 'bundled' } }

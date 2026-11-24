@@ -90,18 +90,6 @@ function favicon(tab, fallback = h('span', { class: 'favicon letter', 'aria-hidd
 
 const tabCount = (n) => `${n} ${n === 1 ? 'tab' : 'tabs'}`
 
-// Host in ink, the rest tinted; anything that is not a web address shows whole.
-function showAddress(button, url) {
-  button.classList.toggle('placeholder', !url)
-  button.title = url || ''
-  if (!url) return button.replaceChildren(PLACEHOLDER)
-  let parsed
-  try { parsed = new URL(url) } catch { return button.replaceChildren(h('span', {}, url)) }
-  if (!/^https?:$/.test(parsed.protocol)) return button.replaceChildren(h('span', {}, url))
-  const rest = `${parsed.pathname}${parsed.search}${parsed.hash}`
-  button.replaceChildren(h('b', {}, parsed.host.replace(/^www\./, '')), h('span', {}, rest === '/' ? '' : rest))
-}
-
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 const readStore = (key) => { try { return JSON.parse(localStorage.getItem(`layer.${key}`)) } catch { return null } }
 const writeStore = (key, value) => { try { localStorage.setItem(`layer.${key}`, JSON.stringify(value)) } catch {} }
@@ -145,7 +133,7 @@ function swipeTracker(vertical = false) {
   }
 }
 
-// A space switch by a two finger swipe, as the Buoy, the panel and the ears make it: the space comes in front of other apps.
+// A space switch by a two finger swipe, as the Buoy, the card and the ears make it: the space comes in front of other apps.
 // With expose (the Buoy and the ears), a swipe up opens exposé and a swipe down closes it.
 // The momentum tail can land on another view once the windows have slid, so a switch anywhere holds every other view's tracker until its stream goes quiet.
 function spaceSwiper(expose = false) {
@@ -268,7 +256,7 @@ function earSlot(span, occluders, natural, min = EAR_MIN) {
   return { x: widest[0], width, room: width }
 }
 
-// windows: back to front, {id, rect, natural, slot?}; a given slot (the window being dragged) is kept. fixed: rects always on top (the Buoy, the panel).
+// windows: back to front, {id, rect, natural, slot?}; a given slot (the window being dragged) is kept. fixed: rects always on top (the Buoy).
 // Front ears are placed first, so each ear dodges the windows, ears, Buoy and panel drawn above it. Returns {id: slot or null}.
 function earLayout(windows, fixed = [], deskWidth = Infinity) {
   const grow = (r, by) => ({ x: r.x - by, y: r.y - by, width: r.width + 2 * by, height: r.height + 2 * by })
@@ -301,11 +289,8 @@ function paintSpace(state) {
 
 const GAP = 8
 const BUOY_HEIGHT = 30
-// Room around an overlay's card, and around the Buoy, for their shadows.
+// Room around an overlay's card for its shadow.
 const SHADOW = 32
-const BUOY_ROOM = 16
-const PANEL_WIDTH = 320
-const PALETTE_WIDTH = 560
 const TABLIST_WIDTH = 300
 const POPUP_SIZE = { width: 440, height: 560 }
 
@@ -386,7 +371,7 @@ function anchor(state, width, height) {
 // The base page handles every Buoy action, since it alone tracks the open overlays.
 const buoyAction = (action, data) => skiff.call('ui.emit', { name: 'buoy', data: { action, ...data }, focus: false }).catch(() => {})
 
-// The overlay this page is shown in: the command bar in 'main', the panel in 'panel', the tab list in 'tabs'.
+// The overlay this page is shown in: the tab list in 'tabs'.
 let overlayName = 'main'
 // Set while this overlay is open; a hidden overlay must not show itself again by refitting.
 let overlayOpen = false
@@ -409,24 +394,6 @@ function grow(el) {
   const from = document.documentElement.classList.contains('above') ? 10 : -10
   el.animate([{ opacity: 0, transform: `translateY(${from}px) scale(.95)` }, { opacity: 1, transform: 'none' }], { duration: 200, easing: 'cubic-bezier(.2, .8, .2, 1)' })
 }
-// Places the card next to the Buoy and trims the overlay around it, so the desk stays clickable; focus: true also gives it the keyboard.
-function fitOverlay(state, file, card, width, height, focus = false) {
-  if (!state) return null
-  const a = anchor(state, width, height)
-  const root = document.documentElement
-  root.classList.toggle('above', a.above)
-  root.dataset.side = a.side
-  Object.assign(card.style, {
-    left: `${a.card.x}px`, width: `${a.card.width}px`, maxHeight: `${a.card.room}px`,
-    top: a.above ? '' : `${a.card.y}px`, bottom: a.above ? `${a.card.bottom}px` : ''
-  })
-  const key = JSON.stringify(a.bounds)
-  if (!overlayOpen || (key === fitted && !focus)) return a
-  fitted = key
-  skiff.call('ui.showOverlay', { name: overlayName, file, bounds: a.bounds, focus }).catch(() => {})
-  return a
-}
-
 document.documentElement.classList.toggle('mac', navigator.userAgent.includes('Mac'))
 const appearance = matchMedia('(prefers-color-scheme: dark)')
 let backgroundKey

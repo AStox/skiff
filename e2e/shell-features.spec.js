@@ -172,6 +172,9 @@ test('split divider supports keyboard resizing and peek promotion keeps tab iden
 for (const name of ['default', 'layer', 'quiet', 'filmstrip', 'index', 'lacquer', 'ledger', 'timeline']) {
   test(`${name} palette searches settings and commands locally without replacing URL precedence`, async ({ skiff }) => {
     if (name !== 'default') await skiff.rpc('ui.setShell', { name })
+    // Layer's bar is the Buoy's page, which loads after the desk window does.
+    if (name === 'layer') await expect.poll(() => skiff.app.context().pages().some((page) => !page.isClosed() && page.url().endsWith('/buoy.html'))).toBe(true)
+    if (name === 'layer') await (await skiff.bar()).waitForFunction(() => document.getElementById('buoy-name')?.textContent)
     await skiff.shortcut('CmdOrCtrl+T')
     const bar = await skiff.bar(), input = bar.locator('#palette-input')
     await expect(input).toBeFocused()
