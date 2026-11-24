@@ -614,14 +614,14 @@ async function openExtensionPopup() {
   call('extensions.popup', { id: entry.id, bounds: popupBounds() })
 }
 
-const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', failed: 'Failed' }
+const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', restarting: 'Restarting…', failed: 'Failed' }
 
 function extensionRow(ext) {
   const failed = ext.builtin && ext.state === 'failed'
   return h('li', { class: 'ext' },
     h('div', { class: 'ext-head' },
       h('span', { class: 'label', title: ext.description || null }, ext.name),
-      ext.version ? h('span', { class: 'mono ext-version' }, `[${ext.version}]`) : h('span', { class: 'ext-version' }, STATE_WORDS[ext.state] || '')),
+      ext.version && ext.state !== 'restarting' ? h('span', { class: 'mono ext-version' }, `[${ext.version}]`) : h('span', { class: 'ext-version' }, STATE_WORDS[ext.state] || '')),
     h('div', { class: 'ext-actions' },
       h('button', { class: 'text-btn', disabled: !ext.popup, onclick: () => call('extensions.popup', { id: ext.id, bounds: popupBounds() }) }, 'Panel'),
       h('button', { class: 'text-btn', disabled: !ext.options, onclick: () => call('extensions.open', { id: ext.id }) }, 'Settings'),

@@ -68,7 +68,7 @@ async function openExtensionPopup() {
   else toast('No extension has a panel.')
 }
 
-const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', failed: 'Failed' }
+const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', restarting: 'Restarting…', failed: 'Failed' }
 
 function extensionRow(extension) {
   const { id, name, version, popup, options, builtin, state, error } = extension
@@ -76,7 +76,7 @@ function extensionRow(extension) {
   return h('li', { class: 'extension', 'data-extension-id': id },
     h('div', { class: 'extension-head' },
       h('span', { class: 'extension-name' }, name),
-      version ? h('span', { class: 'extension-version' }, version) : h('span', { class: 'extension-state' }, STATE_WORDS[state] || '')),
+      version && state !== 'restarting' ? h('span', { class: 'extension-version' }, version) : h('span', { class: 'extension-state' }, STATE_WORDS[state] || '')),
     h('div', { class: 'extension-actions' },
       h('button', { class: 'text-btn', disabled: !popup, onclick: () => call('extensions.popup', { id, bounds: popupBounds() }) }, 'Panel'),
       h('button', { class: 'text-btn', disabled: !options, onclick: () => call('extensions.open', { id }) }, 'Settings'),

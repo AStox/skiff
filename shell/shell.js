@@ -564,7 +564,7 @@ async function openExtensionPopup() {
   call('extensions.popup', { id: entry.id, bounds: popupBounds() })
 }
 
-const extensionState = { installing: 'Installing…', updating: 'Updating…', failed: 'Failed' }
+const extensionState = { installing: 'Installing…', updating: 'Updating…', restarting: 'Restarting…', failed: 'Failed' }
 
 function extensionRows() {
   const modifier = navigator.userAgent.includes('Mac') ? 'Cmd' : 'Ctrl'
@@ -573,7 +573,7 @@ function extensionRows() {
     ui.extensions.length > 0 && h('ul', { class: 'extensions', 'aria-labelledby': 'extensions-label' },
       ui.extensions.map((e) => h('li', { class: 'extension', 'data-extension-id': e.id },
         h('span', { class: 'label', title: e.description || e.name }, e.name),
-        h('span', { class: 'when' }, e.version || extensionState[e.state] || ''),
+        h('span', { class: 'when' }, (e.state === 'restarting' ? '' : e.version) || extensionState[e.state] || ''),
         h('span', { class: 'extension-actions' },
           h('button', { class: 'text-btn', disabled: !e.popup, onclick: () => call('extensions.popup', { id: e.id, bounds: popupBounds() }) }, 'Panel'),
           h('button', { class: 'text-btn', disabled: !e.options, onclick: () => call('extensions.open', { id: e.id }) }, 'Settings'),

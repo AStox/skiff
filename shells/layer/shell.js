@@ -652,12 +652,12 @@ function openPopup(id) {
   call('extensions.popup', { id, bounds: { x, y, ...POPUP_SIZE } })
 }
 
-const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', failed: 'Failed' }
+const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', restarting: 'Restarting…', failed: 'Failed' }
 
 function extensionRow(entry) {
   const failure = entry.builtin && entry.state === 'failed' && `Could not ${entry.version ? 'update' : 'install'}: ${entry.error}`
   return h('li', { class: 'row extension', 'data-extension-id': entry.id },
-    h('span', { class: 'row-main' }, h('span', { class: 'label', title: entry.name }, entry.name), h('span', { class: 'when' }, entry.version || STATE_WORDS[entry.state] || '')),
+    h('span', { class: 'row-main' }, h('span', { class: 'label', title: entry.name }, entry.name), h('span', { class: 'when' }, (entry.state === 'restarting' ? '' : entry.version) || STATE_WORDS[entry.state] || '')),
     h('button', { class: 'text-btn', disabled: !entry.popup, onclick: () => openPopup(entry.id) }, 'Panel'),
     h('button', { class: 'text-btn', disabled: !entry.options, onclick: () => call('extensions.open', { id: entry.id }) }, 'Settings'),
     !entry.builtin && h('button', { class: 'text-btn danger', onclick: () => confirmAction(`Remove ${entry.name}?`, 'It stops running everywhere and its files are deleted.', 'Remove', 'extensions.remove', { id: entry.id }) }, 'Remove'),

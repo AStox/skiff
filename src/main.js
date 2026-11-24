@@ -459,8 +459,8 @@ function createView(tab) {
     }
     return { action: 'deny' }
   })
-  // The first page of a session waits for its extensions, so a blocker is in place before anything loads.
-  extensions.ready(ses).then(() => { if (!wc.isDestroyed()) wc.loadURL(tab.url).catch(() => {}) })
+  // The first page of a session waits for its extensions (the built-in blocker has to be filtering), and the incognito space's for its wipe.
+  Promise.all([extensions.ready(ses), partition === S.INCOGNITO_PARTITION && incognitoWipe]).then(() => { if (!wc.isDestroyed()) wc.loadURL(tab.url).catch(() => {}) })
   return view
 }
 
@@ -1350,14 +1350,16 @@ def('state.get', '', 'The full current state', snapshot)
 def('spaces.create', '{name, color?}', 'Create a space; color is #rrggbb', mutate(S.createSpace))
 def('spaces.update', '{id, name?, color?}', 'Rename or recolor a space; color overrides its imported Arc background', mutate(S.updateSpace))
 def('spaces.move', '{id, index}', 'Move a space to a zero-based position; integer index is clamped to the space list', mutate(S.moveSpace))
-def('spaces.remove', '{id}', 'Remove a space and archive its tabs; the last normal space is refused; removing the incognito space drops its tabs and clears its session data', async (p) => {
+def('spaces.remove', '{id}', "Remove a space and archive its tabs; the last normal space is refused; removing the incognito space drops its tabs and wipes everything sites stored in its session (cookies, cache, site storage); only the blocker's own data stays", async (p) => {
   const space = state.spaces.find((x) => x.id === p.id)
+  const closing = space?.incognito ? [...views.values()].map((view) => view.webContents).filter((wc) => !wc.isDestroyed() && wc.session === session.fromPartition(space.sessionPartition)) : []
+  if (space?.incognito) browserData.forgetPartition(space.sessionPartition)
   S.removeSpace(state, p, Date.now())
   changed()
   if (space.incognito) {
-    const ses = session.fromPartition(space.sessionPartition)
-    await Promise.all([ses.clearStorageData(), ses.clearCache()])
-    browserData.forgetPartition(space.sessionPartition)
+    // A page still alive could write again after the wipe.
+    await Promise.all(closing.map((wc) => wc.isDestroyed() ? null : new Promise((resolve) => { wc.once('destroyed', resolve); setTimeout(resolve, 3000) })))
+    await wipeIncognito()
   }
   return null
 })
@@ -1617,8 +1619,8 @@ def('ui.hideOverlay', '{name?}', "Remove an overlay page, 'main' by default, clo
   return null
 })
 
-def('extensions.list', '', 'Extensions, built-in ones first: id, name, version, description, path, popup page, options page, builtin, state (installing, updating, ready or failed) and error; a built-in that is not installed yet is listed with an empty id', () => extensions.list())
-def('extensions.add', '{path}', 'Copy an unpacked extension folder or a zip of one into the profile and load it in every space except incognito; an extension with the same name is replaced and keeps its storage', (p) => extensions.add(p.path))
+def('extensions.list', '', 'Extensions, built-in ones first: id, name, version, description, path, popup page, options page, builtin, state (installing, updating, restarting while a crashed background page is reloaded in some session, ready or failed) and error; a built-in that is not installed yet is listed with an empty id', () => extensions.list())
+def('extensions.add', '{path}', 'Copy an unpacked extension folder or a zip of one into the profile and load it in every space, incognito included; an extension with the same name is replaced and keeps its storage', (p) => extensions.add(p.path))
 def('extensions.download', '{url}', 'Download a zip of an unpacked extension over https and add it; a GitHub latest-release API URL picks its Chromium zip asset', (p) => extensions.download(p.url))
 def('extensions.update', '', 'Install missing built-in extensions and update installed ones whose release page names a newer version, now; the same check runs at startup and every six hours', () => extensions.update())
 def('extensions.remove', '{id}', 'Unload an extension everywhere and delete its folder; built-in ones cannot be removed', (p) => extensions.remove(p.id))
@@ -2082,6 +2084,33 @@ function buildMenu() {
   ]))
 }
 
+// clearData deletes site data logically, but Chromium's leveldb logs keep the old bytes until they compact, and DIPS and
+// service worker records sit outside its reach. Before the session opens at startup, drop every file of the partition
+// except what the extensions own (their settings, state and IndexedDB).
+function purgeIncognitoFiles() {
+  try {
+    const dir = path.join(app.getPath('sessionData'), 'Partitions', S.INCOGNITO_PARTITION.replace(/^persist:/, ''))
+    const own = (name) => name.startsWith('chrome-extension_')
+    for (const name of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+      if (name === 'IndexedDB') {
+        for (const entry of fs.readdirSync(path.join(dir, name))) if (!own(entry)) fs.rmSync(path.join(dir, name, entry), { recursive: true, force: true })
+      } else if (!['Local Extension Settings', 'Extension State'].includes(name)) fs.rmSync(path.join(dir, name), { recursive: true, force: true })
+    }
+  } catch (e) { console.error(`Purging the incognito files failed: ${e.message}`) }
+}
+
+// Everything a site left in the incognito partition goes; only the extensions' own origins stay.
+let incognitoWipe = Promise.resolve()
+function wipeIncognito() {
+  return incognitoWipe = (async () => {
+    try {
+      const ses = session.fromPartition(S.INCOGNITO_PARTITION)
+      await ses.clearData({ excludeOrigins: extensions.ownOrigins() })
+      await Promise.all([ses.clearAuthCache(), ses.clearHostResolverCache()])
+    } catch (e) { console.error(`Wiping the incognito session failed: ${e.message}`) }
+  })()
+}
+
 const configuredSessions = new Set()
 function getSession(partition) {
   const ses = session.fromPartition(partition)
@@ -2215,6 +2244,8 @@ async function start() {
     }
   })
   getSession('persist:main')
+  purgeIncognitoFiles()
+  wipeIncognito()
   ai = createAi({ dir: path.join(dataDir, 'ai'), version: app.getVersion(), state: () => state, changed, favicon: F.storeIcon(faviconDir, 'https://skiff.invalid/agent.svg', Buffer.from(SPARKLE)), api: agentApi, revokeAccess: (selector) => access.revoke(selector), transcripts, pageText, pageGeneration: (id) => runtime.get(id)?.generation, push: pushAi, watching: looking })
   extensions.start()
   ipcMain.handle('skiff:call', async (e, method, params) => {

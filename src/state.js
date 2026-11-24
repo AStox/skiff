@@ -729,9 +729,12 @@ function cycleSpace(s, p) {
   return null
 }
 
+// A persistent partition, so the built-in blocker runs there; the main process wipes its site data when the space closes and at every start.
+const INCOGNITO_PARTITION = 'persist:incognito'
+
 function openIncognito(s) {
   let space = s.spaces.find((x) => x.incognito)
-  if (!space) s.spaces.push(space = { id: newId('s'), name: 'Incognito', color: '#5f6b7a', incognito: true, sessionPartition: newId('incognito-') })
+  if (!space) s.spaces.push(space = { id: newId('s'), name: 'Incognito', color: '#5f6b7a', incognito: true, sessionPartition: INCOGNITO_PARTITION })
   activateSpace(s, { id: space.id })
   return space
 }
@@ -1417,7 +1420,7 @@ function setSettings(s, p) {
 }
 
 module.exports = {
-  err, isObject, load, resolveInput, webUrl, findTab, activeTab, getTab, visibleTabs, isIncognito, persistable, deskTabs, shownTabs, onDesktop, desktopNumber, setDesktops,
+  INCOGNITO_PARTITION, err, isObject, load, resolveInput, webUrl, findTab, activeTab, getTab, visibleTabs, isIncognito, persistable, deskTabs, shownTabs, onDesktop, desktopNumber, setDesktops,
   createSpace, updateSpace, moveSpace, removeSpace, activateSpace, cycleSpace, openIncognito,
   createFolder, updateFolder, moveFolder, removeFolder, setTrailCollapsed, refreshFolderLabels,
   createProfile, updateProfile, removeProfile, assignProfile, setLinkRule, removeLinkRule, routeLink,

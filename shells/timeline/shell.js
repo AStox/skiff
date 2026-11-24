@@ -690,14 +690,14 @@ function panel(space) {
   ]
 }
 
-const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', failed: 'Failed' }
+const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', restarting: 'Restarting…', failed: 'Failed' }
 
 function extensionRow(extension) {
   const { id, name, version, builtin, state } = extension
   const failed = builtin && state === 'failed'
   return h('li', { class: 'ext' },
     h('span', { class: 'ext-name', title: name }, name),
-    h('span', { class: version ? 'mono ext-version' : 'ext-version' }, version || STATE_WORDS[state] || ''),
+    h('span', { class: version && state !== 'restarting' ? 'mono ext-version' : 'ext-version' }, (state === 'restarting' ? '' : version) || STATE_WORDS[state] || ''),
     h('div', { class: 'ext-actions' },
       h('button', { class: 'text-btn', disabled: !extension.popup, 'aria-label': `${name} panel`, onclick: () => call('extensions.popup', { id, bounds: popupBounds() }) }, 'Panel'),
       h('button', { class: 'text-btn', disabled: !extension.options, 'aria-label': `${name} settings`, onclick: () => call('extensions.open', { id }) }, 'Settings'),

@@ -12,6 +12,10 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
   return {}
 }, { urls: ['<all_urls>'] }, ['blocking'])
 
+// A built-in extension tells Skiff it is filtering by listening for navigations, as uBlock Origin does once it is ready.
+// A hold.json next to this file ({"ms": n}) delays that, so a spec can watch Skiff hold page loads back.
+fetch(chrome.runtime.getURL('hold.json')).then((response) => response.json()).catch(() => ({ ms: 0 }))
+  .then(({ ms }) => setTimeout(() => chrome.webNavigation.onBeforeNavigate.addListener(() => {}), ms))
 chrome.webNavigation.onCommitted.addListener((details) => {
   events.push({ what: 'committed', tabId: details.tabId, frameId: details.frameId, url: details.url })
   if (details.frameId === 0 && details.url.startsWith('http:')) {

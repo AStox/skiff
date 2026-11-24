@@ -126,7 +126,7 @@ test('the incognito space is temporary: nothing in it is archived, moved across 
   const space = S.openIncognito(s)
   assert.equal(S.openIncognito(s), space)
   assert.deepEqual([s.activeSpaceId, space.incognito, space.name], [space.id, true, 'Incognito'])
-  assert.match(space.sessionPartition, /^incognito-/)
+  assert.equal(space.sessionPartition, 'persist:incognito', 'persistent, so the blocker can run in it')
   const [a, b] = ['a', 'b'].map((x) => S.createTab(s, { url: `${x}.example` }, 0))
   assert.equal(a.sessionPartition, space.sessionPartition)
   S.setCollapsed(s, { folder: 'Docs', collapsed: true })
