@@ -1331,15 +1331,11 @@ test.describe('layer panel and Buoy', () => {
     await opened()
     await expect(head()).toHaveText('Archive')
     await reset()
-    await emit('toggle-agents')
-    await opened()
-    await expect(head()).toHaveText('Agents')
-    await reset()
     // The card starts from the tab list again, whatever it showed when it closed.
     await buoy.locator('#buoy-main').click()
     await opened()
     await expect(head()).toHaveText(/\S/)
-    await expect(head()).not.toHaveText(/Settings|Archive|Agents/)
+    await expect(head()).not.toHaveText(/Settings|Archive/)
     await reset()
 
     // A bar mode opens it, and moves an open card there without closing it.

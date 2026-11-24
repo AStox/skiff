@@ -44,7 +44,7 @@ test('owner MCP contexts restrict browsing without issuing or selecting an agent
   const privateSpace = S.openIncognito(state)
   const secret = S.createTab(state, { url: 'https://private.example/' }, 3)
   const peek = { ...a, id: 'temporary-peek', userPeek: true }
-  const agent = { ...a, id: 'hidden-agent', agent: 'Worker' }
+  const agent = { ...a, id: 'agent-tab', agent: 'Worker' }
   const orphan = { ...a, id: 'orphan', spaceId: 'removed-space' }
   const privatePartition = { ...a, id: 'private-partition', sessionPartition: 'incognito-test' }
   const chat = { ...a, id: 'conversation', chat: { agent: 'Worker' } }
@@ -55,7 +55,7 @@ test('owner MCP contexts restrict browsing without issuing or selecting an agent
   assert.equal(access.selected({ owner: context.owner }), null)
   assert.throws(() => access.authorize(context.grantId, { route: '/mcp', method: 'POST' }), { code: 'forbidden' })
   assert.throws(() => access.assert({ ...context }), { code: 'forbidden' })
-  assert.deepEqual(access.listNormalTabs().map((tab) => tab.id), [a.id, b.id, chat.id])
+  assert.deepEqual(access.listNormalTabs().map((tab) => tab.id), [a.id, b.id, agent.id, chat.id])
   let reads = 0
   const tools = access.tools(context, [
     { name: 'browser_list_tabs', run: () => ({ tabs: state.tabs, activeTabId: secret.id }) },
@@ -66,8 +66,8 @@ test('owner MCP contexts restrict browsing without issuing or selecting an agent
     { name: 'custom.tool', run: () => assert.fail('owner MCP must not gain unselected component tools') }
   ])
   assert.deepEqual(tools.map((tool) => tool.name), ['browser_list_tabs', 'browser_read_page', 'browser_open_tab'])
-  assert.deepEqual(await tools[0].run(), { tabs: [a, b, chat], activeTabId: null })
-  for (const excluded of [secret, peek, agent, orphan, privatePartition]) {
+  assert.deepEqual(await tools[0].run(), { tabs: [a, b, agent, chat], activeTabId: null })
+  for (const excluded of [secret, peek, orphan, privatePartition]) {
     await assert.rejects(tools[1].run({ tabId: excluded.id }), { code: 'forbidden', message: `No tab ${excluded.id}` })
     await assert.rejects(tools[1].run({ id: excluded.id }), { code: 'forbidden' })
   }

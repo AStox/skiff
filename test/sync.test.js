@@ -26,7 +26,7 @@ function initial() {
   return {
     spaces: [{ id: 'home', name: 'Home', color: '#123456', profileId: 'main', sessionPartition: 'persist:main' }],
     profiles: [{ id: 'main', name: 'Default', partition: 'persist:main' }],
-    tabs: [], folders: [], agentTabs: [], archive: [], activeSpaceId: 'home', activeTabBySpace: {},
+    tabs: [], folders: [], archive: [], activeSpaceId: 'home', activeTabBySpace: {},
     splitBySpace: {}, settings: { autoArchiveHours: 12, memorySaver: false }
   }
 }
@@ -103,7 +103,6 @@ test('privacy projection excludes private, agent, peek, transcript, credentials,
   a.state.tabs.push(tab('normal'), { ...tab('private-tab'), spaceId: 'private' }, { ...tab('agent-tab'), agent: 'SECRET_AGENT' }, { ...tab('peek-tab'), userPeek: true }, { ...tab('chat-tab'), url: 'skiff://chat/c123', chat: { transcript: 'SECRET_TRANSCRIPT' } }, { ...tab('credential'), url: 'https://user:SECRET_PASSWORD@example.com/' }, { ...tab('token'), url: 'https://example.com/?access_token=SECRET_TOKEN' }, { ...tab('file'), url: 'file:///home/SECRET_PATH' }, { ...tab('loopback'), url: 'http://127.0.0.1/private' })
   a.state.tabs[0].runtime = { secret: 'SECRET_RUNTIME' }
   a.state.tabs[0].desk = { local: 'SECRET_DESK' }
-  a.state.agentTabs.push(tab('agent-only'))
   a.state.settings.ai = { command: '/home/SECRET_CODE' }
   a.state.settings.downloadDirectory = '/home/SECRET_DOWNLOAD'
   a.state.settings.shortcuts = { 'Ctrl+X': { method: 'exec', params: 'SECRET_EXECUTABLE' } }

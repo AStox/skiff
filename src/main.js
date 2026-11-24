@@ -12,6 +12,7 @@ const { createVault } = require('./migration')
 const { watchShellFiles } = require('./watch-shell')
 const { createExtensions } = require('./extensions')
 const { createAi, browserTools, handleMcp } = require('./ai')
+const { createAgentBrowser } = require('./agent-browser')
 const { shell } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const { createQuit, createUpdates } = require('./updates')
@@ -40,6 +41,7 @@ const faviconDir = path.join(dataDir, 'favicons')
 const bundledShell = path.join(__dirname, '..', 'shell')
 const bundledShells = path.join(__dirname, '..', 'shells')
 const chatDir = path.join(__dirname, '..', 'chat')
+const controlDir = path.join(__dirname, '..', 'control')
 const toolsDir = path.join(__dirname, '..', 'components', 'browser-tools')
 let safeMode = process.argv.includes('--safe-mode')
 const previewMode = process.argv.includes('--component-preview')
@@ -67,7 +69,7 @@ app.on('open-url', (event, url) => {
 })
 const SPARKLE = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#8b5cf6" d="M8 0c.6 4.2 3.8 7.4 8 8-4.2.6-7.4 3.8-8 8-.6-4.2-3.8-7.4-8-8 4.2-.6 7.4-3.8 8-8z"/></svg>'
 const shells = ['default', ...(fs.existsSync(bundledShells) ? fs.readdirSync(bundledShells).filter((name) => fs.existsSync(path.join(bundledShells, name, 'index.html'))).sort() : [])]
-const CODES = ['unknown_method', 'bad_params', 'not_found', 'forbidden', 'unauthorized', 'cancelled', 'timeout', 'component_error', 'command_collision', 'bad_schema', 'bad_result']
+const CODES = ['unknown_method', 'bad_params', 'not_found', 'forbidden', 'unauthorized', 'cancelled', 'timeout', 'component_error', 'command_collision', 'bad_schema', 'bad_result', 'user_has_control', 'devtools_attached']
 
 let state
 let browserIdentity
@@ -91,6 +93,9 @@ let watcher = null
 const overlays = new Map()
 const pageToolRequests = new Map()
 const frames = new Map()
+// A control layer view per agent-driven tab on screen, and where each agent cursor last was (window CSS pixels).
+const controls = new Map()
+const cursors = new Map()
 // Frame view -> the state push it has seen.
 const seen = new WeakMap()
 let pushed = 0
@@ -106,7 +111,7 @@ const runtime = new Map()
 const streams = new Set()
 const chatViews = new WeakSet()
 const agentViews = new WeakSet()
-// Agent tabs live in this window, never shown or focused, except the one the user peeks at.
+// Agent tabs are parked in this window while they are not on screen, so they keep painting and a DevTools screenshot works.
 let agentWin = null
 const PARKED = { x: 0, y: 0, width: 1280, height: 800 }
 let popupBounds = null
@@ -192,7 +197,7 @@ const naturalScroll = process.platform !== 'darwin' || (() => {
 })()
 const snapshot = () => {
   const rects = S.arrange(state, state.settings.tabLayout)
-  return { ...state, shells, naturalScroll, safeMode, splitBounds, update: updates.state() ?? undefined, browserData: browserData?.snapshot(), deskOnly: desk.only, tabs: state.tabs.map((t) => ({ ...live(t), bucket: S.bucketOf(t), ...(rects[t.id] && { desk: { ...t.desk, ...rects[t.id] } }) })), agentTabs: state.agentTabs.map(live) }
+  return { ...state, shells, naturalScroll, safeMode, splitBounds, update: updates.state() ?? undefined, browserData: browserData?.snapshot(), deskOnly: desk.only, tabs: state.tabs.map((t) => ({ ...live(t), bucket: S.bucketOf(t), ...(rects[t.id] && { desk: { ...t.desk, ...rects[t.id] } }) })) }
 }
 const sseFrame = (snap) => `event: state\ndata: ${JSON.stringify(snap)}\n\n`
 
@@ -258,6 +263,7 @@ function unshow(view) {
 
 function destroyView(id) {
   pageFeatures?.beforeDestroy(id)
+  answerRequest(id)
   const view = views.get(id)
   if (!view) return
   views.delete(id)
@@ -265,6 +271,9 @@ function destroyView(id) {
   unshow(view)
   if (agentViews.has(view)) agentWin?.contentView.removeChildView(view)
   if (attached === view) attached = null
+  agentBrowser.release(id)
+  destroyControl(id)
+  cursors.delete(id)
   if (!view.webContents.isDestroyed()) view.webContents.close()
 }
 
@@ -306,6 +315,60 @@ function createFrame(id) {
   return view
 }
 
+// The control layer: a transparent view over a page an agent is driving. While the agent works it draws the agent's cursor and swallows the user's mouse over the page (keys are dropped in the page's before-input-event); when the user has the tab, or an agent asks for it, it is only a strip across the top.
+const STRIP = 44
+function controlMode(tab) {
+  if (!tab) return null
+  if (tab.agentRequest) return 'request'
+  if (!tab.agent) return null
+  if (tab.agentControl === 'user') return 'user'
+  return tab.agentState === 'working' ? 'lock' : null
+}
+
+function createControl(id) {
+  const view = shellView()
+  const wc = view.webContents
+  loadSurface(wc, path.join(controlDir, 'control.html'), { query: { tab: id } }).catch(console.error)
+  wc.on('did-finish-load', () => { if (cursors.has(id)) sendEvent(wc, 'agent-cursor', { ...cursors.get(id), ms: 0 }) })
+  controls.set(id, view)
+  // It asks for the state itself once loaded.
+  seen.set(view, pushed)
+  return view
+}
+
+function destroyControl(id) {
+  const view = controls.get(id)
+  if (!view) return
+  controls.delete(id)
+  unshow(view)
+  if (!view.webContents.isDestroyed()) view.webContents.close()
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+// What the user sees of an agent's call: the cursor glides to the target before the click lands, a ripple, a highlight on the field typed into. A page nobody is looking at draws nothing and waits for nothing.
+const visual = {
+  async glide(id, point) {
+    const zoom = views.get(id)?.webContents.getZoomFactor() ?? 1
+    const to = { x: point.x * zoom, y: point.y * zoom }
+    const from = cursors.get(id)
+    cursors.set(id, to)
+    const view = controls.get(id)
+    if (!view || !shown.includes(view) || view.webContents.isLoading()) return
+    const ms = from ? Math.round(Math.min(650, 200 + Math.hypot(to.x - from.x, to.y - from.y) * 0.45)) : 320
+    sendEvent(view.webContents, 'agent-cursor', { ...to, ms })
+    await sleep(ms + 60)
+  },
+  ripple(id, point) {
+    const zoom = views.get(id)?.webContents.getZoomFactor() ?? 1
+    sendEvent(controls.get(id)?.webContents, 'agent-ripple', { x: point.x * zoom, y: point.y * zoom })
+  },
+  highlight(id, rect) {
+    const zoom = views.get(id)?.webContents.getZoomFactor() ?? 1
+    sendEvent(controls.get(id)?.webContents, 'agent-highlight', rect && { x: rect.x * zoom, y: rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom })
+  }
+}
+const agentBrowser = createAgentBrowser({ contentsOf: (id) => views.get(id)?.webContents ?? (parkAgents(), views.get(id)?.webContents), awake: (id) => { const view = views.get(id); if (view) wake(view) }, visual })
+
 function readFrame(shellJson) {
   const f = shellJson?.frame
   if (!S.isObject(f) || typeof f.file !== 'string' || f.file !== path.basename(f.file) || !fs.statSync(path.join(shellRoot(), f.file), { throwIfNoEntry: false })?.isFile()) return null
@@ -320,7 +383,7 @@ function createChatView(tab) {
   guardShell(wc)
   wc.on('before-mouse-event', (_e, mouse) => {
     if (mouse.type === 'mouseDown') pressOutside()
-    if (deskMode && mouse.type === 'mouseDown' && views.get(tab.id) === view && state.peek !== tab.id && (state.peek || S.activeTab(state)?.id !== tab.id)) call('tabs.activate', { id: tab.id }).catch(console.error)
+    if (deskMode && mouse.type === 'mouseDown' && views.get(tab.id) === view && S.activeTab(state)?.id !== tab.id) call('tabs.activate', { id: tab.id }).catch(console.error)
   })
   loadSurface(wc, roleFile('chat', path.join(chatDir, 'chat.html'), tab.spaceId), { query: { id: tab.url.slice('skiff://chat/'.length) } })
   chatViews.add(view)
@@ -331,7 +394,7 @@ function createChatView(tab) {
 // Picking a space moves the tab, then shows it there, so the page stays in front of the user.
 function moveToSpaceMenu(id) {
   const tab = S.findTab(state, id)
-  if (!tab || tab.agent) return []
+  if (!tab || tab.agentOpened) return []
   const targets = state.spaces.filter((space) => (space.id !== tab.spaceId || tab.userPeek) && Boolean(space.incognito) === S.isIncognito(state, tab.spaceId))
   if (!targets.length) return []
   const move = async (spaceId) => {
@@ -347,10 +410,7 @@ function createView(tab) {
   const partition = tab.sessionPartition || 'persist:main'
   const ses = getSession(partition)
   const view = new WebContentsView({ webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, partition, ...(tab.agent && { backgroundThrottling: false }) } })
-  if (tab.agent) {
-    agentViews.add(view)
-    view.webContents.on('dom-ready', () => wake(view))
-  }
+  if (tab.agent) adoptAgentView(view)
   const wc = view.webContents
   wc.setUserAgent(identityForTab(tab) === 'native' ? nativeUserAgent : compatibleUserAgent)
   browserData?.applyZoom(wc, tab)
@@ -403,11 +463,15 @@ function createView(tab) {
     const current = S.findTab(state, id)
     if (current) browserData?.recordVisit(current, { url: wc.getURL(), title: wc.getTitle() })
   })
-  // A page view takes its own clicks, so the shell never sees a click on a desk window behind the active one; a click on any window but the peeked one ends a peek.
+  // A page view takes its own clicks, so the shell never sees a click on a desk window behind the active one.
   wc.on('before-mouse-event', (_e, mouse) => {
+    // DevTools input (an agent's click) is reported here too; it is not the user pressing.
+    if (agentBrowser.sent(id, mouse)) return
     if (mouse.type === 'mouseDown') pressOutside()
-    if (mouse.type === 'mouseDown' && views.get(id) === view && state.peek !== id && (state.peek || S.activeTab(state)?.id !== id)) call('tabs.activate', { id }).catch(console.error)
+    if (mouse.type === 'mouseDown' && views.get(id) === view && S.activeTab(state)?.id !== id) call('tabs.activate', { id }).catch(console.error)
   })
+  // The user's keys never reach a page an agent is working in. DevTools key events are reported here as well, so the agent's own are told apart by what it is sending.
+  wc.on('before-input-event', (event, input) => { if (controlMode(S.findTab(state, id)) === 'lock' && !agentBrowser.sent(id, input)) event.preventDefault() })
   wc.on('did-start-loading', () => update({}, { loading: true }))
   wc.on('did-stop-loading', () => {
     if (views.get(id) === view) S.settle(state, id, looking(id))
@@ -468,6 +532,8 @@ function pageText(tabId) {
 }
 
 
+// A chat's agent is done with the tabs it drove when its turn ends.
+const chatStatus = new Map()
 function pushAi(name, data) {
   if (name === 'chat') {
     const loading = data.status === 'running'
@@ -475,6 +541,9 @@ function pushAi(name, data) {
       runtime.set(data.tabId, { ...runtime.get(data.tabId), loading })
       changedSoon()
     }
+    const was = chatStatus.get(data.id)
+    chatStatus.set(data.id, data.status)
+    if (was === 'running' && !loading) finishDriven(data.id, data.agent)
     const view = views.get(data.tabId)
     if (view && chatViews.has(view)) sendEvent(view.webContents, 'chat', data)
   } else {
@@ -511,18 +580,13 @@ function pageFetch(url, { signal }) {
   })
 }
 
-const prefetchIcons = F.createPrefetch({ dir: faviconDir, fetch: pageFetch, tabs: () => S.persistable(state).tabs, changed })
+const prefetchIcons = F.createPrefetch({ dir: faviconDir, fetch: pageFetch, tabs: () => S.storedTabs(state), changed })
 
 function deskLayout() {
   if (!pageVisible) return []
   const tabs = S.shownTabs(state).filter((t) => !desk.only || desk.only.includes(t.id))
   const preview = desk.preview && S.findTab(state, desk.preview.id)
-  const peeked = S.findTab(state, state.peek)
-  if (preview && preview !== peeked && preview.spaceId === state.activeSpaceId && !tabs.includes(preview)) tabs.push(preview)
-  if (peeked) {
-    peeked.desk ??= { ...S.deskLayouts(state).center, z: 0 }
-    tabs.push(peeked)
-  }
+  if (preview && preview.spaceId === state.activeSpaceId && !tabs.includes(preview)) tabs.push(preview)
   const radius = Math.round(10 * win.webContents.getZoomFactor())
   const f = frameSpec
   const rects = S.arrange(state, state.settings.tabLayout)
@@ -551,6 +615,7 @@ function syncView() {
   }
   for (const id of [...views.keys()]) if (!S.findTab(state, id)) destroyView(id)
   for (const id of [...frames.keys()]) if (!S.findTab(state, id)) destroyFrame(id)
+  for (const [id] of [...controls]) if (controlMode(S.findTab(state, id)) === null) destroyControl(id)
   if (!win) return parkAgents()
   if (deskMode) {
     const zoom = win.webContents.getZoomFactor()
@@ -575,7 +640,7 @@ function syncView() {
     for (const wc of shellContents()) sendEvent(wc, 'drag-cancel', null)
   }
   if (deskMode && desk.only) trimOnly()
-  const tab = S.findTab(state, state.userPeek || state.peek) || S.activeTab(state)
+  const tab = S.findTab(state, state.userPeek) || S.activeTab(state)
   let placed = deskMode ? deskLayout() : tab && pageBounds && pageVisible ? [{ tab, bounds: pageBounds, radius: pageBounds.radius }] : []
   const saved = state.splitBySpace?.[state.activeSpaceId]
   const split = saved?.ids.every((id) => S.onDesktop(state, S.findTab(state, id))) ? saved : null
@@ -597,10 +662,14 @@ function syncView() {
     placed = placed.filter((p) => p.tab.id !== peek.id)
     placed.push({ tab: peek, bounds: { x: Math.round(width * .15), y: 72, width: Math.round(width * .7), height: Math.max(160, height - 144) }, radius: 12 })
   }
-  const items = placed.flatMap((p) => [
-    ...(p.frame ? [{ tab: p.tab, view: frames.get(p.tab.id) || createFrame(p.tab.id), bounds: p.frame }] : []),
-    { tab: p.tab, view: views.get(p.tab.id) || createView(p.tab), bounds: p.bounds, radius: p.radius }
-  ])
+  const items = placed.flatMap((p) => {
+    const mode = controlMode(p.tab)
+    return [
+      ...(p.frame ? [{ tab: p.tab, view: frames.get(p.tab.id) || createFrame(p.tab.id), bounds: p.frame }] : []),
+      { tab: p.tab, view: views.get(p.tab.id) || createView(p.tab), bounds: p.bounds, radius: p.radius },
+      ...(mode ? [{ tab: p.tab, view: controls.get(p.tab.id) || createControl(p.tab.id), bounds: mode === 'lock' ? p.bounds : { ...p.bounds, height: Math.min(p.bounds.height, STRIP) }, radius: p.radius }] : [])
+    ]
+  })
   const next = items.map((item) => item.view)
   if (switched && pageVisible && motion()) beginSlide(items, dir)
   else if (switched || !pageVisible) endSlide()
@@ -632,15 +701,24 @@ function syncView() {
   syncDivider()
 }
 
+// A page an agent drives is never left without a window: off screen it sits in a hidden one, painting, so DevTools screenshots and timers keep working.
+function adoptAgentView(view) {
+  agentViews.add(view)
+  view.webContents.setBackgroundThrottling(false)
+  view.webContents.on('dom-ready', () => wake(view))
+}
+
 function parkAgents() {
-  if (!state.agentTabs.length) {
+  const agents = state.tabs.filter((t) => t.agent)
+  if (!agents.length) {
     agentWin?.destroy()
     agentWin = null
     return
   }
   agentWin ??= new BrowserWindow({ show: false, focusable: false, skipTaskbar: true, width: PARKED.width, height: PARKED.height, paintWhenInitiallyHidden: true })
-  for (const tab of state.agentTabs) {
+  for (const tab of agents) {
     const view = views.get(tab.id) || createView(tab)
+    if (!agentViews.has(view)) adoptAgentView(view)
     if (shown.includes(view) || agentWin.contentView.children.includes(view)) continue
     leaveParked(view)
     agentWin.contentView.addChildView(view)
@@ -960,6 +1038,7 @@ function closeShellViews() {
   for (const o of overlays.values()) o.host.webContents.close()
   overlays.clear()
   for (const id of [...frames.keys()]) destroyFrame(id)
+  for (const id of [...controls.keys()]) destroyControl(id)
 }
 
 function manifest() {
@@ -1320,7 +1399,11 @@ async function fillPassword() {
   }
 }
 
-const toolNames = { 'tabs.list': 'browser_list_tabs', 'tabs.read': 'browser_read_page', 'tabs.create': 'browser_open_tab', 'tabs.navigate': 'browser_navigate', 'tabs.activate': 'browser_activate_tab', 'tabs.close': 'browser_close_tab' }
+const toolNames = {
+  'tabs.list': 'browser_list_tabs', 'tabs.read': 'browser_read_page', 'tabs.create': 'browser_open_tab', 'tabs.navigate': 'browser_navigate', 'tabs.activate': 'browser_activate_tab', 'tabs.close': 'browser_close_tab',
+  'tabs.snapshot': 'browser_snapshot', 'tabs.click': 'browser_click', 'tabs.type': 'browser_type', 'tabs.press': 'browser_press', 'tabs.scroll': 'browser_scroll', 'tabs.screenshot': 'browser_screenshot', 'tabs.wait': 'browser_wait',
+  'agent.requestTab': 'browser_request_tab', 'agent.finish': 'browser_finish'
+}
 const def = (name, params, description, run) => registry.register('core', { name, description, params, inputSchema: schemaFor(name), tool: toolNames[name] ? { name: toolNames[name] } : false, run })
 const mutate = (fn) => (p) => {
   const result = fn(state, p, Date.now())
@@ -1364,20 +1447,23 @@ def('incognito.open', '', 'Open the temporary incognito space, creating it if ne
   return space
 })
 
-def('tabs.create', '{url, spaceId?, parentId?, activate?, agent?}', 'Open a tab using the selected search behavior', async (p, context) => {
+def('tabs.create', '{url, spaceId?, parentId?, activate?, agent?}', 'Open a tab using the selected search behavior; agent names an agent that opens it as its own tab: an ordinary tab of the space (never activated, never saved) that only that agent may drive with the browser tools. A scoped grant always opens its own agent tabs', async (p, context) => {
   // Scoped agents supply explicit HTTP URLs; replaceable search must not acquire their browser authority.
   const url = context.accessContext ? S.webUrl(p.url) : (await call('search.resolve', { text: p.url }, context)).url
   context.signal?.throwIfAborted()
   if (context.accessContext) access.assert(context.accessContext, { command: 'tabs.create', params: { ...p, url } })
-  return mutate(S.createTab)({ ...p, url })
+  const tab = mutate(S.createTab)({ ...p, url })
+  const chat = context.accessContext && access.sessionOf(context.accessContext)
+  if (tab.agent && chat) driven.set(chat, (driven.get(chat) || new Set()).add(tab.id))
+  return tab
 })
-def('tabs.close', '{id?}', 'Close a tab into the archive; favorites and pinned tabs are unloaded and kept; incognito and agent tabs are dropped', (p) => {
+def('tabs.close', '{id?}', 'Close a tab into the archive; favorites and pinned tabs are unloaded and kept; incognito tabs and tabs an agent opened are dropped', (p) => {
   const result = S.closeTab(state, p, Date.now())
   if (views.has(result.unloaded)) destroyView(result.unloaded)
   changed()
   return result
 })
-def('tabs.activate', '{id}', 'Show a tab, switching to its space; a tab on another macOS desktop moves to the current one; an agent tab is peeked instead: shown in front over the current space until another tab or space is shown, desk.hide or tabs.close', mutate(S.activateTab))
+def('tabs.activate', '{id}', 'Show a tab, switching to its space; a tab on another macOS desktop moves to the current one; a finished agent tab counts as seen once shown', mutate(S.activateTab))
 def('tabs.read', '{id?}', "A tab's page as {title, url, selection, text}", (p, context) => {
   const tab = S.getTab(state, p.id)
   if (tab.chat) throw S.err('bad_params', 'That tab is a conversation, not a web page.')
@@ -1443,8 +1529,8 @@ def('folders.setCollapsed', '{spaceId?, folder, collapsed}', 'Collapse or expand
 def('desk.place', '{id?, x, y, width, height}', 'Put a tab on the desk of a desk shell or move or resize it there, in window CSS pixels, at least 240 by 160, show it if hidden and bring it to the front; the rect is remembered for the host of the tab, so its next new window opens there', mutate(S.placeDesk))
 def('desk.layouts', '', 'Get layouts from the selected layout component', (_p, context) => behavior('layout', { op: 'layouts' }, context))
 def('desk.tile', '{id?, layout}', 'Place a tab using the selected layout component', (p, context) => behavior('layout', { ...p, op: 'tile' }, context))
-def('desk.hide', '{id?}', 'Hide a desk window; the tab stays in its space and keeps its rect (the default one if it had none); if it was the active tab, the frontmost window left in the space becomes active, or none; on a peeked agent tab it ends the peek', mutate(S.hideDesk))
-def('desk.show', '{id}', 'Show a hidden desk window in front and make it the active tab; an agent tab is peeked', mutate(S.showDesk))
+def('desk.hide', '{id?}', 'Hide a desk window; the tab stays in its space and keeps its rect (the default one if it had none); if it was the active tab, the frontmost window left in the space becomes active, or none', mutate(S.hideDesk))
+def('desk.show', '{id}', 'Show a hidden desk window in front and make it the active tab', mutate(S.showDesk))
 
 def('archive.restore', '{id?}', 'Reopen an archived tab; without id, the most recent', mutate(S.restore))
 def('archive.remove', '{id}', 'Delete one archive entry', mutate(S.removeArchived))
@@ -1710,6 +1796,86 @@ command('tabs.list', 'List normal browser tabs', {}, [], () => {
   const active = S.activeTab(state)
   return { tabs, activeTabId: tabs.some((tab) => tab.id === active?.id) ? active.id : null }
 })
+
+// Agents drive tabs through these. Every call names its agent, and S.agentCall holds the one rule for the owner CLI and scoped grants alike:
+// an agent drives only a tab it opened (tabs.create {agent}) or was handed, and never one the user took over. The page work is src/agent-browser.js.
+const driven = new Map()
+const requests = new Map()
+const agentProp = { type: 'string', minLength: 1, maxLength: 40 }
+const tabProps = { tabId: string, id: string, agent: agentProp }
+
+function drive(run) {
+  return async (p, context) => {
+    const before = S.findTab(state, p.tabId ?? p.id)
+    const steady = before?.agentState === 'working' && !before.agentUnseen
+    const tab = S.agentCall(state, p, Date.now())
+    const chat = context.accessContext && access.sessionOf(context.accessContext)
+    if (chat) driven.set(chat, (driven.get(chat) || new Set()).add(tab.id))
+    if (!steady) changed()
+    context.signal?.throwIfAborted()
+    return run(tab.id, p)
+  }
+}
+
+// A request waiting on the user ends when it is answered, the tab goes, or the agent's call is dropped.
+function answerRequest(id) {
+  const asked = requests.get(id)
+  if (!asked) return
+  requests.delete(id)
+  asked.resolve({ allowed: S.findTab(state, id)?.agent === asked.agent, agent: asked.agent })
+}
+
+function finishDriven(chatId, agent) {
+  const ids = driven.get(chatId)
+  driven.delete(chatId)
+  let finished = false
+  for (const id of ids || []) {
+    const tab = S.findTab(state, id)
+    if (tab?.agent !== agent || tab.agentState === 'done') continue
+    S.agentFinish(state, { id, agent }, Date.now(), looking(id))
+    agentBrowser.release(id)
+    finished = true
+  }
+  if (finished) changed()
+}
+
+command('tabs.snapshot', 'An agent reads the page as an outline: its buttons, links, fields and other controls, each with a short ref like e12 for tabs.click and tabs.type, and its headings. Refs last until the next snapshot. Only a tab the agent opened or was handed', tabProps, ['agent'], drive((id) => agentBrowser.snapshot(id)))
+command('tabs.click', 'An agent clicks a ref from tabs.snapshot, or x and y in the page viewport (CSS pixels), with real mouse events sent to that page only', { ...tabProps, ref: string, x: number, y: number }, ['agent'], drive((id, p) => agentBrowser.click(id, p)))
+command('tabs.type', 'An agent types text whole into a ref from tabs.snapshot (focused first) or into the focused element; clear replaces what was there', { ...tabProps, ref: string, text: string, clear: boolean }, ['agent', 'text'], drive((id, p) => agentBrowser.type(id, p)))
+command('tabs.press', 'An agent presses a key or shortcut such as Enter, Tab, ArrowDown or Meta+Enter in the page', { ...tabProps, key: string }, ['agent', 'key'], drive((id, p) => agentBrowser.press(id, p)))
+command('tabs.scroll', 'An agent scrolls the page by dx and dy CSS pixels at x and y (default the middle) or over a ref; returns the scroll position', { ...tabProps, ref: string, x: number, y: number, dx: number, dy: number }, ['agent'], drive((id, p) => agentBrowser.scroll(id, p)))
+command('tabs.screenshot', 'An agent takes a JPEG of the page viewport, at most 1280 pixels wide, as {mime, width, height, data} with base64 data', tabProps, ['agent'], drive((id) => agentBrowser.screenshot(id)))
+command('tabs.wait', 'An agent waits until the page text contains text or its address contains url, for at most timeout ms (10000 by default, 60000 at most)', { ...tabProps, text: string, url: string, timeout: number }, ['agent'], drive((id, p) => agentBrowser.wait(id, p)))
+command('agent.finish', 'An agent is done with a tab: it shows as done, with an unseen mark until the user looks at it; summary is one line for the user. The tab stays the agent\'s. A Skiff chat finishes the tabs it drove when its turn ends', { ...tabProps, summary: string }, ['agent'], (p) => {
+  const tab = S.agentFinish(state, p, Date.now(), looking(p.tabId ?? p.id))
+  agentBrowser.release(tab.id)
+  changed()
+  return { tabId: tab.id, state: tab.agentState }
+})
+command('agent.requestTab', 'An agent asks to use a tab it did not open: the tab shows an Allow and Deny strip, and this resolves {allowed, agent} once the user answers (or {allowed: true} at once for a tab the agent already has)', tabProps, ['agent'], async (p, context) => {
+  const { tab, granted } = S.agentRequest(state, { ...p, id: p.tabId ?? p.id })
+  if (granted) return { allowed: true, agent: p.agent }
+  changed()
+  return new Promise((resolve) => {
+    requests.set(tab.id, { agent: p.agent, resolve })
+    context.signal?.addEventListener('abort', () => {
+      requests.delete(tab.id)
+      if (S.findTab(state, tab.id)?.agentRequest) { delete tab.agentRequest; changed() }
+    }, { once: true })
+  })
+})
+command('agent.answerTab', 'The user answers an agent\'s request for a tab: allow hands it over, deny drops the request', { id: string, allow: boolean }, ['id', 'allow'], (p) => {
+  const { agent, allowed } = mutate(S.agentAnswer)(p)
+  answerRequest(p.id)
+  return { agent, allowed }
+})
+command('tabs.handToAgent', 'Let an agent use a tab: from then on it may drive it with the browser tools (it starts idle). Replaces the agent that had it', { id: string, agent: agentProp }, ['id', 'agent'], (p) => {
+  const tab = mutate(S.handToAgent)(p)
+  answerRequest(tab.id)
+  return { tabId: tab.id, agent: tab.agent }
+})
+command('agent.takeOver', 'The user takes control of a tab an agent is using: the control layer goes, and the agent\'s next call on it fails with user_has_control', ids, ['id'], (p) => ({ tabId: mutate(S.takeOver)(p).id, control: 'user' }))
+command('agent.giveBack', 'The user gives a tab back to its agent', ids, ['id'], (p) => ({ tabId: mutate(S.giveBack)(p).id, control: 'agent' }))
 command('profiles.list', 'List browsing profiles', {}, [], () => state.profiles)
 command('links.rules', 'List external link routing rules', {}, [], () => state.linkRules)
 command('links.route', 'Resolve an external link profile', { url: string }, ['url'], (p) => S.routeLink(state, p))
@@ -2235,6 +2401,9 @@ async function start() {
   })
   rpc('archive.sweep')
   setInterval(() => rpc('archive.sweep'), 60e3)
+  // A working agent tab with no call for two minutes shows as idle (SKIFF_AGENT_IDLE_MS shortens that for tests).
+  const idleMs = Number(process.env.SKIFF_AGENT_IDLE_MS) || undefined
+  setInterval(() => { if (S.agentSweep(state, Date.now(), idleMs).length) changed() }, 5e3).unref()
   startUpdates()
 }
 

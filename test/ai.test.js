@@ -360,7 +360,7 @@ test('browser tools use the owned registry and selected grant boundary rather th
   const definition = (name, tool, properties, run) => registry.register('core', { name, description: name, tool: { name: tool }, inputSchema: { type: 'object', properties, additionalProperties: false }, run })
   definition('tabs.list', 'browser_list_tabs', {}, () => ({ tabs: s.tabs, activeTabId: S.activeTab(s)?.id }))
   definition('tabs.read', 'browser_read_page', { id: { type: 'string' } }, ({ id }) => ({ id, text: S.findTab(s, id).url }))
-  definition('tabs.create', 'browser_open_tab', { url: { type: 'string' }, spaceId: { type: 'string' } }, (params) => S.createTab(s, params, 1))
+  definition('tabs.create', 'browser_open_tab', { url: { type: 'string' }, spaceId: { type: 'string' }, agent: { type: 'string' } }, (params) => S.createTab(s, params, 1))
   definition('tabs.navigate', 'browser_navigate', { id: { type: 'string' }, url: { type: 'string' } }, (params) => S.navigateTab(s, params, 2))
   const access = createAccess({ state: () => s })
   const grant = access.issue({ owner: 'Fake Agent', spaceIds: [tab.spaceId], read: true, mutate: true })
