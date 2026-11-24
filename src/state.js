@@ -51,6 +51,19 @@ const findSpace = (s, id) => s.spaces.find((x) => x.id === id)
 const findTab = (s, id) => s.tabs.find((x) => x.id === id) || s.agentTabs.find((x) => x.id === id)
 const activeTab = (s) => findTab(s, s.activeTabBySpace[s.activeSpaceId])
 const isPlain = (t) => !t.favorite && !t.pinned
+const BUCKETS = ['favorites', 'unread', 'active', 'progress', 'later', 'done']
+// ponytail: a done tab waits a fixed day before it is archived
+const DONE_HOURS = 24
+const bucketOf = (t) => (t.favorite ? 'favorites' : t.pinned ? 'later' : t.status || 'active')
+const mark = (tab, status, now) => {
+  tab.status = status
+  if (status === 'done') tab.doneAt = now
+  else delete tab.doneAt
+}
+const unmark = (tab) => {
+  delete tab.status
+  delete tab.doneAt
+}
 // Trails affect list visibility, not independently live Layer windows.
 const visibleTabs = (s, spaceId = s.activeSpaceId) => {
   const tabs = s.tabs.filter((t) => t.spaceId === spaceId && !t.userPeek)
@@ -184,6 +197,10 @@ function load(raw = {}) {
   for (const tab of s.tabs) tab.sessionPartition ||= findSpace(s, tab.spaceId)?.sessionPartition || 'persist:main'
   loadOrganization(s, raw)
   for (const tab of s.tabs) {
+    if (!isPlain(tab)) unmark(tab)
+    else if (!(tab.status === 'unread' || (tab.status === 'done' && Number.isFinite(tab.doneAt)))) mark(tab, 'active')
+  }
+  for (const tab of s.tabs) {
     if (tab.desk === undefined) continue
     const d = isObject(tab.desk) && deskRect(tab.desk)
     if (d && Number.isFinite(tab.desk.z)) tab.desk = { ...d, z: tab.desk.z, ...(tab.desk.hidden === true && { hidden: true }) }
@@ -218,6 +235,7 @@ function release(s, tab) {
   const next = list[list.indexOf(tab) + 1] || list[list.indexOf(tab) - 1]
   if (next) s.activeTabBySpace[tab.spaceId] = next.id
   else delete s.activeTabBySpace[tab.spaceId]
+  if (tab.spaceId === s.activeSpaceId) look(s)
 }
 
 function detach(s, tab) {
@@ -691,6 +709,7 @@ function activateSpace(s, p) {
   if (s.userPeek && getTab(s, s.userPeek).spaceId !== spaceId) dismissPeek(s, {})
   s.activeSpaceId = spaceId
   s.peek = null
+  if (p.show !== false) look(s)
   return null
 }
 
@@ -736,11 +755,12 @@ function activateTab(s, p, now) {
   }
   // macOS has no way to switch desktops, so a tab from another one comes here instead.
   if (s.desktops) tab.desktopId = s.desktops.current
-  activateSpace(s, { id: tab.spaceId })
+  activateSpace(s, { id: tab.spaceId, show: false })
   const previous = activeTab(s)
   if (previous) previous.lastActiveAt = now
   s.activeTabBySpace[s.activeSpaceId] = tab.id
   tab.lastActiveAt = now
+  look(s)
   return tab
 }
 
@@ -755,7 +775,7 @@ function createTab(s, p, now, chat) {
   const profile = p.profileId === undefined ? s.profiles.find((x) => x.id === space.profileId) : getProfile(s, p.profileId)
   if (space.incognito && p.profileId !== undefined) throw bad('Incognito tabs cannot use persistent profiles')
   const partition = p.profileId !== undefined ? profile.partition : space.sessionPartition || profile?.partition || 'persist:main'
-  const tab = { id: newId('t'), spaceId, sessionPartition: partition, ...(profile?.partition === partition && { profileId: profile.id }), url, title: chat ? chat.title : url, favicon: chat ? chat.favicon : '', favorite: false, lastActiveAt: now, createdAt: now, ...here(s), ...(whatsappURL(url) && { browserIdentity: 'compatible' }), ...(chat && { chat: { agent: chat.agent, sessionId: null } }) }
+  const tab = { id: newId('t'), spaceId, sessionPartition: partition, ...(profile?.partition === partition && { profileId: profile.id }), url, title: chat ? chat.title : url, favicon: chat ? chat.favicon : '', favorite: false, status: chat ? 'active' : 'progress', lastActiveAt: now, createdAt: now, ...here(s), ...(whatsappURL(url) && { browserIdentity: 'compatible' }), ...(chat && { chat: { agent: chat.agent, sessionId: null } }) }
   if (parent && parent.spaceId === spaceId && isPlain(parent)) tab.parentId = parent.id
   s.tabs.push(tab)
   if (s.deskSize) {
@@ -804,6 +824,7 @@ function closeTab(s, p, now) {
     const next = s.tabs.filter((t) => !t.favorite && !t.pinned && t.spaceId === tab.spaceId && (!s.desktops || t.desktopId === tab.desktopId)).sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]
     if (next) s.activeTabBySpace[tab.spaceId] = next.id
     else delete s.activeTabBySpace[tab.spaceId]
+    if (tab.spaceId === s.activeSpaceId) look(s)
   }
   return { unloaded: tab.id }
 }
@@ -843,6 +864,8 @@ function setFavorite(s, p, now) {
   if (typeof p.favorite !== 'boolean') throw bad('favorite must be true or false')
   if (p.favorite) detach(s, tab)
   if (p.favorite) delete tab.folderId
+  if (p.favorite) unmark(tab)
+  else if (tab.favorite) mark(tab, 'active', now)
   return Object.assign(tab, { favorite: p.favorite, lastActiveAt: now }, p.favorite && { pinned: false, folder: '' })
 }
 
@@ -855,7 +878,50 @@ function setPinned(s, p, now) {
   if (p.pinned && tab.favorite) setFavorite(s, { id: tab.id, favorite: false }, now)
   if (group) tab.folderId = group.id
   else delete tab.folderId
+  if (p.pinned) unmark(tab)
+  else if (tab.pinned) mark(tab, 'active', now)
   return Object.assign(tab, { pinned: p.pinned, folder: group ? folderPath(s, group) : '', lastActiveAt: now })
+}
+
+// Moves by hand; progress is only ever set by a page or chat starting to work.
+function setBucket(s, p, now) {
+  const tab = userTab(s, p.id)
+  if (!BUCKETS.includes(p.bucket) || p.bucket === 'progress') throw bad(`bucket must be one of ${BUCKETS.filter((b) => b !== 'progress').join(', ')}`)
+  if (bucketOf(tab) === p.bucket) return tab
+  if (p.bucket === 'favorites') return setFavorite(s, { id: tab.id, favorite: true }, now)
+  if (p.bucket === 'later') return setPinned(s, { id: tab.id, pinned: true, folder: '' }, now)
+  if (tab.favorite) setFavorite(s, { id: tab.id, favorite: false }, now)
+  if (tab.pinned) setPinned(s, { id: tab.id, pinned: false }, now)
+  mark(tab, p.bucket, now)
+  return tab
+}
+
+// Showing the active tab ends its wait: unread and done become active. Returns whether it changed.
+function look(s) {
+  const tab = activeTab(s)
+  if (tab?.status !== 'unread' && tab?.status !== 'done') return false
+  mark(tab, 'active')
+  return true
+}
+
+// A web page finished loading: seen if the user is watching it, else unread. Only a tab still in progress moves.
+function settle(s, id, watching) {
+  const tab = findTab(s, id)
+  if (tab?.status !== 'progress' || tab.chat) return false
+  mark(tab, watching ? 'active' : 'unread')
+  return true
+}
+
+// A chat is working (busy) or has stopped, or is waiting for a permission answer (not busy): progress while busy, then seen or unread.
+function chatState(s, tabId, busy, watching) {
+  const tab = s.tabs.find((t) => t.id === tabId)
+  if (!tab?.chat || !isPlain(tab)) return false
+  if (busy) {
+    if (tab.status === 'progress') return false
+    mark(tab, 'progress')
+  } else if (tab.status === 'progress') mark(tab, watching ? 'active' : 'unread')
+  else return false
+  return true
 }
 
 function setCollapsed(s, p) {
@@ -1067,7 +1133,7 @@ function restore(s, p, now) {
   if (!entry) throw err('not_found', p.id === undefined ? 'The archive is empty' : `No archived tab ${p.id}`)
   s.archive.splice(i, 1)
   const spaceId = findSpace(s, entry.spaceId) ? entry.spaceId : normalSpace(s).id
-  const tab = { id: entry.id, spaceId, sessionPartition: entry.sessionPartition || 'persist:main', ...(entry.profileId && { profileId: entry.profileId }), ...((entry.browserIdentity === null || validTabIdentity(entry.browserIdentity)) && { browserIdentity: entry.browserIdentity }), arcSourceId: entry.arcSourceId, arcSourceKind: entry.arcSourceKind, url: entry.url, title: entry.title, favicon: entry.favicon, favorite: false, lastActiveAt: now, createdAt: now, ...here(s), ...(entry.chat && { chat: entry.chat }) }
+  const tab = { id: entry.id, spaceId, sessionPartition: entry.sessionPartition || 'persist:main', ...(entry.profileId && { profileId: entry.profileId }), ...((entry.browserIdentity === null || validTabIdentity(entry.browserIdentity)) && { browserIdentity: entry.browserIdentity }), arcSourceId: entry.arcSourceId, arcSourceKind: entry.arcSourceKind, url: entry.url, title: entry.title, favicon: entry.favicon, favorite: false, status: entry.chat ? 'active' : 'progress', lastActiveAt: now, createdAt: now, ...here(s), ...(entry.chat && { chat: entry.chat }) }
   s.tabs.push(tab)
   if (s.deskSize) tab.desk = { ...newDesk(s, tab), z: 0 }
   return activateTab(s, { id: tab.id }, now)
@@ -1085,11 +1151,19 @@ function clearArchive(s) {
   return null
 }
 
-function sweep(s, _p, now) {
+// Step one: a tab not shown for the delay is done. Step two: a tab done for a day is archived. Progress tabs, favorites and pinned tabs stay.
+// loading lists the ids of pages still loading; a progress page that is not one of them (never loaded) is unread.
+function sweep(s, p, now) {
   const limit = s.settings.autoArchiveHours * HOUR
-  const old = limit > 0 ? s.tabs.filter((t) => !t.favorite && !t.pinned && !t.userPeek && !s.splitBySpace[t.spaceId]?.ids.includes(t.id) && !isIncognito(s, t.spaceId) && s.activeTabBySpace[t.spaceId] !== t.id && now - t.lastActiveAt > limit) : []
+  const loading = new Set(p.loading)
+  const settled = s.tabs.filter((t) => t.status === 'progress' && !t.chat && !loading.has(t.id))
+  for (const tab of settled) mark(tab, 'unread')
+  const idle = (t) => !t.userPeek && !s.splitBySpace[t.spaceId]?.ids.includes(t.id) && s.activeTabBySpace[t.spaceId] !== t.id
+  const done = limit > 0 ? s.tabs.filter((t) => idle(t) && (bucketOf(t) === 'active' || bucketOf(t) === 'unread') && now - t.lastActiveAt > limit) : []
+  for (const tab of done) mark(tab, 'done', now)
+  const old = s.tabs.filter((t) => t.status === 'done' && idle(t) && !isIncognito(s, t.spaceId) && now - t.doneAt > DONE_HOURS * HOUR)
   for (const tab of old) archiveTab(s, tab, now)
-  return { archived: old.map((t) => t.id) }
+  return { archived: old.map((t) => t.id), done: done.map((t) => t.id), settled: settled.map((t) => t.id) }
 }
 
 function importSetup(s, setup, now) {
@@ -1231,6 +1305,6 @@ module.exports = {
   createFolder, updateFolder, moveFolder, removeFolder, setTrailCollapsed, refreshFolderLabels,
   createProfile, updateProfile, removeProfile, assignProfile, setLinkRule, removeLinkRule, routeLink,
   setSplit, resizeSplit, clearSplit, createPeek, promotePeek, dismissPeek,
-  createTab, closeTab, activateTab, navigateTab, moveTab, setFavorite, setPinned, setCollapsed, cycleTab, selectTab,
+  createTab, closeTab, activateTab, navigateTab, moveTab, setFavorite, setPinned, setBucket, bucketOf, look, settle, chatState, setCollapsed, cycleTab, selectTab,
   placeDesk, tileDesk, deskLayouts, hideDesk, showDesk, defaultDesk, thumbnailTabs, restore, removeArchived, clearArchive, sweep, setSettings, importSetup
 }

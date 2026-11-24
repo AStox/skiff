@@ -17,7 +17,7 @@ const PAGE = { title: 'Example page', url: 'https://example.com/a', selection: '
 const ICON = '../favicons/0123456789abcdef01234567.svg'
 const FOOT = '\nModel: fake-small Effort: low'
 
-function setup({ agents = [{ name: 'Fake', command: AGENT }], page = PAGE, api = () => null, revokeAccess, pageGeneration, transcriptRecovery = false } = {}) {
+function setup({ agents = [{ name: 'Fake', command: AGENT }], page = PAGE, api = () => null, revokeAccess, pageGeneration, transcriptRecovery = false, watching } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skiff-ai-'))
   const s = S.load({ settings: { ai: { agents } } })
   s.settings.transcriptRecovery = transcriptRecovery
@@ -27,7 +27,7 @@ function setup({ agents = [{ name: 'Fake', command: AGENT }], page = PAGE, api =
   const live = []
   const make = () => {
     const ai = createAi({
-      dir: path.join(dir, 'ai'), version: '0.0.0', state: () => s, changed: () => {}, favicon: ICON, api, revokeAccess, pageGeneration,
+      dir: path.join(dir, 'ai'), version: '0.0.0', state: () => s, changed: () => {}, favicon: ICON, api, revokeAccess, pageGeneration, watching,
       transcripts: createTranscripts({ dir: path.join(dir, 'journal'), state: () => s }),
       pageText: (tabId) => {
         reads.push(tabId)
@@ -551,4 +551,102 @@ test('page context is dropped if navigation, removal, space, document generation
     assert.equal(kinds(chat, 'user')[0].context, null, change)
     assert.equal(last(ai, chatId).text, `You said: only this prompt${FOOT}`, change)
   }
+})
+
+test('a thread is in progress while it works, then active when watched and unread when not', async () => {
+  let watched = false
+  const { ai, s } = setup({ watching: () => watched })
+  const bucket = (tabId) => S.bucketOf(S.findTab(s, tabId))
+  const quiet = ai.ask({ text: 'hello' })
+  assert.equal(bucket(quiet.tabId), 'progress')
+  await settled(ai, quiet.chatId)
+  assert.equal(bucket(quiet.tabId), 'unread')
+  watched = true
+  const seen = ai.ask({ text: 'hello again' })
+  assert.equal(bucket(seen.tabId), 'progress')
+  await settled(ai, seen.chatId)
+  assert.equal(bucket(seen.tabId), 'active')
+  watched = false
+  ai.prompt({ chatId: seen.chatId, text: 'and again' })
+  assert.equal(bucket(seen.tabId), 'progress')
+  await settled(ai, seen.chatId)
+  assert.equal(bucket(seen.tabId), 'unread')
+  S.activateTab(s, { id: seen.tabId }, 1)
+  assert.equal(bucket(seen.tabId), 'active')
+})
+
+test('a permission request ends the progress wait and the answer starts it again', async () => {
+  let watched = false
+  const { ai, s } = setup({ watching: () => watched })
+  const bucket = (tabId) => S.bucketOf(S.findTab(s, tabId))
+  const { tabId, chatId } = ai.ask({ text: 'please open https://example.org/x' })
+  assert.equal(bucket(tabId), 'progress')
+  await until(() => ai.chat({ chatId }).permission)
+  assert.equal(ai.chat({ chatId }).status, 'running')
+  assert.equal(bucket(tabId), 'unread')
+  ai.permit({ chatId, optionId: 'allow' })
+  assert.equal(bucket(tabId), 'progress')
+  await settled(ai, chatId)
+  assert.equal(bucket(tabId), 'unread')
+
+  watched = true
+  ai.prompt({ chatId, text: 'open https://example.org/y' })
+  await until(() => ai.chat({ chatId }).permission)
+  assert.equal(bucket(tabId), 'active')
+  ai.permit({ chatId, cancel: true })
+  await settled(ai, chatId)
+  assert.equal(bucket(tabId), 'active')
+})
+
+test('a restored thread is in progress while it restores, then unread or active', async () => {
+  let watched = false
+  const { ai, make, s } = setup({ watching: () => watched })
+  const { tabId, chatId } = ai.ask({ text: 'remember me' })
+  await settled(ai, chatId)
+  ai.stop()
+  S.setBucket(s, { id: tabId, bucket: 'done' }, 5)
+  const next = make()
+  assert.equal(next.chat({ chatId }).status, 'restoring')
+  assert.equal(S.bucketOf(S.findTab(s, tabId)), 'progress')
+  assert.equal(S.findTab(s, tabId).doneAt, undefined)
+  await settled(next, chatId)
+  assert.equal(S.bucketOf(S.findTab(s, tabId)), 'unread')
+  next.stop()
+  S.setBucket(s, { id: tabId, bucket: 'done' }, 6)
+  watched = true
+  const again = make()
+  again.chat({ chatId })
+  await settled(again, chatId)
+  assert.equal(S.bucketOf(S.findTab(s, tabId)), 'active')
+})
+
+test('a favorite or pinned thread keeps its bucket, and a thread moved by hand stays where it was put', async () => {
+  const { ai, s } = setup()
+  const bucket = (tabId) => S.bucketOf(S.findTab(s, tabId))
+  const fav = ai.ask({ text: 'hello' })
+  await settled(ai, fav.chatId)
+  S.setFavorite(s, { id: fav.tabId, favorite: true }, 1)
+  ai.prompt({ chatId: fav.chatId, text: 'more' })
+  assert.equal(bucket(fav.tabId), 'favorites')
+  await settled(ai, fav.chatId)
+  assert.equal(bucket(fav.tabId), 'favorites')
+  S.setPinned(s, { id: fav.tabId, pinned: true }, 2)
+  ai.prompt({ chatId: fav.chatId, text: 'more again' })
+  await settled(ai, fav.chatId)
+  assert.deepEqual([bucket(fav.tabId), S.findTab(s, fav.tabId).status], ['later', undefined])
+
+  const slow = ai.ask({ text: 'be slow' })
+  assert.equal(bucket(slow.tabId), 'progress')
+  S.setBucket(s, { id: slow.tabId, bucket: 'done' }, 3)
+  await until(() => last(ai, slow.chatId).text.length >= 3)
+  assert.equal(bucket(slow.tabId), 'done')
+  ai.cancel({ chatId: slow.chatId })
+  await settled(ai, slow.chatId)
+  assert.equal(bucket(slow.tabId), 'done')
+})
+
+test('a chat waiting for an agent is active and does not move', () => {
+  const { ai, s } = setup({ agents: [] })
+  const { tabId } = ai.ask({ text: 'hello there' })
+  assert.equal(S.bucketOf(S.findTab(s, tabId)), 'active')
 })

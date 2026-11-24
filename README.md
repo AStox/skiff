@@ -70,7 +70,7 @@ While you drag, the sidebar shows what a release will do. A dashed copy of the t
 
 With a tab focused, Alt+Shift+Up/Down reorders it within its section. At the edge of a section a top-level tab steps into the next one: up from tabs to pinned to favorites, and back down. Alt+Shift+Left/Right moves it to the adjacent space. Moving an imported tab preserves its original profile session. On a Mac, Alt is Option.
 
-Cmd+Shift+N (Ctrl+Shift+N elsewhere) opens the incognito space and the command bar. There is one incognito space. It has a dark look, its own session in memory and a close button in its title row. Nothing in it is written to disk: its tabs are not in `state.json`, closing a tab does not archive it, auto-archive skips it, and its icons are held in memory. Closing the space, or quitting, drops its tabs and clears its cookies and site data. Tabs cannot move into or out of it. Normal spaces and settings are kept as usual.
+Cmd+Shift+N (Ctrl+Shift+N elsewhere) opens the incognito space and the command bar. There is one incognito space. It has a dark look, its own session in memory and a close button in its title row. Nothing in it is written to disk: its tabs are not in `state.json`, closing a tab does not archive it, its tabs move between buckets but are never archived, and its icons are held in memory. Closing the space, or quitting, drops its tabs and clears its cookies and site data. Tabs cannot move into or out of it. Normal spaces and settings are kept as usual.
 
 Cmd+Shift+C (Ctrl+Shift+C elsewhere) copies the current tab's address and shows "Copied URL" above the space strip for a moment. The page keeps focus. `tabs.copyUrl {id?}` does the same for any tab and returns `{url}`.
 
@@ -78,7 +78,7 @@ Browser keys work as in Chrome, with Ctrl in place of Cmd elsewhere. Cmd+Left an
 
 Cmd+Shift+U (Ctrl+Shift+U elsewhere) opens the panel of the first extension that has one, such as uBlock Origin's, over the page; it closes when it loses focus. See Extensions below.
 
-The gear opens Settings: rename or color the current space, set the auto-archive delay, pick a shell or a search engine, set up your AI agents (see Your agent), open uBlock Origin's panel or dashboard, import from Arc, or fill a saved password. A delay of zero disables auto-archiving. The search engine is Google by default; the list also offers DuckDuckGo, Bing, Brave Search, Kagi and Ecosia, and `settings.set {"searchUrl": "https://example.com/?q=%s"}` sets any other URL with `%s`, which the list then shows as Custom. Archive has its own button. Deleting a space and clearing the archive require confirmation. Deleting a space archives its favorites with its other tabs. Every default shortcut is available in every profile; saved entries override a default with the same accelerator (see below). `ui.emit {"name": "toggle-settings", "data": {"section": "agents"}}` opens Settings at its Agents group (it never closes it).
+The gear opens Settings: rename or color the current space, set the auto-archive delay, pick a shell or a search engine, set up your AI agents (see Your agent), open uBlock Origin's panel or dashboard, import from Arc, or fill a saved password. The delay is how many hours a tab can go without being shown before it moves to Done; a Done tab is archived a day later (see Tab buckets). A delay of zero stops tabs moving to Done on their own. The search engine is Google by default; the list also offers DuckDuckGo, Bing, Brave Search, Kagi and Ecosia, and `settings.set {"searchUrl": "https://example.com/?q=%s"}` sets any other URL with `%s`, which the list then shows as Custom. Archive has its own button. Deleting a space and clearing the archive require confirmation. Deleting a space archives its favorites with its other tabs. Every default shortcut is available in every profile; saved entries override a default with the same accelerator (see below). `ui.emit {"name": "toggle-settings", "data": {"section": "agents"}}` opens Settings at its Agents group (it never closes it).
 
 ## Your agent
 
@@ -115,6 +115,7 @@ bin/skiff tabs.create '{"url":"how to row a skiff","activate":false}'
 bin/skiff tabs.create '{"url":"example.com/docs","parentId":"<tab-id>"}'
 bin/skiff tabs.setFavorite '{"favorite":true}'
 bin/skiff tabs.setPinned '{"pinned":true,"folder":"Docs"}'
+bin/skiff tabs.setBucket '{"bucket":"done"}'
 bin/skiff ui.emit '{"name":"import-arc"}'
 bin/skiff ui.emit '{"name":"toggle-settings"}'
 bin/skiff spaces.move '{"id":"<space-id>","index":0}'
@@ -127,7 +128,23 @@ bin/skiff events            # server-sent events, one full state per change
 
 Where `id` is optional it means the active tab. Tabs open only `http:` and `https:` URLs. Other text becomes a search.
 
-A tab is plain, pinned or a favorite, and always belongs to one space (`tab.spaceId`). A favorite shows only in its space; `tabs.setFavorite` keeps the tab where it is. Pinned tabs are never auto-archived. Folders are persisted entities with `folderId` and optional `parentId`: nested and empty folders survive, and `folders.setCollapsed` controls their presentation. Trails can be collapsed independently.
+A tab is plain, pinned or a favorite, and always belongs to one space (`tab.spaceId`). A favorite shows only in its space; `tabs.setFavorite` keeps the tab where it is. Favorites, pinned tabs and tabs in progress never move to Done by themselves. Folders are persisted entities with `folderId` and optional `parentId`: nested and empty folders survive, and `folders.setCollapsed` controls their presentation. Trails can be collapsed independently.
+
+Tab buckets: every tab, web page or chat, is in exactly one bucket of its space, shown in this order: `favorites`, `unread`, `active`, `progress`, `later`, `done`. `favorites` is `tab.favorite` and `later` is `tab.pinned` (with its folder); every other tab has `tab.status`, one of `progress`, `unread`, `active` or `done`, plus `tab.doneAt` (milliseconds) while done. Both are saved; a saved tab with no status is `active`, a saved `progress` tab becomes `active` on start, and a favorite or pinned tab has no status. Every tab in `state.get` carries a computed `bucket` and `browser_list_tabs` lists it for each tab. Tabs move between buckets by themselves:
+
+| Event | From | To |
+| --- | --- | --- |
+| `tabs.create`, a link opened from a page, an extension, or `archive.restore` of a web page | none | `progress` |
+| a page's main frame stops loading | `progress` | `active` if it is the active tab and Skiff is in front, else `unread` |
+| a progress page that never started loading (checked by `archive.sweep`) | `progress` | `unread` |
+| a tab is shown (`tabs.activate`, a switch of space or tab, or Skiff coming to the front with it shown) | `unread` or `done` | `active` |
+| a chat starts a turn or restores its session | `active`, `unread` or `done` | `progress` |
+| a chat turn ends, or the agent asks permission | `progress` | `active` if it is the shown tab and Skiff is in front, else `unread` |
+| `archive.sweep`: not shown for `autoArchiveHours` hours (not the active tab, a split tab or a tab in `progress`) | `active` or `unread` | `done`, with `doneAt` |
+| `archive.sweep`: 24 hours after `doneAt` | `done` | the archive (never for the incognito space) |
+| `tabs.setFavorite {favorite: false}` or `tabs.setPinned {pinned: false}` on a favorite or pinned tab | `favorites` or `later` | `active` |
+
+Reloading a page, navigating inside it or to a new address, and a chat that is idle never move a tab. A tab of the incognito space follows the same rules in memory and is never written or archived. `tabs.setBucket {id?, bucket}` moves a tab by hand: `favorites` makes it a favorite, `later` pins it (folder cleared), and `active`, `unread` or `done` clear its favorite and pin and set the status (`doneAt` for `done`); a tab already in that bucket stays as it is. `progress` cannot be set by hand and is refused with `bad_params`, like an unknown bucket and an agent tab. `archive.sweep` returns `{archived, done, settled}`, the ids it archived, moved to Done and settled.
 
 A plain tab may have a `parentId`, the plain tab of the same space it was opened from. `tabs.create {parentId?}` sets it; a parent that is pinned, a favorite or in another space is ignored. `tabs.move` reorders a tab among the tabs with the same parent.
 

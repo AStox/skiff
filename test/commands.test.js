@@ -241,6 +241,8 @@ test('explicit core schemas handle nested settings, null resets, payloads and un
   validateSchema(schemaFor('ui.emit'), { name: 'custom-event', data: { arbitrary: [null, true, 1] } })
   validateSchema(schemaFor('ai.permit'), { chatId: 'chat', cancel: true })
   validateSchema(schemaFor('ai.permit'), { chatId: 'chat', optionId: 'allow' })
+  for (const bucket of ['favorites', 'later', 'active', 'unread', 'done']) validateSchema(schemaFor('tabs.setBucket'), { id: 't1', bucket })
+  for (const params of [{ bucket: 'progress' }, { bucket: 'nope' }, { id: 't1' }]) assert.throws(() => validateSchema(schemaFor('tabs.setBucket'), params), { code: 'bad_params' })
   for (const params of [{ chatId: 'chat' }, { chatId: 'chat', cancel: false }, { chatId: 'chat', cancel: true, optionId: 'allow' }]) assert.throws(() => validateSchema(schemaFor('ai.permit'), params), { code: 'bad_params' })
   assert.throws(() => validateSchema(schemaFor('settings.set'), { ai: { agents: [{ name: 'Local', command: 1 }] } }), { code: 'bad_params' })
   assert.throws(() => validateSchema(schemaFor('ui.emit'), { name: 'state' }), { code: 'bad_params' })

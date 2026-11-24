@@ -245,6 +245,7 @@ const schemas = {
   'tabs.move': shape({ id, index: { type: 'integer', minimum: 0 }, spaceId: id }, ['id']),
   'tabs.setFavorite': shape({ id, favorite: boolean }, ['favorite']),
   'tabs.setPinned': shape({ id, pinned: boolean, folder: string, folderId: nullable(id) }, ['pinned']),
+  'tabs.setBucket': shape({ id, bucket: { enum: ['favorites', 'later', 'active', 'unread', 'done'] } }, ['bucket']),
   'tabs.cycle': shape({ delta: integer }, ['delta']),
   'tabs.select': shape({ index: integer }, ['index']),
   'tabs.thumbnails': shape({ ids: array(string, { maxItems: 24 }), width: { type: 'number', minimum: 16, maximum: 3840 } }, ['ids']),

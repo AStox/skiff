@@ -45,8 +45,9 @@ function option(list, category) {
 
 // dir: the agents' working folder; state(): the live browser state, whose settings.ai lists the agents; changed(): tabs or settings were changed here;
 // favicon: the icon of chat tabs; api({agent,sessionId,chatId,tabId}): scoped {port,token,revoke} or null; pageText(tabId): explicit page context;
-// push(name, data): 'ai-agents' with the agents list, or 'chat' with one chat object (at most once per 30 ms per chat).
-function createAi({ dir, version, state, changed, favicon, api = () => null, revokeAccess = () => {}, pageText, pageGeneration = () => null, push, transcripts }) {
+// push(name, data): 'ai-agents' with the agents list, or 'chat' with one chat object (at most once per 30 ms per chat);
+// watching(tabId): whether the user is looking at that tab right now, which decides if a finished turn leaves it unread.
+function createAi({ dir, version, state, changed, favicon, api = () => null, revokeAccess = () => {}, pageText, pageGeneration = () => null, push, transcripts, watching = () => false }) {
   const agents = new Map()
   const chats = new Map()
   let halted = false
@@ -73,8 +74,16 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
   const pushAgents = () => push('ai-agents', list())
 
   const shape = (c) => ({ id: c.id, tabId: c.tabId, agent: c.agent, status: c.status, error: c.error, pending: c.pending, sessionId: c.sessionId, models: c.models, model: c.model, efforts: c.efforts, effort: c.effort, permission: c.permission, turns: c.turns, ...(c.recovery && { recovery: c.recovery }), ...(c.transcriptError && { transcriptError: c.transcriptError }) })
+  // A chat waiting for a permission answer is not busy: it needs the user, not time.
+  const track = (c) => {
+    const busy = (c.status === 'running' || c.status === 'restoring') && !c.permission
+    if (busy === Boolean(c.busy)) return
+    c.busy = busy
+    if (S.chatState(state(), c.tabId, busy, watching(c.tabId))) changed()
+  }
   const touch = (c) => {
     if (halted) return
+    track(c)
     c.timer ??= setTimeout(() => {
       c.timer = null
       journal(c)
@@ -414,6 +423,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
   async function restore(c) {
     const agent = agentOf(c.agent)
     c.status = 'restoring'
+    track(c)
     c.restorePending = true
     const oldTurns = c.turns
     c.turns = []

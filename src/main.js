@@ -179,12 +179,15 @@ function save() {
 }
 
 const live = (t) => ({ loading: false, canGoBack: false, canGoForward: false, ...t, ...runtime.get(t.id) })
+// Whether the user is looking at Skiff, and at this tab in it.
+const frontNow = () => (deskMode ? inFront : Boolean(win?.isFocused()))
+const looking = (id) => S.activeTab(state)?.id === id && frontNow()
 // Whether wheel deltas follow the fingers (macOS "natural scrolling"); an absent setting is the macOS default, on.
 // ponytail: read once at launch; a change in System Settings applies after a restart.
 const naturalScroll = process.platform !== 'darwin' || (() => {
   try { return require('node:child_process').execFileSync('defaults', ['read', '-g', 'com.apple.swipescrolldirection'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== '0' } catch { return true }
 })()
-const snapshot = () => ({ ...state, shells, naturalScroll, safeMode, splitBounds, update: updates.state() ?? undefined, browserData: browserData?.snapshot(), deskOnly: desk.only, tabs: state.tabs.map(live), agentTabs: state.agentTabs.map(live) })
+const snapshot = () => ({ ...state, shells, naturalScroll, safeMode, splitBounds, update: updates.state() ?? undefined, browserData: browserData?.snapshot(), deskOnly: desk.only, tabs: state.tabs.map((t) => ({ ...live(t), bucket: S.bucketOf(t) })), agentTabs: state.agentTabs.map(live) })
 const sseFrame = (snap) => `event: state\ndata: ${JSON.stringify(snap)}\n\n`
 
 // Frames hear about state only while shown, so a push costs the shown windows; catchUpFrames serves one that shows again.
@@ -373,7 +376,10 @@ function createView(tab) {
     if (mouse.type === 'mouseDown' && views.get(id) === view && state.peek !== id && (state.peek || S.activeTab(state)?.id !== id)) call('tabs.activate', { id }).catch(console.error)
   })
   wc.on('did-start-loading', () => update({}, { loading: true }))
-  wc.on('did-stop-loading', () => update({}, { loading: false }))
+  wc.on('did-stop-loading', () => {
+    if (views.get(id) === view) S.settle(state, id, looking(id))
+    update({}, { loading: false })
+  })
   wc.on('did-finish-load', () => {
     const current = S.findTab(state, id)
     if (current) browserData?.recordVisit(current, { url: wc.getURL(), title: wc.getTitle() })
@@ -1065,7 +1071,7 @@ function createWindow(near = state.window) {
     if (popup) popup.setBounds(edgeBounds(popupBounds))
     if (deskMode) syncView()
   })
-  win.on('focus', () => { if (win === w) { deskFocused(); if (deskMode) desktopsChanged() } })
+  win.on('focus', () => { if (win === w) { deskFocused(); if (deskMode) desktopsChanged(); if (S.look(state)) changed() } })
   win.on('blur', () => {
     if (win !== w) return
     extensions.windowFocus(false)
@@ -1303,6 +1309,7 @@ def('tabs.copyUrl', '{id?}', 'Copy the address of a tab to the clipboard and sho
 def('tabs.move', '{id, index?, spaceId?}', 'Reorder a tab among its siblings or move it to another space as a root; not into or out of the incognito space; not an agent tab', mutate(S.moveTab))
 def('tabs.setFavorite', '{id?, favorite}', 'Make a tab a favorite of its space, or turn it back into a plain tab there; not an agent tab', mutate(S.setFavorite))
 def('tabs.setPinned', '{id?, pinned, folder?}', 'Pin a tab to its space, optionally in a folder, or unpin it; not an agent tab', mutate(S.setPinned))
+def('tabs.setBucket', '{id?, bucket}', 'Move a tab to a bucket: favorites, later (pinned), active, unread or done; progress is set by loading pages and working chats only; not an agent tab', mutate(S.setBucket))
 def('tabs.cycle', '{delta}', 'Show the next (1) or previous (-1) tab of the active space', mutate(S.cycleTab))
 def('tabs.select', '{index}', 'Show the index-th unpinned tab of the active space (and current macOS desktop) in Ctrl+Tab order; negative counts from the end; null past the end', mutate(S.selectTab))
 def('tabs.thumbnails', '{ids, width?}', 'Pictures of up to 24 tabs as [{id, image}] in the order of ids, image a JPEG data URL at most width pixels wide (default 480, at most 3840; a page narrower on screen keeps its own size) at the page\'s aspect, or null when the tab is not on screen (hidden, in another space or not loaded), cannot be captured or is incognito while another space shows', async (p) => {
@@ -1582,7 +1589,7 @@ for (const [name, fn, fields, required] of [
   ['peek.dismiss', S.dismissPeek, ids, []]
 ]) command(name, name.replaceAll('.', ' '), fields, required, mutate(fn))
 command('tabs.list', 'List normal browser tabs', {}, [], () => {
-  const tabs = access.listNormalTabs().map((tab) => (state.desktops ? { ...tab, desktop: S.desktopNumber(state, tab.desktopId) } : tab))
+  const tabs = access.listNormalTabs().map((tab) => ({ ...tab, bucket: S.bucketOf(tab), ...(state.desktops && { desktop: S.desktopNumber(state, tab.desktopId) }) }))
   const active = S.activeTab(state)
   return { tabs, activeTabId: tabs.some((tab) => tab.id === active?.id) ? active.id : null }
 })
@@ -1676,7 +1683,12 @@ command('ui.safeMode', 'Disable custom execution and recover the stock UI withou
 })
 command('host.layout', 'Native layout primitives', { op: { enum: ['layouts', 'tile'] }, ...ids, layout: string }, ['op'], (p) => p.op === 'layouts' ? S.deskLayouts(state) : mutate(S.tileDesk)({ id: p.id, layout: p.layout }))
 command('host.search', 'Resolve a destination with the configured search URL', { text: string }, ['text'], (p) => ({ url: S.resolveInput(p.text, state.settings.searchUrl) }))
-command('host.archive', 'Apply native archive rules', {}, [], () => { const result = S.sweep(state, {}, Date.now()); if (result.archived.length) changed(); return result })
+command('host.archive', 'Apply native archive rules', {}, [], () => {
+  const loading = [...runtime].filter(([, r]) => r.loading).map(([id]) => id)
+  const result = S.sweep(state, { loading }, Date.now())
+  if (result.archived.length || result.done.length || result.settled.length) changed()
+  return result
+})
 command('search.resolve', 'Resolve input using the selected search component', { text: string }, ['text'], (p, context) => behavior('search', p, context))
 
 function behavior(role, params, context) {
@@ -2011,7 +2023,7 @@ async function start() {
     }
   })
   getSession('persist:main')
-  ai = createAi({ dir: path.join(dataDir, 'ai'), version: app.getVersion(), state: () => state, changed, favicon: F.storeIcon(faviconDir, 'https://skiff.invalid/agent.svg', Buffer.from(SPARKLE)), api: agentApi, revokeAccess: (selector) => access.revoke(selector), transcripts, pageText, pageGeneration: (id) => runtime.get(id)?.generation, push: pushAi })
+  ai = createAi({ dir: path.join(dataDir, 'ai'), version: app.getVersion(), state: () => state, changed, favicon: F.storeIcon(faviconDir, 'https://skiff.invalid/agent.svg', Buffer.from(SPARKLE)), api: agentApi, revokeAccess: (selector) => access.revoke(selector), transcripts, pageText, pageGeneration: (id) => runtime.get(id)?.generation, push: pushAi, watching: looking })
   extensions.start()
   ipcMain.handle('skiff:call', async (e, method, params) => {
     const source = trustedFiles.get(e.sender)
