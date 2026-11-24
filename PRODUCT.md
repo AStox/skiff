@@ -28,6 +28,7 @@ A small browser host owns sessions, native page views and persistence. Stock and
 - A command bar (Cmd+T for a new tab, Cmd+L to edit the current address) that completes the top result inline and lists open tabs, known sites and archived tabs. Tab on a site turns the bar into a search of that site, from a built-in table of sites that is plain data in the shell.
 - Trails can be nested and collapsed. Persisted folders can be nested or empty.
 - Pinning and favoriting by drag, with a preview of the exact result before you let go. No pin or star buttons.
+- Any tab or window can move to another space: drag it onto a space dot, or right-click the page and pick Move to Space (`tabs.move`). It takes that space's profile, so a Dev tab moved to Work reloads signed in as Work; a link peek moved to a space becomes a real tab there. Spaces on one profile keep the live page.
 - One incognito space (Cmd+Shift+N). Its tabs, cookies and site data live in memory and are gone when it closes. Nothing in it is saved or archived.
 - Site icons are saved as local files. Opening a page saves its icon. Imported tabs use the icons Arc saved. Startup and import ask a site once for an icon no one has yet, without credentials.
 - Web pages never get the command API.

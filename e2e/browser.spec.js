@@ -79,7 +79,7 @@ test('browser identity modes apply per persistent profile only after restart', a
   expect(unchanged.cookie).toBe('identity=default-profile')
   expect((await skiff.state()).settings.browserIdentity[first.sessionPartition]).toBe('native')
 
-  // Popup, move and archive/restore retain the original session rather than rerouting authentication.
+  // A popup keeps its opener's session; a move joins the new space's profile (and its identity), and archive/restore then keep that session.
   await skiff.rpc('tabs.activate', { id: opted.id })
   await native.page.getByRole('link', { name: 'Open in new tab' }).click()
   let child
@@ -89,8 +89,8 @@ test('browser identity modes apply per persistent profile only after restart', a
   await skiff.rpc('tabs.move', { id: child.id, spaceId: home.id })
   await skiff.rpc('tabs.close', { id: child.id })
   const restored = await skiff.rpc('archive.restore', { id: child.id })
-  expect(restored.sessionPartition).toBe(first.sessionPartition)
-  expect((await identify(restored)).userAgent).toBe(native.userAgent)
+  expect(restored.sessionPartition).toBe(home.sessionPartition)
+  expect((await identify(restored)).userAgent).toBe(baseline.userAgent)
 
   await skiff.rpc('settings.set', { browserIdentity: { [first.sessionPartition]: 'compatible', [second.sessionPartition]: 'native' } })
   expect((await identify(opted)).userAgent).toBe(native.userAgent)
@@ -400,7 +400,7 @@ test('background tab updates preserve the focused tab action and row', async ({ 
   await expect.soft(secondRow.locator('.row-main'), 'A focused tab row must survive background updates').toBeFocused()
 })
 
-test('tab drag reorders peers and moving to another profile preserves its session', async ({ skiff }) => {
+test('tab drag reorders peers and moving to another profile joins its session', async ({ skiff }) => {
   await openImport(skiff)
   await skiff.shell.locator('#arc-next').click()
   await skiff.shell.locator('#arc-next').click()
@@ -430,8 +430,8 @@ test('tab drag reorders peers and moving to another profile preserves its sessio
   await dragTo(skiff, row(second.id), dot(skiff, work.id))
   await expect.poll(async () => (await skiff.state()).tabs.find((tab) => tab.id === second.id).spaceId).toBe(work.id)
   const moved = (await skiff.state()).tabs.find((tab) => tab.id === second.id)
-  expect(moved.sessionPartition).toBe(personal.sessionPartition)
-  expect(moved.sessionPartition).not.toBe(work.sessionPartition)
+  expect(moved.sessionPartition).toBe(work.sessionPartition)
+  expect(moved.sessionPartition).not.toBe(personal.sessionPartition)
   expect((await skiff.state()).activeSpaceId).toBe(personal.id)
 })
 
@@ -590,7 +590,7 @@ test('the overflowing space strip scrolls without changing spaces', async ({ ski
   await expect.poll(() => skiff.shell.locator('#dots').evaluate((strip) => strip.scrollLeft)).toBeGreaterThan(0)
 })
 
-test('keyboard tab movement preserves order, focus and the imported profile', async ({ skiff }) => {
+test('keyboard tab movement preserves order and focus and joins the destination profile', async ({ skiff }) => {
   const shell = skiff.shell
   await openImport(skiff)
   await shell.locator('#arc-next').click()
@@ -620,7 +620,7 @@ test('keyboard tab movement preserves order, focus and the imported profile', as
   await expect.poll(async () => (await skiff.state()).tabs.filter((tab) => tab.spaceId === personal.id && !tab.pinned && !tab.favorite).map((tab) => tab.id)).toEqual([first.id, second.id])
   await shell.keyboard.press('Alt+Shift+ArrowRight')
   await expect.poll(async () => (await skiff.state()).tabs.find((tab) => tab.id === second.id).spaceId).toBe(work.id)
-  expect((await skiff.state()).tabs.find((tab) => tab.id === second.id).sessionPartition).toBe(personal.sessionPartition)
+  expect((await skiff.state()).tabs.find((tab) => tab.id === second.id).sessionPartition).toBe(work.sessionPartition)
   await expect(shell.locator(`#dots [data-space-id="${personal.id}"]`)).toBeFocused()
 })
 

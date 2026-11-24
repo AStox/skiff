@@ -309,6 +309,19 @@ function createChatView(tab) {
   return view
 }
 
+// Picking a space moves the tab, then shows it there, so the page stays in front of the user.
+function moveToSpaceMenu(id) {
+  const tab = S.findTab(state, id)
+  if (!tab || tab.agent) return []
+  const targets = state.spaces.filter((space) => (space.id !== tab.spaceId || tab.userPeek) && Boolean(space.incognito) === S.isIncognito(state, tab.spaceId))
+  if (!targets.length) return []
+  const move = async (spaceId) => {
+    await rpc('tabs.move', { id, spaceId })
+    await rpc('tabs.activate', { id })
+  }
+  return [{ label: 'Move to Space', submenu: targets.map((space) => ({ label: space.name, click: () => move(space.id).catch(console.error) })) }]
+}
+
 function createView(tab) {
   if (tab.chat) return createChatView(tab)
   const { id } = tab
@@ -389,6 +402,7 @@ function createView(tab) {
       { label: 'Find in Page', click: () => rpc('ui.openFind', { id }) },
       { label: 'Read Article', click: () => rpc('ui.openReader', { id }) },
       { label: 'Site Controls', click: () => rpc('ui.openTools', { section: 'sites', id }) },
+      ...moveToSpaceMenu(id),
       ...(info.linkURL && /^https?:/.test(info.linkURL) ? [
         { label: 'Peek Link', click: () => rpc('peek.open', { url: info.linkURL, sourceId: id }) },
         { label: 'Open Link in Split', click: async () => {
@@ -1306,7 +1320,12 @@ def('tabs.copyUrl', '{id?}', 'Copy the address of a tab to the clipboard and sho
   for (const wc of shellContents()) sendEvent(wc, 'url-copied', { url })
   return { url }
 })
-def('tabs.move', '{id, index?, spaceId?}', 'Reorder a tab among its siblings or move it to another space as a root; not into or out of the incognito space; not an agent tab', mutate(S.moveTab))
+def('tabs.move', '{id, index?, spaceId?}', "Reorder a tab among its siblings or move it to another space as a root; not into or out of the incognito space; not an agent tab. The tab takes the destination space's profile: when that differs, the page reloads at its current address in the new profile's session, and a tab-level browserIdentity is dropped (WhatsApp stays compatible); within one profile the live page is untouched. A link peek needs spaceId (its own is fine) and becomes a tab there, active", (p) => {
+  const before = S.getTab(state, p.id).sessionPartition
+  const tab = mutate(S.moveTab)(p)
+  if (tab.sessionPartition !== before) destroyView(tab.id)
+  return tab
+})
 def('tabs.setFavorite', '{id?, favorite}', 'Make a tab a favorite of its space, or turn it back into a plain tab there; not an agent tab', mutate(S.setFavorite))
 def('tabs.setPinned', '{id?, pinned, folder?}', 'Pin a tab to its space, optionally in a folder, or unpin it; not an agent tab', mutate(S.setPinned))
 def('tabs.setBucket', '{id?, bucket}', 'Move a tab to a bucket: favorites, later (pinned), active, unread or done; progress is set by loading pages and working chats only; not an agent tab', mutate(S.setBucket))

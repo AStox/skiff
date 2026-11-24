@@ -838,8 +838,22 @@ function navigateTab(s, p, now) {
   return Object.assign(tab, { url, title: url, favicon: origin(url) === origin(tab.url) ? tab.favicon : '', lastActiveAt: now })
 }
 
+// A tab takes the session of the space it lands in, so a Dev tab moved to Work has Work's sign-ins; the old tab-level identity belonged to the old profile.
+function joinSession(s, tab, space) {
+  const partition = space.sessionPartition || 'persist:main'
+  if ((tab.sessionPartition || 'persist:main') === partition) return false
+  tab.sessionPartition = partition
+  if (space.profileId) tab.profileId = space.profileId
+  else delete tab.profileId
+  delete tab.browserIdentity
+  if (whatsappURL(tab.url)) tab.browserIdentity = 'compatible'
+  return true
+}
+
 function moveTab(s, p, now) {
-  const tab = userTab(s, p.id)
+  const tab = getTab(s, p.id)
+  if (!tab.userPeek) userTab(s, p.id)
+  else if (p.spaceId === undefined) throw bad('A link peek moves only to a space, which makes it a tab there')
   if (p.index !== undefined && !(Number.isInteger(p.index) && p.index >= 0)) throw bad('index must be a non-negative integer')
   if (p.spaceId !== undefined && getSpace(s, p.spaceId).id !== tab.spaceId) {
     if (isIncognito(s, p.spaceId) !== isIncognito(s, tab.spaceId)) throw bad('Tabs cannot move into or out of the incognito space')
@@ -849,6 +863,7 @@ function moveTab(s, p, now) {
     detach(s, tab)
     tab.spaceId = p.spaceId
     if (destinationFolder) tab.folderId = destinationFolder.id
+    joinSession(s, tab, getSpace(s, p.spaceId))
   }
   s.tabs.splice(s.tabs.indexOf(tab), 1)
   const peers = s.tabs.filter((t) => t.spaceId === tab.spaceId && t.favorite === tab.favorite && !t.pinned === !tab.pinned && (t.folder || '') === (tab.folder || '') && t.parentId === tab.parentId)
@@ -856,7 +871,7 @@ function moveTab(s, p, now) {
   const at = before ? s.tabs.indexOf(before) : peers.length ? s.tabs.indexOf(peers.at(-1)) + 1 : s.tabs.length
   s.tabs.splice(at, 0, tab)
   tab.lastActiveAt = now
-  return tab
+  return tab.userPeek ? promotePeek(s, { id: tab.id }, now) : tab
 }
 
 function setFavorite(s, p, now) {

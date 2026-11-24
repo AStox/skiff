@@ -366,7 +366,7 @@ test('each profile keeps its favorites in its own first space', async (t) => {
   assert.equal(f.state.tabs.filter((tab) => tab.favorite).length, 2)
 })
 
-test('profile sessions survive moving, favoriting, closing, restore and restart', () => {
+test('profile sessions follow moving and survive favoriting, closing, restore and restart', () => {
   const s = S.load()
   const setup = parseArc(sidebar, { profileId: 'Default' })
   setup.sessionPartition = 'persist:arc-' + 'a'.repeat(24)
@@ -379,7 +379,7 @@ test('profile sessions survive moving, favoriting, closing, restore and restart'
   S.closeTab(s, { id: tab.id }, 6)
   S.restore(s, { id: tab.id }, 7)
   const reloaded = S.load(JSON.parse(JSON.stringify(s)))
-  assert.equal(S.getTab(reloaded, tab.id).sessionPartition, setup.sessionPartition)
+  assert.equal(S.getTab(reloaded, tab.id).sessionPartition, 'persist:main')
   assert.equal(S.createTab(reloaded, { spaceId: space.id, url: 'https://example.com/' }, 8).sessionPartition, setup.sessionPartition)
   assert.equal(S.createTab(reloaded, { spaceId: s.spaces[0].id, url: 'https://example.com/' }, 8).sessionPartition, 'persist:main')
 })
