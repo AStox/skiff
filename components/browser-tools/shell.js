@@ -129,7 +129,7 @@
       const match = (item) => `${item.title || ''} ${item.name || item.id} ${item.description || ''} ${(item.aliases || []).join(' ')}`.toLowerCase().includes(q)
       const extra = []
       for(const item of settings.filter(match).slice(0,commandOnly?4:1))extra.push({label:item.title,sub:[item.description,item.owner,item.scope].filter(Boolean).join(' · '),hint:'Setting',icon:'settings',pick:() => skiff.call('ui.openTools',{section:'settings',query:item.id})})
-      for(const item of commands.filter((c) => c.visible!==false&&match(c)).slice(0,commandOnly?8:1))extra.push({label:item.title || item.name,sub:item.description,hint:'Command',icon:'settings',pick:() => skiff.call('ui.openTools',{section:'commands',query:item.name})})
+      for(const item of commands.filter((c) => c.visible!==false&&(commandOnly||c.name!=='ai.ask')&&match(c)).slice(0,commandOnly?8:1))extra.push({label:item.title || item.name,sub:item.description,hint:'Command',icon:'settings',pick:() => skiff.call('ui.openTools',{section:'commands',query:item.name})})
       if(!commandOnly&&!privateSpace&&historyQuery===q)for(const item of history.slice(0,2))if(!base.some((r) => r.tab?.url===item.url))extra.push({label:item.title || item.url,sub:item.url,hint:'History',icon:'globe',pick:() => skiff.call('history.open',{id:item.id})})
       return commandOnly?extra:[...base,...extra.slice(0,4)]
     }

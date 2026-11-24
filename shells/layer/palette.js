@@ -98,6 +98,7 @@ function drawPalette() {
     h('span', { class: 'palette-label' }, h('span', { class: 'label' }, row.label),
       (row.host || row.note) && h('small', {}, row.host && h('span', { class: 'mono' }, row.host), row.host && row.note && ' · ', row.note)),
     h('span', { class: 'when' }, row.hint))))
+  $(`palette-${palette.selected}`)?.scrollIntoView({ block: 'nearest' })
   bar.setAttribute('aria-expanded', String(Boolean(palette.rows.length)))
   if (palette.rows.length) bar.setAttribute('aria-activedescendant', `palette-${palette.selected}`)
   else bar.removeAttribute('aria-activedescendant')

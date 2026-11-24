@@ -1160,6 +1160,43 @@ test.describe('layer panel and Buoy', () => {
     expect(two).not.toBe(one)
   })
 
+  test('the command bar has one Ask row and no duplicate command, and the arrows move the highlight one row at a time, scrolling it into view', async ({ skiff }) => {
+    await skiff.rpc('settings.set', { ai: { agents: [{ name: 'Fake', command: `'${process.execPath}' '${path.join(__dirname, 'fake-agent.js')}' '${skiff.root}'` }] } })
+    await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
+    await switchWindow(skiff, deskShell)
+    const buoy = await shellPage(skiff, '/buoy.html')
+    await expect.poll(() => isHome(buoy)).toBe(true)
+    await buoy.locator('#buoy-main').click()
+    await expect(buoy.locator('#palette-input')).toBeFocused()
+    const labels = () => buoy.locator('#palette-results .label').allTextContents()
+    await buoy.keyboard.type('ask')
+    await expect.poll(labels).toContain('Ask Fake')
+    await buoy.waitForTimeout(400)
+    expect(await labels()).not.toContain('ai.ask')
+    // A short list: only some rows show, and the highlight must follow the arrows into and out of view.
+    await buoy.keyboard.press('Control+A')
+    await buoy.keyboard.type('c')
+    await expect.poll(async () => (await labels()).length).toBeGreaterThan(7)
+    await buoy.evaluate(() => { document.getElementById('palette-results').style.maxHeight = '150px' })
+    const where = () => buoy.evaluate(() => {
+      const list = document.getElementById('palette-results').getBoundingClientRect()
+      const rows = [...document.querySelectorAll('#palette-results li')]
+      const at = rows.findIndex((li) => li.classList.contains('pick'))
+      const box = rows[at].getBoundingClientRect()
+      return { at, inView: box.top >= list.top - 1 && box.bottom <= list.bottom + 1, count: rows.length }
+    })
+    const first = await where()
+    expect(first.at).toBe(0)
+    for (let i = 1; i < first.count; i++) {
+      await buoy.keyboard.press('ArrowDown')
+      expect(await where(), `ArrowDown to ${i}`).toEqual({ at: i, inView: true, count: first.count })
+    }
+    for (let i = first.count - 2; i >= 0; i--) {
+      await buoy.keyboard.press('ArrowUp')
+      expect(await where(), `ArrowUp to ${i}`).toEqual({ at: i, inView: true, count: first.count })
+    }
+  })
+
   test('every trigger that opened the panel or the bar opens the card in its own state, or moves an open card there', async ({ skiff }) => {
     await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
     await switchWindow(skiff, deskShell)
