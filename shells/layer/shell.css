@@ -181,6 +181,7 @@ html.dragging #buoy, html.dragging #buoy * { cursor: grabbing !important; }
 #buoy-name { max-width: 200px; overflow: hidden; font-weight: 600; letter-spacing: .005em; text-overflow: ellipsis; }
 #buoy-notice, #buoy-agents { font-size: 11px; color: var(--buoy-soft); }
 #buoy-agents { padding: 3px 7px; border-radius: 999px; background: color-mix(in srgb, var(--buoy-ink) 8%, transparent); }
+#buoy-unread { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 10px; font-weight: 600; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums; }
 #buoy-row .update-pill { flex: none; height: 22px; margin: 0 4px 0 3px; padding: 0 9px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 600; }
 #buoy-row .update-pill[hidden] { display: none; }
 #buoy-row .update-pill:hover { background: color-mix(in srgb, var(--accent) 85%, #000); }
@@ -280,7 +281,7 @@ html.tablist:not(.above) #tablist { --oy: -20px; }
 .drag-hide { display: none !important; }
 .drop-zone { display: grid; place-items: center; min-height: 34px; margin-bottom: 3px; border: 1.5px dashed var(--line); border-radius: var(--control); color: var(--soft); font-size: 12px; font-weight: 500; list-style: none; }
 #favorites > .drop-zone { flex: 1 1 100%; height: 36px; margin: 0; border-radius: 18px; }
-#favorites:has(> .ghost) > .drop-zone, #list:has(> .ghost[data-section='pinned']) > .drop-zone { display: none; }
+#favorites:has(> .ghost) > .drop-zone { display: none; }
 .row.drop-target { outline: 2px solid var(--ink); outline-offset: -2px; }
 #drag-caption { position: absolute; z-index: 4; right: 0; bottom: calc(100% + 6px); left: 0; padding: 6px 10px; border-radius: var(--control); background: var(--ink); color: var(--bg); font-size: 12px; font-weight: 600; text-align: center; pointer-events: none; overflow-wrap: anywhere; }
 .loading::after { content: ''; position: absolute; left: 10px; bottom: 0; width: 40%; height: 2px; border-radius: 1px; background: var(--accent); animation: slide 1.1s ease-in-out infinite alternate; }
@@ -293,6 +294,16 @@ html.tablist:not(.above) #tablist { --oy: -20px; }
 .archive-empty strong { display: block; margin-bottom: 5px; color: var(--ink); font-weight: 600; }
 .list-head { display: flex; align-items: center; min-height: 32px; padding-left: 10px; color: var(--soft); font-size: 12px; }
 .list-head .label { color: var(--ink); }
+.list-head.section { margin-top: 6px; padding-top: 8px; font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+.list-head.section:first-child { margin-top: 0; }
+.list-head.section .label { flex: none; color: var(--soft); }
+.list-head.section .count { margin-left: 6px; color: var(--soft); }
+.row[data-section='unread']::before { content: ''; position: absolute; left: 2px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; background: var(--accent); }
+.row[data-section='unread'] .label { font-weight: 600; }
+.row[data-section='done'] .row-main > :not(.when) { opacity: .5; }
+.spinner { flex: none; width: 11px; height: 11px; border: 1.5px solid var(--line); border-top-color: var(--soft); border-radius: 50%; }
+.row[data-section='progress']::after { display: none; }
+@media (prefers-reduced-motion: no-preference) { .spinner { animation: import-spin .9s linear infinite; } }
 /* A hidden window's row is dimmed and keeps its eye in view to show it again. */
 .row.hidden-win .row-main > .favicon, .row.hidden-win .row-main > .label { opacity: .45; }
 .row .eye { color: var(--soft); }

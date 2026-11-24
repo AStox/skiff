@@ -72,6 +72,7 @@ function section(id, key, build) {
     row?.querySelector('.row-main, .tile-main')?.focus({ preventScroll: true })
     if (focusLabel) row?.querySelector(`[aria-label="${CSS.escape(focusLabel)}"]`)?.focus({ preventScroll: true })
   } else if (focusLabel) $(id).querySelector(`[aria-label="${CSS.escape(focusLabel)}"]`)?.focus({ preventScroll: true })
+  return true
 }
 
 const activeSpace = () => state.spaces.find((s) => s.id === state.activeSpaceId)
@@ -97,17 +98,35 @@ function eye(tab, shown) {
   return h('button', { class: `icon-btn eye${shown ? ' reveal' : ''}`, title, 'aria-label': title, 'aria-pressed': String(!shown), onclick: () => call(shown ? 'desk.hide' : 'desk.show', { id: tab.id }) }, icon(shown ? 'eye' : 'eye-off'))
 }
 
+const SECTIONS = [['unread', 'Unread'], ['active', 'Active'], ['progress', 'In Progress'], ['later', 'Later'], ['done', 'Done']]
+const BUCKET_NAMES = Object.fromEntries([['favorites', 'Favorites'], ...SECTIONS])
+const BUCKETS = Object.keys(BUCKET_NAMES)
+// tabs.move orders among the tabs of one kind (and folder and parent), whatever their bucket.
+const kindOf = (bucket) => bucket === 'favorites' || bucket === 'later' ? bucket : 'plain'
+const DONE_MS = 24 * 36e5
+
+function archivesIn(doneAt) {
+  const minutes = Math.round((doneAt + DONE_MS - Date.now()) / 6e4)
+  return minutes < 1 ? 'archives soon' : minutes < 60 ? `archives in ${minutes} min` : `archives in ${Math.round(minutes / 60)} h`
+}
+
+function when(tab) {
+  if (tab.bucket === 'done' && tab.doneAt) return archivesIn(tab.doneAt)
+  if (tab.chat) return tab.chat.agent
+  return !tab.pinned && tab.createdAt ? opened(tab.createdAt) : null
+}
+
 function tabRow(tab, current, depth) {
   const shown = isShown(state, tab)
   const row = h('li', {
     class: `row${current ? ' current' : ''}${tab.loading ? ' loading' : ''}${tab.folder ? ' nested' : ''}${shown || tab.pinned ? '' : ' hidden-win'}`,
-    'data-tab-id': tab.id, 'data-section': tab.pinned ? 'pinned' : 'tabs', 'data-folder': tab.pinned ? tab.folder || '' : null,
-    'data-depth': depth, 'data-parent': depth ? tab.parentId : null, 'aria-level': depth == null ? null : depth + 1, draggable: 'true',
+    'data-tab-id': tab.id, 'data-section': tab.bucket, 'data-folder': tab.pinned ? tab.folder || '' : null,
+    'data-depth': depth, 'data-parent': tab.parentId || '', 'aria-level': depth == null ? null : depth + 1, draggable: 'true',
     ondragstart: (event) => startDrag(event, 'tab', tab.id),
     onkeydown: (event) => moveTabWithKeyboard(event, tab)
   },
     h('button', { class: 'row-main', title: `${tab.url}\n${MOVE_HINT}`, 'aria-keyshortcuts': MOVE_KEYS, 'aria-current': current ? 'true' : null, onclick: () => show(tab) },
-      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), !tab.pinned && tab.createdAt && h('span', { class: 'when' }, opened(tab.createdAt))),
+      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), tab.bucket === 'unread' && h('span', { class: 'sr-only' }, ', unread'), tab.bucket === 'progress' && h('span', { class: 'spinner', 'aria-hidden': 'true' }), when(tab) && h('span', { class: 'when' }, when(tab))),
     !tab.pinned && eye(tab, shown),
     h('button', { class: 'icon-btn reveal', title: 'Close tab', 'aria-label': 'Close tab', onclick: () => call('tabs.close', { id: tab.id }) }, icon('x')))
   if (depth != null) row.style.setProperty('--depth', String(Math.min(depth, 6)))
@@ -134,9 +153,12 @@ function folderRow(space, folder, open, count, toggle = () => call('folders.setC
       icon('folder'), h('span', { class: 'label' }, folder), !open && h('span', { class: 'when' }, String(count)), h('span', { class: 'chevron' }, icon('chevron-down'))))
 }
 
-// Pinned: folders first, then loose pinned tabs, as the mock lays them out.
-function tabRows(space, tabs, row) {
-  const pinned = tabs.filter((t) => t.pinned)
+function sectionHead(bucket, count) {
+  return h('li', { class: 'list-head section', 'data-bucket': bucket }, h('span', { class: 'label' }, BUCKET_NAMES[bucket]), h('span', { class: 'count' }, String(count)))
+}
+
+// Later: folders first, then loose tabs, as the mock lays them out.
+function laterRows(space, pinned, row) {
   const folders = [...new Set(pinned.map((t) => t.folder).filter(Boolean))]
   return [
     folders.map((folder) => {
@@ -147,10 +169,15 @@ function tabRows(space, tabs, row) {
         open ? inside.map((t) => row(t)) : []
       ]
     }),
-    pinned.filter((t) => !t.folder).map((t) => row(t)),
-    pinned.length ? h('li', { class: 'divider', 'aria-hidden': 'true' }) : [],
-    trail(tabs.filter((t) => !t.pinned)).map(([t, depth]) => row(t, depth))
+    pinned.filter((t) => !t.folder).map((t) => row(t))
   ]
+}
+
+function tabRows(space, tabs, row) {
+  return SECTIONS.map(([bucket]) => {
+    const inside = tabs.filter((t) => t.bucket === bucket)
+    return inside.length ? [sectionHead(bucket, inside.length), bucket === 'later' ? laterRows(space, inside, row) : trail(inside).map(([t, depth]) => row(t, depth))] : []
+  })
 }
 
 function favoriteTile(tab, current) {
@@ -927,14 +954,15 @@ function showDropZones() {
     $('favorites').hidden = false
     drag.shifted = true
   }
-  if (!$('list').querySelector('[data-section="pinned"]')) {
-    $('list').prepend(h('li', { class: 'drop-zone', 'data-zone': 'pinned' }, 'Pinned'))
+  SECTIONS.forEach(([bucket], i) => {
+    if (bucket === 'progress' || $('list').querySelector(`[data-bucket="${bucket}"]`)) return
+    const later = SECTIONS.slice(i + 1).map(([name]) => $('list').querySelector(`[data-bucket="${name}"]`)).find(Boolean) || $('list').querySelector('[data-new-tab]')
+    later.before(h('li', { class: 'drop-zone', 'data-zone': bucket }, BUCKET_NAMES[bucket]))
     drag.shifted = true
-  }
+  })
 }
 
 const isIncognito = (spaceId) => Boolean(state.spaces.find((space) => space.id === spaceId)?.incognito)
-const sectionOf = (tab) => tab.favorite ? 'favorites' : tab.pinned ? 'pinned' : 'tabs'
 const shown = (element) => element.offsetParent !== null
 const sourceOf = (id) => document.querySelector(`#favorites [data-tab-id="${CSS.escape(id)}"], #list [data-tab-id="${CSS.escape(id)}"]`)
 
@@ -961,10 +989,9 @@ function dropSpace(event, id) {
   moveSpace(moving.id, others.findIndex((space) => space.id === id) + Number(after))
 }
 
-function tabPeers(tab) {
-  return state.tabs.filter((item) => Boolean(item.favorite) === Boolean(tab.favorite) && Boolean(item.pinned) === Boolean(tab.pinned)
-    && (item.folder || '') === (tab.folder || '') && (item.parentId || '') === (tab.parentId || '') && item.spaceId === tab.spaceId)
-}
+const groupOf = (tab) => state.tabs.filter((item) => Boolean(item.favorite) === Boolean(tab.favorite) && Boolean(item.pinned) === Boolean(tab.pinned)
+  && (item.folder || '') === (tab.folder || '') && (item.parentId || '') === (tab.parentId || '') && item.spaceId === tab.spaceId)
+const tabPeers = (tab) => groupOf(tab).filter((item) => item.bucket === tab.bucket)
 
 // A row's block is the row and its trail descendants, which move with it.
 function blockEnd(row) {
@@ -976,10 +1003,10 @@ function blockEnd(row) {
 }
 
 // The drawn items of one drop group, in state order, without the dragged tab.
-function groupPeers(id, { section, folder, parent }) {
-  if (section === 'favorites') return [...$('favorites').querySelectorAll(':scope > .tile[data-tab-id]')].filter((el) => el.dataset.tabId !== id)
-  return [...$('list').querySelectorAll(':scope > li[data-tab-id]')].filter((el) => el.dataset.tabId !== id && el.dataset.section === section
-    && (section !== 'pinned' || el.dataset.folder === folder) && (section !== 'tabs' || el.dataset.parent === parent))
+function groupPeers(id, { bucket, folder, parent }) {
+  if (bucket === 'favorites') return [...$('favorites').querySelectorAll(':scope > .tile[data-tab-id]')].filter((el) => el.dataset.tabId !== id)
+  return [...$('list').querySelectorAll(':scope > li[data-tab-id]')].filter((el) => el.dataset.tabId !== id && el.dataset.section === bucket
+    && (bucket !== 'later' || el.dataset.folder === folder) && (bucket === 'later' || el.dataset.parent === parent))
 }
 
 // ponytail: children of a dragged trail parent are previewed in place; after the drop they follow it, or become roots when it leaves the list
@@ -1000,20 +1027,19 @@ function tabTarget(event) {
     const dy = Math.max(r.top - y, 0, y - r.bottom)
     return grid ? Math.hypot(Math.max(r.left - x, 0, x - r.right), dy) : dy
   }
-  const items = [...box.children].filter((el) => !el.classList.contains('divider') && shown(el))
+  const items = [...box.children].filter((el) => !el.classList.contains('divider') && !el.hasAttribute('data-new-tab') && shown(el))
   const near = items.reduce((best, el) => (!best || distance(el) < distance(best) ? el : best), null)
   // Over its own preview the slot holds, so a still pointer never makes the ghost jump.
   if (!near || near.classList.contains('ghost')) return near ? drag.target : null
   if (near.dataset.tabId === tab.id) return null
-  const group = { section: 'tabs', folder: '' }
-  if (grid) group.section = 'favorites'
-  else if (near.dataset.zone === 'pinned') group.section = 'pinned'
-  else if ('folderHead' in near.dataset) {
-    Object.assign(group, { section: 'pinned', folder: near.dataset.folderHead, head: true })
+  const group = { bucket: grid ? 'favorites' : near.dataset.zone || near.dataset.bucket || near.dataset.section || 'later', folder: '', parent: '' }
+  if ('folderHead' in near.dataset) {
+    Object.assign(group, { folder: near.dataset.folderHead, head: true })
     if (state.collapsed[`${tab.spaceId}/${group.folder}`]) return tab.pinned && tab.folder === group.folder ? null : group
-  } else if (near.dataset.section === 'pinned') Object.assign(group, { section: 'pinned', folder: near.dataset.folder })
+  } else if (group.bucket === 'later') group.folder = near.dataset.folder || ''
+  if (group.bucket === 'progress' && tab.bucket !== 'progress') return null
   // A trail child reorders among its siblings; it cannot become a root by drag.
-  if (group.section === 'tabs' && sectionOf(tab) === 'tabs') group.parent = sourceOf(tab.id)?.dataset.parent
+  if (kindOf(group.bucket) === 'plain' && kindOf(tab.bucket) === 'plain') group.parent = tab.parentId || ''
   const peers = groupPeers(tab.id, group)
   const before = (el) => {
     if (!grid) return (el.getBoundingClientRect().top + blockEnd(el).getBoundingClientRect().bottom) / 2 < y
@@ -1023,17 +1049,16 @@ function tabTarget(event) {
   group.index = group.head ? peers.length : peers.filter(before).length
   delete group.head
   const current = tabPeers(tab).findIndex((item) => item.id === tab.id)
-  if (group.section === sectionOf(tab) && group.folder === (tab.folder || '') && group.index === current) return null
+  if (group.bucket === tab.bucket && group.folder === (tab.folder || '') && group.index === current) return null
   return group
 }
 
 function dropMessage(tab, target) {
   if (target.space) return `Drop to move to ${state.spaces.find((space) => space.id === target.space)?.name || 'that space'}.`
   const position = target.index === undefined ? '' : `, position ${target.index + 1}`
-  if (target.section === sectionOf(tab) && target.folder === (tab.folder || '')) return `Drop to move to position ${target.index + 1}.`
-  if (target.section === 'favorites') return `Drop to add to favorites${position}.`
-  if (target.section === 'pinned') return target.folder ? `Drop to pin in ${target.folder}${position}.` : `Drop to pin${position}.`
-  return `Drop to ${tab.favorite ? 'remove from favorites' : 'unpin'}${position}.`
+  if (target.bucket === tab.bucket && target.folder === (tab.folder || '')) return `Drop to move to position ${target.index + 1}.`
+  if (target.folder) return `Drop to move to ${target.folder} in Later${position}.`
+  return `Drop to move to ${BUCKET_NAMES[target.bucket]}${position}.`
 }
 
 function preview(target) {
@@ -1043,6 +1068,7 @@ function preview(target) {
   const tab = state.tabs.find((item) => item.id === drag.id)
   const source = sourceOf(drag.id)
   document.querySelector('.ghost')?.remove()
+  $('list').querySelectorAll('.drop-zone').forEach((zone) => { zone.hidden = false })
   clearDropMarker()
   source?.classList.remove('drag-dim', 'drag-hide')
   const message = target && tab ? dropMessage(tab, target) : ''
@@ -1058,31 +1084,35 @@ function preview(target) {
   const folderHead = target.folder && [...$('list').querySelectorAll('[data-folder-head]')].find((el) => el.dataset.folderHead === target.folder)
   if (target.index === undefined) return caption(`Add to ${target.folder}`, folderHead)
   const depth = target.parent ? Number(source?.dataset.depth) : 0
-  const ghost = target.section === 'favorites' ? favoriteTile(tab, false) : tabRow({ ...tab, pinned: target.section === 'pinned', folder: target.folder }, false, target.section === 'tabs' ? depth : undefined)
+  const ghost = target.bucket === 'favorites' ? favoriteTile(tab, false) : tabRow({ ...tab, bucket: target.bucket, pinned: target.bucket === 'later', folder: target.folder }, false, kindOf(target.bucket) === 'plain' ? depth : undefined)
   ghost.classList.add('ghost')
   ghost.classList.remove('loading')
   for (const name of ['data-tab-id', 'draggable']) ghost.removeAttribute(name)
   ghost.setAttribute('aria-hidden', 'true')
   ghost.inert = true
   const peers = groupPeers(drag.id, target)
+  const later = [...$('list').querySelectorAll(':scope > [data-section="later"], :scope > [data-folder-head]')]
+  const head = $('list').querySelector(`[data-bucket="${target.bucket}"], [data-zone="${target.bucket}"]`)
   if (peers[target.index]) peers[target.index].before(ghost)
   else if (peers.length) blockEnd(peers.at(-1)).after(ghost)
-  else if (target.section === 'favorites') $('favorites').append(ghost)
+  else if (target.bucket === 'favorites') $('favorites').append(ghost)
   else if (folderHead) folderHead.after(ghost)
-  // Loose pinned tabs sit after the folders, so an empty group previews just above the divider.
-  else if (target.section === 'pinned') ($('list').querySelector('.divider') || $('list').firstChild).before(ghost)
-  else $('list').querySelector('[data-new-tab]').before(ghost)
-  source?.classList.add(target.section === sectionOf(tab) ? 'drag-hide' : 'drag-dim')
+  // Loose Later tabs sit after the folders.
+  else if (target.bucket === 'later' && later.length) later.at(-1).after(ghost)
+  else if (head) {
+    if (head.classList.contains('drop-zone')) head.hidden = true
+    head.after(ghost)
+  } else $('list').querySelector('[data-new-tab]').before(ghost)
+  source?.classList.add(target.bucket === tab.bucket ? 'drag-hide' : 'drag-dim')
 }
 
 function dropCalls(tab, target) {
   const id = tab.id
   if (target.space) return [['tabs.move', { id, spaceId: target.space }]]
   const calls = []
-  if (target.section === 'favorites' && !tab.favorite) calls.push(['tabs.setFavorite', { id, favorite: true }])
-  if (target.section === 'pinned' && (!tab.pinned || (tab.folder || '') !== target.folder)) calls.push(['tabs.setPinned', { id, pinned: true, folder: target.folder }])
-  if (target.section === 'tabs' && tab.favorite) calls.push(['tabs.setFavorite', { id, favorite: false }])
-  if (target.section === 'tabs' && tab.pinned) calls.push(['tabs.setPinned', { id, pinned: false }])
+  if (target.bucket === 'later') {
+    if (!tab.pinned || (tab.folder || '') !== target.folder) calls.push(['tabs.setPinned', { id, pinned: true, folder: target.folder }])
+  } else if (target.bucket !== tab.bucket) calls.push(['tabs.setBucket', { id, bucket: target.bucket }])
   calls.push(['tabs.move', target.index === undefined ? { id } : { id, index: stateIndex(tab, target) }])
   return calls
 }
@@ -1090,9 +1120,9 @@ function dropCalls(tab, target) {
 // Folded folders and trails leave tabs out of the drawn list, so a drawn slot becomes the index, among the state's peers, of the tab it lands before.
 function stateIndex(tab, target) {
   const drawn = groupPeers(tab.id, target).map((el) => el.dataset.tabId)
-  const parent = target.section === sectionOf(tab) ? tab.parentId || '' : ''
-  const peers = state.tabs.filter((t) => t.id !== tab.id && t.spaceId === tab.spaceId && sectionOf(t) === target.section
-    && (t.folder || '') === (target.section === 'pinned' ? target.folder : '') && (t.parentId || '') === parent).map((t) => t.id)
+  const parent = kindOf(tab.bucket) === kindOf(target.bucket) ? tab.parentId || '' : ''
+  const peers = state.tabs.filter((t) => t.id !== tab.id && t.spaceId === tab.spaceId && kindOf(t.bucket) === kindOf(target.bucket)
+    && (t.folder || '') === target.folder && (t.parentId || '') === parent).map((t) => t.id)
   const before = drawn[target.index]
   if (before) return Math.max(0, peers.indexOf(before))
   return drawn.length ? peers.indexOf(drawn.at(-1)) + 1 : peers.length
@@ -1122,14 +1152,17 @@ async function moveTabWithKeyboard(event, tab) {
     const peers = tabPeers(tab)
     const index = peers.findIndex((item) => item.id === tab.id) + (up ? -1 : 1)
     if (index >= 0 && index < peers.length) {
-      if (await call('tabs.move', { id: tab.id, index })) $('space-status').textContent = `Moved ${name} to position ${index + 1}.`
+      const slot = groupOf(tab).filter((item) => item.id !== tab.id).indexOf(peers[index]) + (up ? 0 : 1)
+      if (await call('tabs.move', { id: tab.id, index: slot })) $('space-status').textContent = `Moved ${name} to position ${index + 1}.`
       return
     }
-    // At the edge of its section a top-level tab steps into the next one: favorites, pinned, tabs.
-    const next = !tab.parentId && !tab.folder && (up ? { tabs: 'pinned', pinned: 'favorites' } : { favorites: 'pinned', pinned: 'tabs' })[sectionOf(tab)]
-    if (!next || !await relocate(dropCalls(tab, { section: next, folder: '', index: up ? undefined : 0 }))) return
+    // At the edge of its section a top-level tab steps into the next one, never into In Progress.
+    let at = BUCKETS.indexOf(tab.bucket) + (up ? -1 : 1)
+    if (BUCKETS[at] === 'progress' && tab.bucket !== 'progress') at += up ? -1 : 1
+    const next = !tab.parentId && !tab.folder && BUCKETS[at]
+    if (!next || !await relocate(dropCalls(tab, { bucket: next, folder: '', parent: '', index: up ? undefined : 0 }))) return
     focusTab(tab.id)
-    $('space-status').textContent = next === 'favorites' ? `Added ${name} to favorites.` : next === 'pinned' ? `Pinned ${name}.` : `Moved ${name} to tabs.`
+    $('space-status').textContent = `Moved ${name} to ${BUCKET_NAMES[next]}.`
   } else {
     const index = state.spaces.findIndex((space) => space.id === tab.spaceId)
     const space = state.spaces[index + (event.key === 'ArrowLeft' ? -1 : 1)]
@@ -1155,6 +1188,16 @@ function swipeSpaces(event) {
 
 appearance.addEventListener('change', () => renderPanel())
 const still = matchMedia('(prefers-reduced-motion: reduce)')
+
+const tops = () => new Map([...$('list').querySelectorAll('[data-tab-id]')].map((el) => [el.dataset.tabId, el.getBoundingClientRect().top]))
+
+// A row a rebuild moved, to another bucket or by another row's change, slides from where it was instead of jumping under the pointer.
+function glide(was) {
+  for (const el of $('list').querySelectorAll('[data-tab-id]')) {
+    const dy = was.get(el.dataset.tabId) - el.getBoundingClientRect().top
+    if (Math.abs(dy) > 1) el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 160, easing: 'ease-out' })
+  }
+}
 
 function renderPanel() {
   if (!state) return
@@ -1201,10 +1244,17 @@ function renderPanel() {
   section('panel', ui.settings && [space, state.spaces.length, ui.quick, state.settings.searchUrl, state.settings.shell, state.shells, state.settings.ai, ui.imported, ui.filling, Boolean(tab), ui.extensions, ui.agents, ui.agentError], () => (ui.settings ? panel(space) : []))
   if (ui.settings && ui.quickKey !== JSON.stringify([state.settings, state.update?.status])) refreshQuick()
   if (ui.settings) warmDefault()
-  if (!holds) section('list', ui.archive ? [state.archive] : ui.agentList ? ['agents', state.agentTabs, state.peek, state.spaces.map((s) => s.name)] : [tabs, tab?.id, state.collapsed, state.deskSize], () => (ui.archive ? archiveRows() : ui.agentList ? agentTabRows() : [
-    tabRows(space, tabs, (t, depth) => tabRow(t, t.id === tab?.id, depth)),
-    h('li', { class: 'row quiet', 'data-new-tab': true }, h('button', { id: 'new-tab', class: 'row-main', onclick: () => bar.focus() }, icon('plus'), h('span', { class: 'label' }, 'New tab')))
-  ]))
+  if (!holds) {
+    let was
+    const rebuilt = section('list', ui.archive ? [state.archive] : ui.agentList ? ['agents', state.agentTabs, state.peek, state.spaces.map((s) => s.name)] : [tabs, tab?.id, state.collapsed, state.deskSize], () => {
+      was = tops()
+      return ui.archive ? archiveRows() : ui.agentList ? agentTabRows() : [
+        tabRows(space, tabs, (t, depth) => tabRow(t, t.id === tab?.id, depth)),
+        h('li', { class: 'row quiet', 'data-new-tab': true }, h('button', { id: 'new-tab', class: 'row-main', onclick: () => bar.focus() }, icon('plus'), h('span', { class: 'label' }, 'New tab')))
+      ]
+    })
+    if (rebuilt && !still.matches) glide(was)
+  }
 
   const rename = $('rename')
   if (rename && !importer && document.activeElement !== rename) {

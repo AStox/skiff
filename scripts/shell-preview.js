@@ -148,7 +148,15 @@ const DESK_TABS = [
 // Page rects at 1440 by 900, scaled to the window: three overlapping windows in Work, two in Personal. [x, y, width, height, z]
 const DESK_LAYOUT = { linear: [90, 100, 700, 480, 2], github: [360, 200, 780, 520, 3], electron: [800, 130, 560, 400, 1], nytimes: [60, 60, 640, 760, 2], maps: [720, 60, 680, 520, 1] }
 // The rest of each space: favorites and pinned tabs, and ordinary tabs whose windows are hidden.
-const DESK_ROLES = { calendar: { favorite: true }, gmail: { favorite: true }, figma: { pinned: true, folder: 'Design' }, notion: { pinned: true }, airbnb: { favorite: true } }
+const DESK_ROLES = { calendar: { favorite: true }, gmail: { favorite: true }, figma: { pinned: true, folder: 'Design' }, notion: { pinned: true }, airbnb: { favorite: true }, linear: { status: 'unread' }, hn: { status: 'progress', loading: true }, youtube: { status: 'done', doneAt: ago(60 * 19) }, wikipedia: { status: 'done', doneAt: ago(60 * 3) } }
+// Agent threads are tabs of skiff://chat/ with the sparkle icon, in the buckets their turns put them in.
+const SPARKLE = svg('#7c5ce0', '<path d="M8 2.5c.4 3 1.8 4.7 5 6-3.2 1.3-4.6 3-5 6-.4-3-1.8-4.7-5-6 3.2-1.3 4.6-3 5-6z" fill="#fff"/>')
+const thread = (id, spaceId, agent, title, extra) => ({ id, spaceId, sessionPartition: 'persist:main', url: `skiff://chat/c0000000000${id.slice(1)}`, title, favicon: SPARKLE, chat: { agent, sessionId: null }, favorite: false, pinned: false, folder: '', loading: false, canGoBack: false, canGoForward: false, createdAt: ago(25), lastActiveAt: ago(3), ...extra })
+const DESK_THREADS = [
+  thread('c1', 'work', 'Claude', 'Review the tab list change', { status: 'progress' }),
+  thread('c2', 'work', 'Codex', 'Summarise SKF-88', { status: 'unread' }),
+  thread('c3', 'work', 'Claude', 'Weekly planning', { favorite: true })
+]
 
 function deskState([W, H], shell) {
   const sx = W / 1440
@@ -170,7 +178,7 @@ function deskState([W, H], shell) {
   const gone = (id, url, title, minutes) => ({ id, spaceId: 'work', url, title, favicon: '', sessionPartition: 'persist:main', archivedAt: ago(minutes) })
   return {
     spaces: [{ id: 'work', name: 'Work', color: '#4f6bed' }, { id: 'personal', name: 'Personal', color: '#2f6b4f' }],
-    activeSpaceId: 'work', tabs, activeTabBySpace: { work: 'github', personal: 'nytimes' }, collapsed: {}, agentTabs: [], peek: null,
+    activeSpaceId: 'work', tabs: [...tabs, ...DESK_THREADS].map((t) => ({ ...t, bucket: S.bucketOf(t) })), activeTabBySpace: { work: 'github', personal: 'nytimes' }, collapsed: {}, agentTabs: [], peek: null,
     archive: [gone('a1', 'https://linear.app/skiff/issue/SKF-80', 'SKF-80 Buoy notices', 300), gone('a2', 'https://github.com/skiff/skiff/pull/38', 'skiff#38 Quiet pill', 2900)],
     shells: ['default', 'filmstrip', 'index', 'lacquer', 'layer', 'ledger', 'quiet', 'timeline'],
     settings: { autoArchiveHours: 12, searchUrl: 'https://www.google.com/search?q=%s', shell, shortcuts: {}, ai: { agents: [], agent: '', model: '', effort: '' } },

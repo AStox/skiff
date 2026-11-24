@@ -44,12 +44,15 @@ function renderPill() {
   const agentTabs = state.agentTabs || []
   const agents = new Set(agentTabs.map((t) => t.agent)).size
   const chip = agentTabs.length ? `${agents} ${agents === 1 ? 'agent' : 'agents'} · ${tabCount(agentTabs.length)}` : ''
+  const unread = state.tabs.filter((t) => t.bucket === 'unread').length
   $('buoy-name').textContent = space.name
+  $('buoy-unread').textContent = String(unread)
+  $('buoy-unread').hidden = !unread
   $('buoy-notice').textContent = note
   $('buoy-notice').hidden = !note
   $('buoy-agents').textContent = chip
   $('buoy-agents').hidden = !chip
-  $('buoy-main').setAttribute('aria-label', `${space.name}${chip && `, ${chip}`}. Open the command bar`)
+  $('buoy-main').setAttribute('aria-label', `${space.name}${unread ? `, ${unread} unread` : ''}${chip && `, ${chip}`}. Open the command bar`)
   $('buoy-main').setAttribute('aria-expanded', String(open))
   $('buoy-tabs').textContent = String(n)
   $('buoy-tabs').setAttribute('aria-label', tabCount(n))
