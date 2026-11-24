@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Sign in</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f6f4f1; --ink: #1d1b19; --muted: #6b6661; --line: #cfc9c2; --field: #fff; --accent: #2f6fed; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #242220; --ink: #f1eeea; --muted: #a39d96; --line: #4a4642; --field: #1a1918; --accent: #5b92ff; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 20px; background: var(--bg); color: var(--ink); font: 13px/1.4 system-ui, sans-serif; user-select: none; }
+  h1 { margin: 0 0 4px; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+  p { margin: 0 0 14px; color: var(--muted); overflow-wrap: anywhere; }
+  p:empty { display: none; }
+  label { display: block; margin: 0 0 10px; font-weight: 500; }
+  input { display: block; width: 100%; margin-top: 4px; padding: 6px 8px; font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 6px; user-select: text; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  button { padding: 5px 14px; font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 6px; }
+  button.primary { color: #fff; background: var(--accent); border-color: var(--accent); }
+</style>
+<form id="form">
+  <h1 id="title"></h1>
+  <p id="detail"></p>
+  <label>Username<input id="user" autocomplete="off" spellcheck="false" autofocus></label>
+  <label>Password<input id="pass" type="password" autocomplete="off"></label>
+  <div class="row"><button type="button" id="cancel">Cancel</button><button type="submit" class="primary">Sign in</button></div>
+</form>
+<script>
+  const q = new URLSearchParams(location.search)
+  const $ = (id) => document.getElementById(id)
+  $('title').textContent = q.get('host') + ' is asking you to sign in'
+  $('detail').textContent = [q.get('proxy') ? 'This is a proxy server.' : '', q.get('realm') ? 'Realm: ' + q.get('realm') : ''].filter(Boolean).join(' ')
+  $('form').addEventListener('submit', (e) => { e.preventDefault(); window.httpAuth.submit({ username: $('user').value, password: $('pass').value }) })
+  $('cancel').addEventListener('click', () => window.httpAuth.submit(null))
+  addEventListener('keydown', (e) => { if (e.key === 'Escape') window.httpAuth.submit(null) })
+</script>

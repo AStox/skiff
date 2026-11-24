@@ -68,6 +68,12 @@ const test = base.extend({
         response.writeHead(302, { Location: '/identity/target' })
         return response.end()
       }
+      if (route.startsWith('/basic-auth')) {
+        response.setHeader('Content-Type', 'text/html; charset=utf-8')
+        if (request.headers.authorization === 'Basic ' + Buffer.from('ada:lovelace').toString('base64')) return response.end('<!doctype html><title>Secret page</title><h1 id="ok">Welcome Ada</h1>')
+        response.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Test"' })
+        return response.end('<!doctype html><title>Denied</title><h1 id="denied">401 body</h1>')
+      }
 
       if (route.startsWith('/ext/')) {
         if (route === '/ext/release') {

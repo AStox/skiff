@@ -8,6 +8,8 @@ A local-first Arc-like browser for macOS, built on Electron. Three layers:
 
 Web pages are sandboxed and context isolated. Their limited page preload reports lifecycle protection signals; it exposes no privileged command API. Native window drag regions belong to trusted UI components, not web pages: page-defined `app-region` and `window-drag` styles cannot intercept input through another page.
 
+A page that asks for HTTP basic auth (or a proxy that does) opens a small modal sign-in window over the window it belongs to: host, realm, username and password. Sign in answers the challenge; Cancel, Escape or closing the window shows the server's 401 page. A wrong password asks again. Nothing is saved or logged.
+
 Read the [component and user guide](docs/components.html) for workflows, exact API examples and limitations.
 
 ## Run

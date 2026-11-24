@@ -25,6 +25,7 @@ const { createAccess } = require('./access')
 const { createTranscripts } = require('./transcripts')
 const { createSync } = require('./sync')
 const D = require('./desktops')
+const { createHttpAuth } = require('./http-auth')
 
 app.setName('Skiff')
 app.setPath('userData', process.env.SKIFF_DATA ? path.resolve(process.env.SKIFF_DATA) : path.join(app.getPath('appData'), 'Skiff'))
@@ -2253,6 +2254,8 @@ function startUpdates() {
   setInterval(check, updates.HOUR)
   app.on('browser-window-focus', () => updates.checkIfStale()?.catch(console.error))
 }
+
+app.on('login', createHttpAuth({ BrowserWindow, ipcMain, fallbackWindow: () => win }))
 
 if (app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => process.platform === 'darwin' || app.quit())
