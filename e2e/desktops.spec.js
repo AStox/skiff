@@ -136,3 +136,17 @@ test('tabs on a desktop that no longer exists join the current one, and with one
   await expect(list.locator('#tablist .row')).toHaveCount(2)
   await expect(list.locator('#tablist .desk-head')).toHaveCount(0)
 })
+
+test('the desk drops the old desktop\'s pages as soon as the system reports the new desktop, before the end-of-switch notification', async ({ skiff }) => {
+  await useLayer(skiff)
+  await skiff.rpc('tabs.create', { url: `${skiff.origin}/one` })
+  await skiff.rpc('tabs.create', { url: `${skiff.origin}/two` })
+  await expect.poll(() => pages(skiff)).toEqual(['/one', '/two'])
+  // macOS reports the desktop first and posts its notification a moment later; no stale page may wait for it.
+  await skiff.app.evaluate(() => global.__skiffDesktops.flip(1))
+  await expect.poll(() => pages(skiff), { timeout: 1000 }).toEqual([])
+  expect((await skiff.state()).desktops.current).toBe(1)
+  await skiff.app.evaluate(() => global.__skiffDesktops.switchTo(1))
+  await skiff.app.evaluate(() => global.__skiffDesktops.flip(3))
+  await expect.poll(() => pages(skiff), { timeout: 1000 }).toEqual(['/one', '/two'])
+})

@@ -127,9 +127,10 @@ const RecordedWindow = new Proxy(electron.BrowserWindow, {
 })
 // macOS desktops, which Linux has none of: fixtureOptions.desktops is their ids in order, the first current; a spec calls
 // global.__skiffDesktops.switchTo(id) in the main process, as moving to another desktop does, or reassigns .ids as Mission Control would.
+// flip(id) changes the current desktop without the notification, as macOS does between the start of a switch and its end.
 const fakeDesktops = (ids) => {
   const listeners = new Set()
-  const fake = global.__skiffDesktops = { ids, current: ids[0], switchTo(id) { fake.current = id; for (const listener of listeners) listener() } }
+  const fake = global.__skiffDesktops = { ids, current: ids[0], flip(id) { fake.current = id }, switchTo(id) { fake.current = id; for (const listener of listeners) listener() } }
   return { open: () => ({ list: () => fake.ids.map((id, i) => ({ id, number: i + 1 })), current: () => fake.current, subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener) } }) }
 }
 const mainFile = path.join(__dirname, '..', 'src', 'main.js')

@@ -95,6 +95,7 @@ let soonTimer = null
 // A desk space switch in flight: view -> {from, to, leaving}, stepped from start.
 let slide = null
 let laidOutSpace = null
+let polledDesktop = null
 let heading = 0
 let warmTimer = null
 let frameSpec = null
@@ -1133,6 +1134,14 @@ function pollPointer() {
     clearInterval(pointerTimer)
     pointerTimer = null
     return
+  }
+  // macOS posts its desktop-changed notification only once the switch has finished, while this window, present on every desktop, still shows the one just left; the active desktop is read each frame so the desk follows as soon as the system reports it.
+  if (desktops && state.desktops) {
+    const now = desktops.current()
+    if (now !== polledDesktop) {
+      polledDesktop = now
+      desktopsChanged()
+    }
   }
   const point = screen.getCursorScreenPoint()
   const ignore = !desk.capture && !overDesk(point)
