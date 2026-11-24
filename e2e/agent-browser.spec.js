@@ -232,38 +232,24 @@ test('an agent tab shows working, then done with an unseen mark that viewing cle
   expect(await stateOf()).toMatchObject({ agentState: 'working' })
 })
 
-test.describe('Layer', () => {
-  // ui.setShell replaces the window that runs the call, so the call is not awaited.
-  async function layer(skiff) {
-    const old = skiff.shell
-    const closed = old.waitForEvent('close')
-    await old.evaluate(() => { window.skiff.call('ui.setShell', { name: 'layer' }) })
-    await closed
-    await expect.poll(() => !skiff.shell.isClosed()).toBe(true)
-    await skiff.shell.waitForLoadState()
-    await expect.poll(() => skiff.app.context().pages().some((page) => page.url().endsWith('/buoy.html'))).toBe(true)
-    return skiff.app.context().pages().find((page) => page.url().endsWith('/buoy.html'))
-  }
+test('the Buoy lists agent tabs at work, shows a red dot while a finished one is unseen, and viewing the tab clears it', async ({ skiff }) => {
+  const tab = await formTab(skiff, 'bb')
+  const buoy = await skiff.bar()
+  await expect(buoy.locator('#buoy-agents')).toHaveText('bb working')
+  await expect(buoy.locator('#buoy-unseen')).toBeHidden()
+  const row = buoy.locator(`#buoy-agents-list .buoy-agent[data-tab-id="${tab.id}"]`)
+  // The list closes when the keyboard leaves, so open it until it stays.
+  await expect(async () => {
+    if ((await buoy.locator('#buoy-agents').getAttribute('aria-expanded')) !== 'true') await buoy.locator('#buoy-agents').click()
+    await expect(row).toBeVisible({ timeout: 1500 })
+  }).toPass({ timeout: 12_000 })
+  await expect(row.locator('.agent-dot')).toHaveAttribute('data-state', 'working')
 
-  test('the Buoy lists agent tabs at work, shows a red dot while a finished one is unseen, and viewing the tab clears it', async ({ skiff }) => {
-    const tab = await formTab(skiff, 'bb')
-    const buoy = await layer(skiff)
-    await expect(buoy.locator('#buoy-agents')).toHaveText('bb working')
-    await expect(buoy.locator('#buoy-unseen')).toBeHidden()
-    const row = buoy.locator(`#buoy-agents-list .buoy-agent[data-tab-id="${tab.id}"]`)
-    // The desk window is still taking focus just after the switch, and a list closes when the keyboard leaves, so open it until it stays.
-    await expect(async () => {
-      if ((await buoy.locator('#buoy-agents').getAttribute('aria-expanded')) !== 'true') await buoy.locator('#buoy-agents').click()
-      await expect(row).toBeVisible({ timeout: 1500 })
-    }).toPass({ timeout: 12_000 })
-    await expect(row.locator('.agent-dot')).toHaveAttribute('data-state', 'working')
-
-    await agent(skiff, 'agent.finish', tab.id, { summary: 'done' })
-    await expect(buoy.locator('#buoy-unseen')).toBeVisible()
-    await expect(row.locator('.agent-dot')).toHaveAttribute('data-state', 'done')
-    await row.locator('.row-main').click()
-    await expect.poll(async () => (await skiff.state()).activeTabBySpace[(await skiff.state()).activeSpaceId]).toBe(tab.id)
-    await expect(buoy.locator('#buoy-unseen')).toBeHidden()
-    expect((await skiff.state()).tabs.find((t) => t.id === tab.id).agentUnseen).toBeUndefined()
-  })
+  await agent(skiff, 'agent.finish', tab.id, { summary: 'done' })
+  await expect(buoy.locator('#buoy-unseen')).toBeVisible()
+  await expect(row.locator('.agent-dot')).toHaveAttribute('data-state', 'done')
+  await row.locator('.row-main').click()
+  await expect.poll(async () => (await skiff.state()).activeTabBySpace[(await skiff.state()).activeSpaceId]).toBe(tab.id)
+  await expect(buoy.locator('#buoy-unseen')).toBeHidden()
+  expect((await skiff.state()).tabs.find((t) => t.id === tab.id).agentUnseen).toBeUndefined()
 })

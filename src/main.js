@@ -1007,7 +1007,7 @@ function watchShell() {
   watcher?.close()
   watcher = null
   const root = shellRoot()
-  // Bundled shells inside app.asar cannot change and fs.watch fails on them.
+  // The bundled shell inside app.asar cannot change and fs.watch fails on it.
   if (root.split(path.sep).some((part) => part.endsWith('.asar'))) return
   watcher = watchShellFiles(root, reloadShell)
 }
