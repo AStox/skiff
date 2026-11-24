@@ -1003,7 +1003,7 @@ test('tabs.thumbnails takes up to 24 known tab ids in order and a width up to 38
   assert.deepEqual(S.thumbnailTabs(s, { ids: [secret.id, a.id] }).tabs, [null, a])
 })
 
-test('an agent tab is an ordinary tab of its space in the space session, never activated, never saved', () => {
+test('an agent tab is an ordinary tab of its space in the space session and is never activated', () => {
   const s = S.load()
   const home = s.activeSpaceId
   const user = S.createTab(s, { url: 'user.example' }, 1)
@@ -1011,16 +1011,31 @@ test('an agent tab is an ordinary tab of its space in the space session, never a
   work.sessionPartition = 'persist:work'
   const agent = S.createTab(s, { url: 'agent.example', agent: '  omp  ', spaceId: work.id, activate: true, parentId: user.id }, 2)
   assert.deepEqual([agent.agent, agent.spaceId, agent.sessionPartition, agent.parentId], ['omp', work.id, 'persist:work', undefined])
-  assert.deepEqual([agent.agentState, agent.agentControl, agent.agentOpened], ['working', 'agent', true])
+  assert.deepEqual([agent.agentState, agent.agentControl], ['working', 'agent'])
   assert.deepEqual(ids(s.tabs), [user.id, agent.id])
   assert.deepEqual(ids(S.visibleTabs(s, work.id)), [agent.id])
   assert.deepEqual([s.activeSpaceId, s.activeTabBySpace], [home, { [home]: user.id }])
   assert.equal(S.getTab(s, agent.id), agent)
-  const saved = S.persistable(s)
-  assert.deepEqual(ids(saved.tabs), [user.id])
-  assert.deepEqual(ids(S.load(JSON.parse(JSON.stringify({ ...saved, tabs: [...saved.tabs, agent] }))).tabs), [user.id])
   assert.equal(S.createTab(s, { url: 'b.example', agent: 'x'.repeat(50) }, 3).agent, 'x'.repeat(40))
   assert.throws(() => S.createTab(s, { url: 'c.example', agent: ' ' }, 3), { code: 'bad_params' })
+})
+
+test('an agent tab is saved with its agent name only and comes back idle, still the agent\'s', () => {
+  const s = S.load()
+  const agent = S.createTab(s, { url: 'agent.example', agent: 'omp' }, 2)
+  agent.agentUnseen = true
+  agent.agentSummary = 'x'
+  agent.agentRequest = { agent: 'bb' }
+  S.takeOver(s, { id: agent.id }, 3)
+  const saved = JSON.parse(JSON.stringify(S.persistable(s)))
+  const stored = saved.tabs.find((t) => t.id === agent.id)
+  assert.deepEqual(Object.keys(stored).filter((k) => k.startsWith('agent')), ['agent'])
+  const back = S.load(saved).tabs.find((t) => t.id === agent.id)
+  assert.deepEqual([back.agent, back.agentState, back.agentControl, back.agentUnseen, back.agentRequest], ['omp', 'idle', 'agent', undefined, undefined])
+  assert.equal(S.agentCall(S.load(saved), { agent: 'omp', tabId: agent.id }, 5).agentState, 'working')
+  // A saved agent mark on something an agent cannot drive is dropped.
+  const odd = S.load({ ...saved, tabs: [{ ...stored, agent: '  ' }, { ...stored, id: 'tchat', url: 'skiff://chat/c0123456789ab', chat: { agent: 'x', sessionId: null } }] })
+  assert.deepEqual(odd.tabs.map((t) => t.agent), [undefined, undefined])
 })
 
 test('agent tabs open in a normal space; the incognito space is refused', () => {
@@ -1045,27 +1060,33 @@ test('on the desk an agent tab starts as a hidden window; showing it makes it th
   assert.deepEqual([s.activeTabBySpace[s.activeSpaceId], agent.desk.hidden, agent.agentUnseen], [agent.id, undefined, undefined])
 })
 
-test('closing an agent tab drops it without archiving; removing its space drops it too', () => {
+test('closing an agent tab archives it like any tab, and it restores as a plain tab', () => {
   const s = S.load()
   const work = S.createSpace(s, { name: 'Work' })
   const a = S.createTab(s, { url: 'a.example', agent: 'omp' }, 1)
   const b = S.createTab(s, { url: 'b.example', agent: 'omp', spaceId: work.id }, 1)
-  assert.deepEqual(S.closeTab(s, { id: a.id }, 3), { closed: a.id })
-  assert.deepEqual([ids(s.tabs), s.archive], [[b.id], []])
+  assert.deepEqual(S.closeTab(s, { id: a.id }, 3), { archived: a.id })
+  assert.deepEqual([ids(s.tabs), ids(s.archive)], [[b.id], [a.id]])
+  assert.equal('agent' in s.archive[0], false)
+  const restored = S.restore(s, { id: a.id }, 4)
+  assert.deepEqual([restored.agent, restored.agentState], [undefined, undefined])
   S.removeSpace(s, { id: work.id }, 5)
-  assert.deepEqual([s.tabs, s.archive], [[], []])
+  assert.deepEqual(ids(s.archive), [b.id])
 })
 
-test('agent tabs cannot be moved, favorited or pinned, and sweep never archives them', () => {
+test('agent tabs move, pin and favorite like any tab, and sweep leaves a working one alone', () => {
   const s = S.load()
   const work = S.createSpace(s, { name: 'Work' })
   const agent = S.createTab(s, { url: 'a.example', agent: 'omp' }, 0)
-  assert.throws(() => S.moveTab(s, { id: agent.id, spaceId: work.id }, 1), { code: 'bad_params' })
-  assert.throws(() => S.setFavorite(s, { id: agent.id, favorite: true }, 1), { code: 'bad_params' })
-  assert.throws(() => S.setPinned(s, { id: agent.id, pinned: true }, 1), { code: 'bad_params' })
+  S.moveTab(s, { id: agent.id, spaceId: work.id }, 1)
+  assert.equal(agent.spaceId, work.id)
+  S.setPinned(s, { id: agent.id, pinned: true }, 1)
+  assert.equal(agent.agent, 'omp')
+  S.setPinned(s, { id: agent.id, pinned: false }, 1)
   const swept = S.sweep(s, { loading: [] }, 1000 * HOUR)
   assert.deepEqual([swept.archived, swept.done], [[], []])
-  assert.deepEqual(ids(s.tabs), [agent.id])
+  agent.agentState = 'idle'
+  assert.deepEqual(S.sweep(s, { loading: [] }, 1000 * HOUR).done, [agent.id])
 })
 
 test('an agent drives only the tab it opened or was handed, and never one the user took over', () => {
@@ -1081,7 +1102,7 @@ test('an agent drives only the tab it opened or was handed, and never one the us
   assert.throws(() => S.agentCall(s, { agent: 'bb' }, 3), { code: 'bad_params' })
   assert.throws(() => S.agentCall(s, { tabId: mine.id }, 3), { code: 'bad_params' })
   S.handToAgent(s, { id: user.id, agent: 'bb' }, 4)
-  assert.deepEqual([user.agent, user.agentState, user.agentOpened], ['bb', 'idle', undefined])
+  assert.deepEqual([user.agent, user.agentState], ['bb', 'idle'])
   assert.equal(S.agentCall(s, { agent: 'bb', tabId: user.id }, 5).agentState, 'working')
   S.takeOver(s, { id: user.id }, 6)
   assert.throws(() => S.agentCall(s, { agent: 'bb', tabId: user.id }, 7), { code: 'user_has_control' })
@@ -1108,7 +1129,7 @@ test('a request for a tab waits for an answer: allow hands it over, deny drops i
   assert.throws(() => S.agentAnswer(s, { id: tab.id, allow: true }, 4), { code: 'bad_params' })
 })
 
-test('a finished agent tab is unseen until it is shown; a tab with no call for two minutes is idle; handed tabs save as the user\'s own', () => {
+test('a finished agent tab is unseen until it is shown; a tab with no call for two minutes is idle; handed tabs are saved with their agent', () => {
   const s = S.load()
   const first = S.createTab(s, { url: 'first.example' }, 1)
   const agent = S.createTab(s, { url: 'agent.example', agent: 'bb' }, 2)
@@ -1123,8 +1144,8 @@ test('a finished agent tab is unseen until it is shown; a tab with no call for t
   assert.deepEqual(S.agentSweep(s, 10 + 121000), [agent.id])
   assert.equal(agent.agentState, 'idle')
   S.handToAgent(s, { id: first.id, agent: 'bb' }, 6)
-  const saved = JSON.parse(JSON.stringify(S.persistable(s)))
-  assert.deepEqual(saved.tabs.map((t) => [t.id, Object.keys(t).filter((k) => k.startsWith('agent'))]), [[first.id, []]])
+  const back = S.load(JSON.parse(JSON.stringify(S.persistable(s))))
+  assert.deepEqual(back.tabs.map((t) => [t.id, t.agent, t.agentState]), [[first.id, 'bb', 'idle'], [agent.id, 'bb', 'idle']])
 })
 
 test('closing the active tab never lands on an agent tab, and an agent tab without a window stays off the desk', () => {
@@ -1638,7 +1659,7 @@ test('buckets: setBucket moves a tab by hand and validates the bucket', () => {
   for (const bucketName of ['progress', 'nope', undefined, 3]) assert.throws(() => S.setBucket(s, { id: b.id, bucket: bucketName }, 20), { code: 'bad_params' })
   assert.throws(() => S.setBucket(s, { id: 'nope', bucket: 'done' }, 20), { code: 'not_found' })
   const agent = S.createTab(s, { url: 'agent.example', agent: 'omp' }, 0)
-  assert.throws(() => S.setBucket(s, { id: agent.id, bucket: 'done' }, 20), { code: 'bad_params' })
+  assert.equal(S.setBucket(s, { id: agent.id, bucket: 'done' }, 20), agent)
   const source = S.activeTab(s)
   const peek = S.createPeek(s, { sourceId: source.id, url: 'https://peek.example/' }, 21)
   assert.throws(() => S.setBucket(s, { id: peek.id, bucket: 'done' }, 22), { code: 'bad_params' })

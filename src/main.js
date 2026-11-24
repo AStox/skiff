@@ -367,7 +367,7 @@ const visual = {
     sendEvent(controls.get(id)?.webContents, 'agent-highlight', rect && { x: rect.x * zoom, y: rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom })
   }
 }
-const agentBrowser = createAgentBrowser({ contentsOf: (id) => views.get(id)?.webContents ?? (parkAgents(), views.get(id)?.webContents), awake: (id) => { const view = views.get(id); if (view) wake(view) }, visual })
+const agentBrowser = createAgentBrowser({ contentsOf: (id) => { const tab = S.findTab(state, id); if (!tab) return null; const view = views.get(id) || createView(tab); parkAgents(); return view.webContents }, awake: (id) => { const view = views.get(id); if (view) wake(view) }, visual })
 
 function readFrame(shellJson) {
   const f = shellJson?.frame
@@ -394,7 +394,7 @@ function createChatView(tab) {
 // Picking a space moves the tab, then shows it there, so the page stays in front of the user.
 function moveToSpaceMenu(id) {
   const tab = S.findTab(state, id)
-  if (!tab || tab.agentOpened) return []
+  if (!tab) return []
   const targets = state.spaces.filter((space) => (space.id !== tab.spaceId || tab.userPeek) && Boolean(space.incognito) === S.isIncognito(state, tab.spaceId))
   if (!targets.length) return []
   const move = async (spaceId) => {
@@ -709,7 +709,8 @@ function adoptAgentView(view) {
 }
 
 function parkAgents() {
-  const agents = state.tabs.filter((t) => t.agent)
+  // A restored idle agent tab has no page until it is shown or driven.
+  const agents = state.tabs.filter((t) => t.agent && (views.has(t.id) || t.agentState === 'working'))
   if (!agents.length) {
     agentWin?.destroy()
     agentWin = null
@@ -1447,7 +1448,7 @@ def('incognito.open', '', 'Open the temporary incognito space, creating it if ne
   return space
 })
 
-def('tabs.create', '{url, spaceId?, parentId?, activate?, agent?}', 'Open a tab using the selected search behavior; agent names an agent that opens it as its own tab: an ordinary tab of the space (never activated, never saved) that only that agent may drive with the browser tools. A scoped grant always opens its own agent tabs', async (p, context) => {
+def('tabs.create', '{url, spaceId?, parentId?, activate?, agent?}', 'Open a tab using the selected search behavior; agent names an agent that opens it as its own tab: an ordinary tab of the space (never activated; saved and archived like any tab, but after a restart it is idle) that only that agent may drive with the browser tools. A scoped grant always opens its own agent tabs', async (p, context) => {
   // Scoped agents supply explicit HTTP URLs; replaceable search must not acquire their browser authority.
   const url = context.accessContext ? S.webUrl(p.url) : (await call('search.resolve', { text: p.url }, context)).url
   context.signal?.throwIfAborted()
@@ -1457,7 +1458,7 @@ def('tabs.create', '{url, spaceId?, parentId?, activate?, agent?}', 'Open a tab 
   if (tab.agent && chat) driven.set(chat, (driven.get(chat) || new Set()).add(tab.id))
   return tab
 })
-def('tabs.close', '{id?}', 'Close a tab into the archive; favorites and pinned tabs are unloaded and kept; incognito tabs and tabs an agent opened are dropped', (p) => {
+def('tabs.close', '{id?}', 'Close a tab into the archive; favorites and pinned tabs are unloaded and kept; incognito tabs are dropped. An archived agent tab restores as a plain tab', (p) => {
   const result = S.closeTab(state, p, Date.now())
   if (views.has(result.unloaded)) destroyView(result.unloaded)
   changed()
@@ -1500,15 +1501,15 @@ def('tabs.copyUrl', '{id?}', 'Copy the address of a tab to the clipboard and sho
   for (const wc of shellContents()) sendEvent(wc, 'url-copied', { url })
   return { url }
 })
-def('tabs.move', '{id, index?, spaceId?}', "Reorder a tab among its siblings or move it to another space as a root; not into or out of the incognito space; not an agent tab. The tab takes the destination space's profile: when that differs, the page reloads at its current address in the new profile's session, and a tab-level browserIdentity is dropped (WhatsApp stays compatible); within one profile the live page is untouched. A link peek needs spaceId (its own is fine) and becomes a tab there, active", (p) => {
+def('tabs.move', '{id, index?, spaceId?}', "Reorder a tab among its siblings or move it to another space as a root; not into or out of the incognito space. The tab takes the destination space's profile: when that differs, the page reloads at its current address in the new profile's session, and a tab-level browserIdentity is dropped (WhatsApp stays compatible); within one profile the live page is untouched. A link peek needs spaceId (its own is fine) and becomes a tab there, active", (p) => {
   const before = S.getTab(state, p.id).sessionPartition
   const tab = mutate(S.moveTab)(p)
   if (tab.sessionPartition !== before) destroyView(tab.id)
   return tab
 })
-def('tabs.setFavorite', '{id?, favorite}', 'Make a tab a favorite of its space, or turn it back into a plain tab there; not an agent tab', mutate(S.setFavorite))
-def('tabs.setPinned', '{id?, pinned, folder?}', 'Pin a tab to its space, optionally in a folder, or unpin it; not an agent tab', mutate(S.setPinned))
-def('tabs.setBucket', '{id?, bucket}', 'Move a tab to a bucket: favorites, later (pinned), active, unread or done; progress is set by loading pages and working chats only; not an agent tab', mutate(S.setBucket))
+def('tabs.setFavorite', '{id?, favorite}', 'Make a tab a favorite of its space, or turn it back into a plain tab there', mutate(S.setFavorite))
+def('tabs.setPinned', '{id?, pinned, folder?}', 'Pin a tab to its space, optionally in a folder, or unpin it', mutate(S.setPinned))
+def('tabs.setBucket', '{id?, bucket}', 'Move a tab to a bucket: favorites, later (pinned), active, unread or done; progress is set by loading pages and working chats only', mutate(S.setBucket))
 def('tabs.cycle', '{delta}', 'Show the next (1) or previous (-1) tab of the active space', mutate(S.cycleTab))
 def('tabs.select', '{index}', 'Show the index-th unpinned tab of the active space (and current macOS desktop) in Ctrl+Tab order; negative counts from the end; null past the end', mutate(S.selectTab))
 def('tabs.thumbnails', '{ids, width?}', 'Pictures of up to 24 tabs as [{id, image}] in the order of ids, image a JPEG data URL at most width pixels wide (default 480, at most 3840; a page narrower on screen keeps its own size) at the page\'s aspect, or null when the tab is not on screen (hidden, in another space or not loaded), cannot be captured or is incognito while another space shows', async (p) => {

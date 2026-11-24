@@ -121,7 +121,7 @@ test('an agent drives only a tab it opened or was handed, for the owner CLI and 
   for (const tool of ['browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_screenshot', 'browser_wait', 'browser_request_tab', 'browser_finish']) expect(names).toContain(tool)
   expect(listed.find((t) => t.name === 'browser_click').inputSchema.properties.agent).toBeUndefined()
   const opened = JSON.parse((await mcp('tools/call', { name: 'browser_open_tab', arguments: { url: href(skiff, FORM) } })).result.content[0].text)
-  expect(opened).toMatchObject({ agent: 'Scoped', agentOpened: true })
+  expect(opened).toMatchObject({ agent: 'Scoped', agentState: 'working' })
   const call = async (name, args) => (await mcp('tools/call', { name, arguments: args })).result
   expect((await call('browser_snapshot', { tabId: opened.id })).isError).toBeUndefined()
   const other = await call('browser_snapshot', { tabId: user.id })

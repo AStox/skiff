@@ -84,14 +84,14 @@ test('an agent tab is an ordinary tab that loads parked, never takes focus, keep
   const windowFocused = (await userWindow(skiff)).focused
 
   const tab = await skiff.rpc('tabs.create', { url: skiff.origin + '/agent/one', agent: 'omp', activate: true })
-  expect(tab).toMatchObject({ agent: 'omp', agentOpened: true, agentState: 'working', agentControl: 'agent', spaceId: before.activeSpaceId, sessionPartition: 'persist:main' })
+  expect(tab).toMatchObject({ agent: 'omp', agentState: 'working', agentControl: 'agent', spaceId: before.activeSpaceId, sessionPartition: 'persist:main' })
   await expect.poll(() => where(skiff, '/agent/one')).toMatchObject({ user: false, bounds: { x: 0, y: 0, width: 1280, height: 800 }, visible: false, focused: false, focusable: false, pageFocused: false })
   expect(await keepsRunning(skiff, '/agent/one')).toBe('visible')
 
   // It is a tab of the space like any other, and nothing else changed: the user's tab stays the active one.
   const after = await skiff.state()
   expect(after.tabs.map((t) => t.id).sort()).toEqual([...before.tabs.map((t) => t.id), tab.id].sort())
-  expect(after.tabs.find((t) => t.id === tab.id)).toMatchObject({ spaceId: before.activeSpaceId, agent: 'omp', agentOpened: true, agentState: 'working', agentControl: 'agent', loading: false })
+  expect(after.tabs.find((t) => t.id === tab.id)).toMatchObject({ spaceId: before.activeSpaceId, agent: 'omp', agentState: 'working', agentControl: 'agent', loading: false })
   expect(after.tabs.filter((t) => t.spaceId === before.activeSpaceId && t.agent).map((t) => t.id)).toEqual([tab.id])
   expect(after).not.toHaveProperty('agentTabs')
   expect(after).not.toHaveProperty('peek')
@@ -109,13 +109,13 @@ test('an agent tab is an ordinary tab that loads parked, never takes focus, keep
   const read = await skiff.rpc('tabs.read', { id: tab.id })
   expect(read).toMatchObject({ title: 'Agent one', url: skiff.origin + '/agent/one', selection: '' })
   expect(read.text).toContain('Agent fixture /agent/one')
-  // Never saved: a restart has no agent tab.
+  // Saved like any tab: after a restart it is back, still omp's but idle, with no page and no hidden window.
   await skiff.restart()
-  expect((await skiff.state()).tabs.filter((t) => t.agent)).toEqual([])
+  expect((await skiff.state()).tabs.filter((t) => t.agent).map((t) => [t.id, t.agent, t.agentState, t.agentControl])).toEqual([[tab.id, 'omp', 'idle', 'agent']])
   expect(await skiff.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1)
 })
 
-test('activating an agent tab shows its live page in the window without a reload, showing another tab parks it where the agent keeps working, and closing it drops it', async ({ skiff }) => {
+test('activating an agent tab shows its live page in the window without a reload, showing another tab parks it where the agent keeps working, and closing it archives it', async ({ skiff }) => {
   const user = (await skiff.rpc('tabs.create', { url: skiff.origin + '/user' })).id
   await skiff.page('/user')
   await expect.poll(async () => (await userWindow(skiff)).pages.length).toBe(1)
@@ -160,20 +160,23 @@ test('activating an agent tab shows its live page in the window without a reload
   await expect.poll(() => where(skiff, '/agent/opened')).toMatchObject({ user: false, visible: false })
   const opened = await skiff.state()
   expect(opened.activeTabBySpace).toEqual(before.activeTabBySpace)
-  expect(opened.tabs.find((t) => t.url.endsWith('/agent/opened'))).toMatchObject({ agent: 'omp', agentOpened: true })
+  expect(opened.tabs.find((t) => t.url.endsWith('/agent/opened'))).toMatchObject({ agent: 'omp' })
 
-  // Closing it while it shows drops it without archiving; closing the last agent tab takes the hidden window with it.
+  // Closing it while it shows archives it like any tab, as a plain one to restore; closing the last agent tab takes the hidden window with it.
   await skiff.rpc('tabs.activate', { id: tab.id })
   await expect.poll(() => where(skiff, '/agent/two')).toMatchObject({ user: true })
-  expect(await skiff.rpc('tabs.close', { id: tab.id })).toEqual({ closed: tab.id })
+  expect(await skiff.rpc('tabs.close', { id: tab.id })).toEqual({ archived: tab.id })
   const closed = await skiff.state()
   const rest = closed.tabs.filter((t) => t.agent)
-  expect([closed.archive.length, rest.length]).toEqual([before.archive.length, 1])
+  expect([closed.archive.length, rest.length]).toEqual([before.archive.length + 1, 1])
   expect(closed.tabs.some((t) => t.id === tab.id)).toBe(false)
+  expect(closed.archive[0]).not.toHaveProperty('agent')
   await skiff.rpc('tabs.close', { id: rest[0].id })
-  expect((await skiff.state()).archive.length).toBe(before.archive.length)
+  expect((await skiff.state()).archive.length).toBe(before.archive.length + 2)
   await expect.poll(async () => (await userWindow(skiff)).pages.map((p) => p.path)).toEqual(['/user'])
   await expect.poll(() => skiff.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1)
+  const restored = await skiff.rpc('archive.restore', { id: tab.id })
+  expect(restored.agent).toBeUndefined()
 })
 
 test('an agent tab shares its space\'s session and never opens in the incognito space', async ({ skiff }) => {
@@ -319,7 +322,7 @@ test('without a debugger attached, a hidden agent page keeps its timers and anim
     await runs('after being shown')
     const state = await rpc('state.get')
     expect(state.tabs.map((t) => t.id).sort()).toEqual([tab.id, user.id].sort())
-    expect(state.tabs.find((t) => t.id === tab.id)).toMatchObject({ agent: 'omp', agentOpened: true })
+    expect(state.tabs.find((t) => t.id === tab.id)).toMatchObject({ agent: 'omp' })
   } finally {
     try { process.kill(-child.pid, 'SIGTERM') } catch {}
     const timer = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL') } catch {} }, 5000)

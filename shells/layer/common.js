@@ -228,7 +228,7 @@ function defaultRect(state, tab) {
 }
 const rectOf = (state, tab) => (tab.desk ? { x: tab.desk.x, y: tab.desk.y, width: tab.desk.width, height: tab.desk.height } : defaultRect(state, tab))
 const activeTabOf = (state) => state.tabs.find((t) => t.id === state.activeTabBySpace[state.activeSpaceId])
-const isShown = (state, tab) => tab === activeTabOf(state) || (tab.desk ? !tab.desk.hidden : isPlain(tab) && !tab.agentOpened)
+const isShown = (state, tab) => tab === activeTabOf(state) || (tab.desk ? !tab.desk.hidden : isPlain(tab) && !tab.agent)
 // The core sets state.desktops only where macOS desktops are known; each tab belongs to one, and the desk shows the current desktop's.
 const onDesktop = (state, tab) => !state.desktops || tab.desktopId === state.desktops.current
 // Labels exist only with two or more desktops.
