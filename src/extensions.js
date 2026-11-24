@@ -8,6 +8,7 @@ const os = require('node:os')
 const path = require('node:path')
 const { execFile } = require('node:child_process')
 const { net, webContents, webFrameMain, ipcMain, WebContentsView } = require('electron')
+const log = require('./log').scope('extensions')
 
 const err = (code, message) => Object.assign(new Error(message), { code })
 const WINDOW_ID = 1
@@ -45,9 +46,13 @@ function createExtensions({ dataDir, hooks, builtin = BUILTIN }) {
   const listChanged = () => hooks.listChanged?.()
 
   async function load(ses, folder) {
+    const t = Date.now()
     try {
-      return await ses.extensions.loadExtension(folder, { allowFileAccess: false })
+      const loaded = await ses.extensions.loadExtension(folder, { allowFileAccess: false })
+      log.info('extension loaded', { name: loaded.name, id: loaded.id, version: loaded.version, partition: partitionOf(ses), ms: Date.now() - t })
+      return loaded
     } catch (e) {
+      log.error('extension load failed', { folder: path.basename(folder), partition: partitionOf(ses), err: e.stack })
       console.error(`Extension at ${folder} did not load: ${e.message}`)
       return null
     }
@@ -58,7 +63,8 @@ function createExtensions({ dataDir, hooks, builtin = BUILTIN }) {
     if (!partition.startsWith('persist:') || sessions.has(ses)) return ready(ses)
     sessions.set(ses, partition)
     ses.registerPreloadScript({ type: 'frame', filePath: preload })
-    const done = (async () => { for (const folder of folders()) await load(ses, folder) })()
+    log.debug('attach session', { partition })
+    const done = (async () => { const t = Date.now(); const found = folders(); for (const folder of found) await load(ses, folder); log.info('extensions ready', { partition, folders: found.length, loaded: ses.extensions.getAllExtensions().length, ms: Date.now() - t }) })()
     loading.set(ses, done)
     return done
   }
@@ -207,6 +213,7 @@ function createExtensions({ dataDir, hooks, builtin = BUILTIN }) {
     const stat = fs.statSync(source, { throwIfNoEntry: false })
     if (!stat) throw err('not_found', `No such file: ${source}`)
     let scratch = null
+    log.info('add extension', { source: path.basename(source), kind: stat.isFile() ? 'zip' : 'folder' })
     try {
       let unpacked = source
       if (stat.isFile()) {
@@ -223,10 +230,12 @@ function createExtensions({ dataDir, hooks, builtin = BUILTIN }) {
       fs.mkdirSync(dir, { recursive: true })
       fs.rmSync(previous, { recursive: true, force: true })
       if (fs.existsSync(target)) fs.renameSync(target, previous)
+      if (fs.existsSync(previous)) log.info('replacing extension', { name: manifest.name, version: manifest.version })
       fs.cpSync(unpacked, target, { recursive: true })
       const loadAll = async () => { let loaded = null; for (const ses of sessions.keys()) loaded = (await load(ses, target)) || loaded; return loaded }
       const loaded = await loadAll()
       if (!loaded) {
+        log.error('add failed, restoring previous', { name: manifest.name, hadPrevious: fs.existsSync(previous) })
         fs.rmSync(target, { recursive: true, force: true })
         if (fs.existsSync(previous)) {
           fs.renameSync(previous, target)
@@ -238,7 +247,11 @@ function createExtensions({ dataDir, hooks, builtin = BUILTIN }) {
       const b = builtinOf(loaded.name)
       if (b) Object.assign(b, { state: 'ready', error: '' })
       listChanged()
+      log.info('extension added', { name: loaded.name, id: loaded.id, version: loaded.version })
       return info(loaded)
+    } catch (e) {
+      log.error('add extension failed', { err: e.stack })
+      throw e
     } finally {
       if (scratch) fs.rmSync(scratch, { recursive: true, force: true })
     }
@@ -257,6 +270,7 @@ function createExtensions({ dataDir, hooks, builtin = BUILTIN }) {
     const ext = find(id)
     if (!ext) throw err('not_found', `No extension ${id}`)
     if (builtinOf(ext.name)) throw err('bad_params', `${ext.name} is built in`)
+    log.info('remove extension', { id, name: ext.name })
     unload(ext.path)
     if (ext.path.startsWith(dir + path.sep)) fs.rmSync(ext.path, { recursive: true, force: true })
     listChanged()
@@ -324,14 +338,18 @@ function createExtensions({ dataDir, hooks, builtin = BUILTIN }) {
     if (updating) return updating
     updating = (async () => {
       await ready(mainSession())
+      const t = Date.now()
+      log.info('update check start', { builtins: builtins.length })
       for (const b of builtins) {
         const current = byName(b.name)
         try {
           const resolved = await resolve(b.release)
+          log.debug('update check', { name: b.name, installed: current?.version ?? null, latest: resolved.version || null })
           if (!current || (resolved.version && newer(resolved.version, current.version))) {
             b.state = current ? 'updating' : 'installing'
             listChanged()
             await install(resolved)
+            log.info('update installed', { name: b.name, from: current?.version ?? null, to: resolved.version || null })
           }
           b.state = 'ready'
           b.error = ''
@@ -339,9 +357,11 @@ function createExtensions({ dataDir, hooks, builtin = BUILTIN }) {
           b.state = 'failed'
           b.error = e.message
           console.warn(`${b.name}: ${e.message}`)
+          log.warn('update failed', { name: b.name, err: e.stack })
         }
         listChanged()
       }
+      log.info('update check done', { ms: Date.now() - t, states: builtins.map((b) => `${b.name}:${b.state}`) })
       updating = null
       schedule()
       return list()
@@ -351,6 +371,7 @@ function createExtensions({ dataDir, hooks, builtin = BUILTIN }) {
 
   function schedule(delay = builtins.some((b) => !byName(b.name)) ? RETRY_MISSING : CHECK_EVERY) {
     clearTimeout(timer)
+    log.debug('update scheduled', { delayMs: delay })
     timer = setTimeout(update, delay)
   }
 
@@ -359,6 +380,7 @@ function createExtensions({ dataDir, hooks, builtin = BUILTIN }) {
     if (!builtins.length) return
     ready(mainSession()).then(() => {
       const missing = builtins.some((b) => !byName(b.name))
+      log.info('start', { missing, builtins: builtins.length })
       for (const b of builtins) b.state = byName(b.name) ? 'ready' : 'installing'
       schedule(missing ? 0 : CHECK_DELAY)
     })
@@ -401,6 +423,7 @@ function createExtensions({ dataDir, hooks, builtin = BUILTIN }) {
     popup = view
     popupOwner = ext.path
     const wc = view.webContents
+    wc.on('render-process-gone', (_e, details) => log.error('popup crashed', { id, reason: details.reason, exitCode: details.exitCode }))
     wc.setWindowOpenHandler(({ url }) => { if (/^https?:/.test(url)) hooks.createTab({ url, active: true }, null); return { action: 'deny' } })
     wc.on('blur', () => { if (popup === view) closePopup() })
     // Chrome sizes a popup to its content. Measured the same way: lay the page out narrow to learn the width it

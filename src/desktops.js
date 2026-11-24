@@ -1,5 +1,7 @@
 'use strict'
 
+const log = require('./log').scope('desktops')
+
 const CORE_GRAPHICS = '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics'
 const CORE_FOUNDATION = '/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation'
 const UTF8 = 0x08000100
@@ -57,7 +59,9 @@ function open({ systemPreferences }) {
   if (process.platform !== 'darwin') return null
   try {
     const api = bind()
-    if (!api.list().length) return null
+    const found = api.list().length
+    log.info('desktops open', { found })
+    if (!found) return null
     return {
       ...api,
       subscribe(callback) {
@@ -66,6 +70,7 @@ function open({ systemPreferences }) {
       }
     }
   } catch (error) {
+    log.error('desktops unavailable', { err: error.message })
     console.error('Desktops unavailable:', error.message)
     return null
   }

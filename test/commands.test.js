@@ -270,7 +270,7 @@ test('settings catalog searches aliases, filters scopes and rejects invalid scal
 })
 
 test('settings catalog quick-panel entries carry values and action status, omit unsupported actions and run', async () => {
-  assert.deepEqual(settings.list({ quickPanel: true }).map((entry) => entry.id), ['autoArchiveHours', 'tabLayout', 'defaultBrowser', 'update'])
+  assert.deepEqual(settings.list({ quickPanel: true }).map((entry) => entry.id), ['autoArchiveHours', 'tabLayout', 'defaultBrowser', 'revealLogs', 'update'])
   assert.equal(settings.list({ quickPanel: false }).some((entry) => entry.id === 'defaultBrowser'), false)
   let done = false, supported = true, runs = 0
   const actions = { defaultBrowser: { supported: () => supported, status: () => ({ text: done ? 'Skiff is your default browser.' : '', available: !done }), run: () => { runs++; done = true } } }

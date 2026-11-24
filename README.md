@@ -225,6 +225,26 @@ To choose an identity while navigating an existing tab, pass it to `tabs.navigat
 
 Browser Tools > Profiles creates and names isolated profiles, assigns the profile for future tabs in a space, and manages external-link routing. A tab moved to a space on another profile joins that profile's session; existing tabs keep their session when a space changes profile. Browser identity remains an API setting rather than a dedicated identity editor.
 
+## Logs
+
+Skiff writes verbose JSON Lines to `~/Library/Logs/Skiff/skiff.log` on macOS, or to `<SKIFF_DATA>/logs/skiff.log` when `SKIFF_DATA` is set. Each line is `{t, lvl, scope, msg, ...data}`. The main process logs every command (`cmd`), webContents events (`wc`, including every page's console output and uncaught page errors), shell and overlay errors with stacks (`renderer`), app, window and tab lifecycle (`app`, `window`, `tab`) and the subsystems (`updates`, `extensions`, `ai`, `acp`, `sync`, `importer`, `http-auth`, `downloads`, `permissions`).
+
+The level is `debug` by default. `SKIFF_LOG_LEVEL` (`trace`, `debug`, `info`, `warn`, `error`) changes it; `trace` holds high-frequency events and is off unless you ask for it. The file rotates at 20 MB, keeping `skiff.log` and `skiff.1.log` to `skiff.4.log`. Keys named like `password`, `token`, `secret`, `cookie`, `authorization`, `credential`, `otp` or ending in `key` are written as `[redacted]`, and strings are cut at 2 KB.
+
+```sh
+bin/skiff logs.path                                              # where the log file is
+bin/skiff logs.tail '{"lines":200,"level":"warn"}'               # lines, level, scope, grep, since (30s, 10m, 2h, 1d or a date)
+bin/skiff logs.tail '{"scope":"cmd","grep":"tabs.create","since":"10m"}'
+bin/skiff logs.mark '{"note":"before repro"}'                    # a MARK line to bracket a repro
+```
+
+Settings has a **Reveal logs** action that opens the folder in Finder. To read the logs of the Mac enrolled in bb from another machine:
+
+```sh
+scripts/mac.sh logs 3000 'error|warn'   # last 3000 lines, case-insensitive extended regex (grep is optional)
+scripts/mac.sh logs-fetch ./skiff-logs  # whole skiff.log into ./skiff-logs/skiff.log (last 1.2 MB gzipped at most)
+```
+
 ## Customizing the shell
 
 ```sh

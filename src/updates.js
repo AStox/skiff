@@ -1,12 +1,20 @@
 'use strict'
 
+const log = require('./log').scope('updates')
+const quitLog = require('./log').scope('quit')
+
 const HOUR = 3600e3
 const bad = (message) => Object.assign(new Error(message), { code: 'bad_params' })
 
 // One shutdown for every way out: before-quit, updates.install. cleanup runs once; quitAndInstall must not hit a handler that blocks it.
 function createQuit({ cleanup, quit }) {
   let running = null, done = false, installing = false, quitting = false
-  const run = () => running ??= Promise.resolve().then(cleanup).catch(console.error).finally(() => { done = true })
+  const run = () => running ??= Promise.resolve().then(async () => {
+    const t = Date.now()
+    quitLog.info('quit cleanup start')
+    try { await cleanup() } catch (error) { quitLog.error('quit cleanup failed', { ms: Date.now() - t, err: error?.stack || String(error) }); throw error }
+    quitLog.info('quit cleanup done', { ms: Date.now() - t })
+  }).catch(console.error).finally(() => { done = true })
   return {
     run,
     beforeQuit(event) {
@@ -20,8 +28,9 @@ function createQuit({ cleanup, quit }) {
     async install(quitAndInstall) {
       if (installing) return
       installing = true
+      log.info('install requested')
       await run()
-      try { quitAndInstall() } catch (error) { installing = false; quit(); throw error }
+      try { quitAndInstall() } catch (error) { installing = false; log.error('quitAndInstall failed', { err: error?.stack || String(error) }); quit(); throw error }
     }
   }
 }
@@ -36,7 +45,20 @@ function createUpdates({ updater, supported, quit, onChange = () => {}, notify =
     onChange(state)
   }
   const ready = () => state?.status === 'ready'
-  const on = (event, fn) => updater.on(event, (...args) => { if (state) fn(...args) })
+  let step = -1
+  const on = (event, fn) => updater.on(event, (...args) => {
+    const [info] = args
+    if (event === 'download-progress') {
+      const percent = Math.round(info?.percent ?? 0)
+      log.trace(event, { percent, bytesPerSecond: info?.bytesPerSecond })
+      if (Math.floor(percent / 10) !== step) { step = Math.floor(percent / 10); log.debug(event, { percent }) }
+    } else if (event === 'error') log.error('updater error', { err: info?.stack || String(info) })
+    else {
+      if (event === 'update-available') step = -1
+      log.info(event, event === 'update-available' || event === 'update-downloaded' ? { version: info?.version } : undefined)
+    }
+    if (state) fn(...args)
+  })
   on('checking-for-update', () => ready() || set({ status: 'checking' }))
   on('update-not-available', () => ready() || set({ status: 'idle' }))
   on('update-available', (info) => ready() && state.version === info?.version || set({ status: 'downloading', version: info?.version, percent: 0 }))
@@ -50,7 +72,9 @@ function createUpdates({ updater, supported, quit, onChange = () => {}, notify =
   async function check() {
     if (!state) throw bad('Updates are only available in the packaged macOS app')
     last = now()
-    try { await updater.checkForUpdates() } catch (error) { console.error('update check failed:', error); ready() || set({ status: 'error' }) }
+    const t = Date.now()
+    log.info('check start')
+    try { await updater.checkForUpdates(); log.info('check finish', { ms: Date.now() - t, status: state.status }) } catch (error) { log.error('check failed', { ms: Date.now() - t, err: error?.stack || String(error) }); console.error('update check failed:', error); ready() || set({ status: 'error' }) }
     return state
   }
   const checkIfStale = () => { if (state && now() - last > HOUR) return check() }

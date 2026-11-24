@@ -34,6 +34,12 @@ app.userAgentFallback = nativeUserAgent.replace(new RegExp(` (Electron|${app.get
 const compatibleUserAgent = app.userAgentFallback
 
 const dataDir = app.getPath('userData')
+const log = require('./log')
+const diag = require('./diagnostics')
+const logDir = process.env.SKIFF_DATA ? path.join(dataDir, 'logs') : app.getPath('logs')
+log.init({ dir: logDir })
+log.captureConsole()
+const logger = log.scope('main')
 const shellDir = path.join(dataDir, 'shell')
 const stateFile = path.join(dataDir, 'state.json')
 const faviconDir = path.join(dataDir, 'favicons')
@@ -213,7 +219,10 @@ function pushState() {
   components?.emit('state', snap)
 }
 
+const watchState = diag.stateWatcher(S.activeTab)
+
 function changed() {
+  watchState(state)
   save()
   if (installingShell) return
   syncView()
@@ -799,6 +808,7 @@ function notifyHostSettings({ owner, key, spaceId } = {}) {
 }
 
 async function replaceSurfaces({ roles = [], owner, action } = {}) {
+  logger.info('replace surfaces', { roles, owner, action })
   if (!win || installingShell) return
   const retiredOwners = new Set(action !== 'bind' && owner ? [owner] : [])
   notifyHostSettings({ owner })
@@ -1015,6 +1025,7 @@ function setWindowButtons(visible) {
 }
 
 function hideOverlay(name = 'main', refocus = true) {
+  logger.debug('hide overlay', { name })
   pageToolRequests.delete(name)
   const o = overlays.get(name)
   if (o) o.request = null
@@ -1474,6 +1485,10 @@ const settingsActions = {
       return { text: status === 'ready' ? `Skiff ${version} is ready.` : status === 'downloading' ? `Downloading Skiff ${version}...` : '', available: status === 'ready' }
     },
     run: () => updates.install()
+  },
+  revealLogs: {
+    status: () => ({ text: logDir, available: true }),
+    run: () => shell.openPath(logDir).then((failure) => { if (failure) throw new Error(failure) })
   }
 }
 
@@ -1718,6 +1733,9 @@ command('settings.catalog', 'Search core and owned component settings metadata; 
 command('settings.run', 'Run a settings action entry from settings.catalog (for example defaultBrowser) and return the refreshed entry', { id: string }, ['id'], (p) => settingsCatalog.run(p.id, settingsActions))
 command('updates.check', 'Check for a new Skiff version now; resolves with the update state (macOS packaged app only)', {}, [], () => updates.check())
 command('updates.install', 'Restart Skiff into a downloaded update: runs the normal shutdown cleanup and state flush once, then quits and relaunches (macOS packaged app only; refused unless state.update.status is ready)', {}, [], () => updates.install())
+command('logs.tail', 'Read the newest log lines as JSON lines, oldest first: lines (default 200, at most 5000), level (minimum: trace, debug, info, warn, error), scope (for example cmd, wc, tab, window, renderer, app, updates), grep (case-insensitive regex over the raw line), since (like 10m, 2h, 1d, or a date)', { lines: { type: 'integer' }, level: { enum: ['trace', 'debug', 'info', 'warn', 'error'] }, scope: string, grep: string, since: string }, [], async (p) => ({ path: log.current().path, lines: await log.current().tail(p) }))
+command('logs.path', 'Where the log files are: the folder, the current file and every existing file, newest first', {}, [], () => ({ dir: logDir, file: log.current().path, files: log.current().files() }))
+command('logs.mark', 'Write a MARK line with a note into the log, to bracket a repro', { note: string }, ['note'], (p) => { log.current().mark(p.note); return { ok: true } })
 command('grants.list', 'List scoped agent grants without credentials', {}, [], () => access.list())
 command('grants.issue', 'Approve explicit browser, customization, and component-tool scopes', { owner: string, sessionId: string, tabIds: strings, spaceIds: strings, read: boolean, mutate: boolean, commands: strings, tools: strings, components: strings }, ['owner'], (p) => access.issue(p))
 command('grants.revoke', 'Revoke a grant and its session credentials', { ...ids, owner: string, sessionId: string }, [], (p) => access.revoke(p))
@@ -1910,7 +1928,40 @@ function closePreview(pid) {
   })
 }
 
+function roleOf(wc) {
+  try {
+    if (!wc || wc.isDestroyed()) return 'destroyed'
+    if (wc === win?.webContents) return deskMode ? 'shell:desk' : 'shell'
+    const tab = tabOfContents(wc.id)
+    if (tab) return `${chatViews.has(views.get(tab)) ? 'chat' : 'tab'}:${tab}@${S.findTab(state, tab)?.sessionPartition || 'persist:main'}`
+    for (const [name, o] of overlays) if (o.host.webContents === wc) return `overlay:${name}`
+    for (const [id, view] of frames) if (view.webContents === wc) return `frame:${id}`
+    if (wc === agentWin?.webContents) return 'agent-window'
+    for (const rec of parked.values()) if (rec.win.webContents === wc) return 'shell:parked'
+    return wc.getType()
+  } catch { return 'unknown' }
+}
+
+function windowRole(w) {
+  if (w === win) return deskMode ? 'desk' : 'main'
+  if (w === agentWin) return 'agent'
+  for (const [name, o] of overlays) if (o.host === w) return `overlay:${name}`
+  return parkedWin(w) ? 'parked' : 'other'
+}
+
 async function call(method, params = {}, context = {}) {
+  const done = diag.commandLog(method, params, context, CODES)
+  try {
+    const result = await dispatch(method, params, context)
+    done(null, result)
+    return result
+  } catch (error) {
+    done(error)
+    throw error
+  }
+}
+
+async function dispatch(method, params, context) {
   if (previewMode && /^(?:components\.(?:apply|enable|revert|stage|create|bind|preview)|ui\.customize|ai\.|grants\.|sync\.|extensions\.|import\.|passwords\.|settings\.(?:set|run)$)/.test(method)) throw S.err('forbidden', 'Disposable previews cannot activate executable code or credentials')
   if (context.component && !context.hostManagement && /^(?:grants\.|sync\.|import\.|passwords\.|components\.(?:apply|enable|revert|bind|stage|create|remove|disable)|ui\.customize)/.test(method)) throw S.err('forbidden', 'This operation requires the explicitly granted host.manage capability')
   if (['components.apply', 'components.enable', 'components.revert'].includes(method)) {
@@ -1969,6 +2020,7 @@ function updateMenuItems() {
 }
 
 async function runGlobalShortcut(method, params) {
+  logger.info('global shortcut', { method })
   if (!win) await createWindow()
   const raised = await rpc('ui.raise')
   if (!raised.ok) return console.error(`Global shortcut could not raise Skiff: ${raised.error.message}`)
@@ -2106,6 +2158,7 @@ function startApi() {
   })
   server.listen(0, '127.0.0.1', () => {
     api = { port: server.address().port, token }
+    logger.info('api listening', { port: api.port })
     const file = path.join(dataDir, 'api.json')
     fs.rmSync(file, { force: true })
     fs.writeFileSync(file, JSON.stringify(api), { mode: 0o600 })
@@ -2117,6 +2170,10 @@ async function start() {
   state = loadState()
   // settings.set replaces this map; every session keeps the identity selected at startup.
   browserIdentity = state.settings.browserIdentity
+  {
+    const { shortcuts, globalShortcuts, ai: aiSettings, ...rest } = state.settings
+    logger.info('state loaded', { settings: { ...rest, shortcuts: Object.keys(shortcuts ?? {}), globalShortcuts: Object.keys(globalShortcuts ?? {}), ai: { agents: aiSettings?.agents?.map((agent) => agent.name), agent: aiSettings?.agent, model: aiSettings?.model, effort: aiSettings?.effort } }, tabs: state.tabs.length, spaces: state.spaces.length, safeMode, previewMode })
+  }
   const legacyShell = fs.existsSync(shellDir) ? shellDir : undefined
   access = createAccess({ state: () => state, changed, emit: pushAi, registry })
   transcripts = createTranscripts({ dir: path.join(dataDir, 'transcripts'), state: () => state, changed, emit: pushAi })
@@ -2187,7 +2244,7 @@ async function start() {
         return { ok: true, result: result ?? null }
       } catch (error) { return { ok: false, error: { code: error.code || 'forbidden', message: error.message } } }
     }
-    return rpc(method, params ?? undefined, { owner: source.owner, trusted: true })
+    return rpc(method, params ?? undefined, { owner: source.owner, trusted: true, surface: roleOf(e.sender) })
   })
   const pageTab = (e) => e.senderFrame && !e.senderFrame.parent && tabOfContents(e.sender.id)
   ipcMain.on('skiff:page-state', (e, payload) => {
@@ -2254,7 +2311,10 @@ const quitFlow = createQuit({
       }
     ].map((stop) => Promise.resolve().then(stop)))
     try { if (state) flush() }
-    finally { for (const result of results) if (result.status === 'rejected') console.error(result.reason) }
+    finally {
+      for (const result of results) if (result.status === 'rejected') console.error(result.reason)
+      await log.current()?.flush()
+    }
   }
 })
 
@@ -2285,6 +2345,9 @@ function startUpdates() {
 }
 
 app.on('login', createHttpAuth({ BrowserWindow, ipcMain, fallbackWindow: () => win }))
+
+diag.install({ electronApp: app, ipcMain, roleOf, windowRole })
+diag.startup({ electronApp: app, dataDir, logDir })
 
 if (app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => process.platform === 'darwin' || app.quit())
