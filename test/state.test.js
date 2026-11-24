@@ -305,6 +305,17 @@ test('closing a pinned or favorite tab keeps it and shows the most recent unpinn
   assert.equal(s.archive.length, 0)
 })
 
+test('closing the last ordinary tab never brings a favorite or pinned tab forward', () => {
+  const s = S.load()
+  const home = s.activeSpaceId
+  const [fav, pinned, tab] = ['fav', 'pinned', 'tab'].map((x) => S.createTab(s, { url: `${x}.example` }, 0))
+  S.setFavorite(s, { id: fav.id, favorite: true }, 0)
+  S.setPinned(s, { id: pinned.id, pinned: true }, 0)
+  S.activateTab(s, { id: tab.id }, 1)
+  assert.deepEqual(S.closeTab(s, {}, 2), { archived: tab.id })
+  assert.equal(s.activeTabBySpace[home], undefined)
+})
+
 test('moving spaces changes their order without moving tabs, sessions or the active selection', () => {
   const s = S.load()
   const home = s.spaces[0]

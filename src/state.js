@@ -238,7 +238,7 @@ function load(raw = {}) {
 
 function release(s, tab) {
   if (s.activeTabBySpace[tab.spaceId] !== tab.id) return
-  const list = visibleTabs(s, tab.spaceId).filter((t) => (!t.pinned || t === tab) && (!s.desktops || t.desktopId === tab.desktopId))
+  const list = visibleTabs(s, tab.spaceId).filter((t) => (!(t.pinned || t.favorite) || t === tab) && (!s.desktops || t.desktopId === tab.desktopId))
   // On the desk the window beneath comes forward, the opener first, so no other window changes place.
   const beneath = tab.desk && shownTabs(s, tab.spaceId).filter((t) => t !== tab && t.desk)
   const next = (beneath?.find((t) => t.id === tab.parentId) || beneath?.at(-1)) || list[list.indexOf(tab) + 1] || list[list.indexOf(tab) - 1]
