@@ -104,6 +104,9 @@ if (window === window.top && /^https?:$/.test(location.protocol)) {
     if (!target || path.some((el) => el.matches(INTERACTIVE) || el.isContentEditable || el.draggable)) return false
     return ['auto', 'default'].includes(getComputedStyle(target).cursor) && !overText(e.clientX, e.clientY) && !overScrollbar(target, e.clientX, e.clientY)
   }
+  // A window resized under a held press makes Chromium send moves with no button down; they are not a release.
+  let held = { at: 0, size: '' }
+  const sizeNow = () => `${innerWidth}x${innerHeight}`
   const send = (phase, x, y) => ipcRenderer.send('skiff:page-drag', phase, x, y)
   const stop = (e) => {
     e.preventDefault()
@@ -127,7 +130,8 @@ if (window === window.top && /^https?:$/.test(location.protocol)) {
   }, true)
   for (const type of ['pointermove', 'mousemove']) addEventListener(type, (e) => {
     if (!press || !e.isTrusted) return
-    if (!(e.buttons & 1)) return cancel()
+    if (!(e.buttons & 1)) return !press.started || (performance.now() - held.at < 250 && sizeNow() !== held.size) ? undefined : cancel()
+    held = { at: performance.now(), size: sizeNow() }
     press.firsts[type] ||= e
     if (type === 'pointermove') return press.started && stop(e)
     last = e

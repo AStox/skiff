@@ -1021,6 +1021,60 @@ test('desk.layouts names the window rects of the desk, desk.tile and the tiling 
   await expect.poll(async () => (await children(skiff)).find((c) => c.kind === 'page' && c.name === '/two')).toMatchObject(layouts.center)
 })
 
+test('dragging a window past the left, right or bottom desk edge shrinks it from that side, regrows it back to its start size, and stops at the smallest size', async ({ skiff }) => {
+  await switchWindow(skiff, deskShell)
+  const id = (await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })).id
+  const page = await skiff.page('/one')
+  await page.waitForLoadState()
+  const { deskSize: { width: W, height: H } } = await skiff.state()
+  const frame = await shellPage(skiff, `/frame.html?tab=${id}`)
+  await frame.waitForLoadState()
+  const { empty } = await spots(page)
+  const place = async (rect) => {
+    await skiff.rpc('desk.place', { id, ...rect })
+    await expect.poll(() => views(skiff).then((v) => v.find((x) => x.path === '/one'))).toMatchObject(rect)
+    await expect.poll(() => frame.evaluate(() => mine()?.rect)).toEqual(rect)
+  }
+  const rectOf = async () => { const { x, y, width, height } = (await tabOf(skiff, id)).desk; return { x, y, width, height } }
+  // A press on the page background, a move by each of the deltas in turn, and a release where the last one ends.
+  const drag = (...deltas) => {
+    let at = [...empty]
+    const steps = [['mouseDown', ...at]]
+    for (const [dx, dy] of deltas) {
+      for (let i = 1; i <= 4; i++) steps.push(['mouseMove', at[0] + dx * i / 4, at[1] + dy * i / 4])
+      at = [at[0] + dx, at[1] + dy]
+    }
+    steps.push(['mouseUp', ...at])
+    return pointer(skiff, page.url(), steps)
+  }
+  const start = { x: 300, y: 200, width: 700, height: 500 }
+  // 100px past the left edge: the left edge stays on it, the right one follows the pointer.
+  await place(start)
+  await drag([-400, 0])
+  await expect.poll(rectOf).toEqual({ x: 0, y: 200, width: 600, height: 500 })
+  // Back the other way it grows again, never past its start size, and then moves.
+  await place(start)
+  await drag([-400, 0], [250, 0])
+  await expect.poll(rectOf).toEqual({ x: 150, y: 200, width: 700, height: 500 })
+  // The right edge.
+  await place(start)
+  await drag([W - 900, 0])
+  await expect.poll(rectOf).toEqual({ x: W - 600, y: 200, width: 600, height: 500 })
+  // The bottom edge.
+  await place(start)
+  await drag([0, H - 600])
+  await expect.poll(rectOf).toEqual({ x: 300, y: H - 400, width: 700, height: 400 })
+  // The top stays a limit, the ear's: the frame's top, 26px above the page, stops at the desk's edge and the window keeps its size.
+  await place(start)
+  await drag([0, -274])
+  await expect.poll(rectOf).toEqual({ x: 300, y: 26, width: 700, height: 500 })
+  // However far, a window stops at the smallest size, 340 wide.
+  const narrow = { x: 100, y: 200, width: 470, height: 500 }
+  await place(narrow)
+  await drag([-300, 0])
+  await expect.poll(rectOf).toEqual({ x: 0, y: 200, width: 340, height: 500 })
+})
+
 test('a new desk window goes where its host was last put, else into the largest free part of the desk', async ({ skiff }) => {
   await switchWindow(skiff, deskShell)
   await inertShell(skiff, '')
@@ -1227,6 +1281,26 @@ test.describe('layer panel and Buoy', () => {
       await buoy.keyboard.press('ArrowUp')
       expect(await where(), `ArrowUp to ${i}`).toEqual({ at: i, inView: true, count: first.count })
     }
+  })
+
+  test('a window created while the card is open is placed clear of it', async ({ skiff }) => {
+    await switchWindow(skiff, deskShell)
+    const buoy = await shellPage(skiff, '/buoy.html')
+    await expect.poll(() => isHome(buoy)).toBe(true)
+    await buoy.locator('#buoy-main').click()
+    await expect.poll(() => isOpen(buoy)).toBe(true)
+    const card = await buoy.evaluate(() => cardRect())
+    await expect.poll(async () => JSON.stringify((await skiff.state()).deskAvoid)).toBe(JSON.stringify(card))
+    const touches = (r) => r.x < card.x + card.width && card.x < r.x + r.width && r.y - 30 < card.y + card.height && card.y < r.y + r.height
+    for (const name of ['a', 'b']) {
+      const id = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/${name}`, activate: name === 'a' })).id
+      const desk = (await tabOf(skiff, id)).desk
+      expect(touches(desk), `${name} ${JSON.stringify(desk)} under ${JSON.stringify(card)}`).toBe(false)
+    }
+    // Closed, the card no longer matters.
+    await buoy.keyboard.press('Escape')
+    await expect.poll(() => isHome(buoy)).toBe(true)
+    await expect.poll(async () => (await skiff.state()).deskAvoid).toBeUndefined()
   })
 
   test('every trigger that opened the panel or the bar opens the card in its own state, or moves an open card there', async ({ skiff }) => {

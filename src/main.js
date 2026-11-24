@@ -109,7 +109,7 @@ const agentViews = new WeakSet()
 let agentWin = null
 const PARKED = { x: 0, y: 0, width: 1280, height: 800 }
 let popupBounds = null
-const noDesk = () => ({ hit: [], capture: false, preview: null, animate: true, only: null })
+const noDesk = () => ({ hit: [], capture: false, preview: null, animate: true, only: null, avoid: null })
 let desk = noDesk()
 let ignoring = false
 let pointerTimer = null
@@ -552,9 +552,12 @@ function syncView() {
     const [width, height] = win.getContentSize()
     state.deskSize = { width: width / zoom, height: height / zoom }
     state.deskTop = frameSpec?.top || 0
+    if (desk.avoid) state.deskAvoid = desk.avoid
+    else delete state.deskAvoid
   } else {
     delete state.deskSize
     delete state.deskTop
+    delete state.deskAvoid
   }
   const switched = deskMode && laidOutSpace !== null && laidOutSpace !== state.activeSpaceId
   const order = (id) => state.spaces.findIndex((x) => x.id === id)
@@ -1502,7 +1505,7 @@ def('ui.setPageBounds', '{x, y, width, height, radius?}', 'Shell only: where the
   syncView()
   return null
 })
-def('ui.setDesk', '{hit?, capture?, preview?, animate?, only?}', "Desk shells only, not saved: hit lists the shell's own clickable rectangles {x, y, width, height} in shell CSS pixels; capture: true keeps every click in Skiff during a drag or resize; preview {id, x, y, width, height} draws that tab (and its frame) there at once without saving it, null clears it; animate: false switches spaces without sliding the windows, as reduced motion in the system settings does; only [tabIds] shows just those windows of the active space, the active tab joining them, and leaves every other window loaded but off the desk and out of the way of clicks, until null, a space switch or the last of them closing or hiding (state.deskOnly holds the set); each field given replaces its last value", (p) => {
+def('ui.setDesk', '{hit?, capture?, preview?, animate?, only?, avoid?}', "Desk shells only, not saved: avoid {x, y, width, height} (null clears it) is the open Buoy card, which a new window is placed clear of (state.deskAvoid); hit lists the shell's own clickable rectangles {x, y, width, height} in shell CSS pixels; capture: true keeps every click in Skiff during a drag or resize; preview {id, x, y, width, height} draws that tab (and its frame) there at once without saving it, null clears it; animate: false switches spaces without sliding the windows, as reduced motion in the system settings does; only [tabIds] shows just those windows of the active space, the active tab joining them, and leaves every other window loaded but off the desk and out of the way of clicks, until null, a space switch or the last of them closing or hiding (state.deskOnly holds the set); each field given replaces its last value", (p) => {
   const next = {}
   if (p.hit !== undefined) {
     if (!Array.isArray(p.hit)) throw S.err('bad_params', 'hit must be a list of {x, y, width, height}')
@@ -1513,6 +1516,7 @@ def('ui.setDesk', '{hit?, capture?, preview?, animate?, only?}', "Desk shells on
     if (typeof p[key] !== 'boolean') throw S.err('bad_params', `${key} must be true or false`)
     next[key] = p[key]
   }
+  if (p.avoid !== undefined) next.avoid = p.avoid === null ? null : cssRect(p.avoid)
   if (p.preview !== undefined) next.preview = p.preview === null ? null : { ...cssRect(p.preview), id: S.getTab(state, p.preview.id).id }
   if (p.only !== undefined) {
     if (p.only !== null && !(Array.isArray(p.only) && p.only.length)) throw S.err('bad_params', 'only must be a non-empty list of tab ids or null')

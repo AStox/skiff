@@ -875,6 +875,31 @@ test('a new desk window goes to the largest free part of the desk, else to the c
   assert.equal(S.createTab(t, { url: 'https://o.example/' }, 1).desk, undefined)
 })
 
+test('a new desk window keeps clear of the open Buoy card', () => {
+  const s = onDesk()
+  const touches = (r, c) => r.x < c.x + c.width && c.x < r.x + r.width && r.y < c.y + c.height && c.y < r.y + r.height
+  // 1000 by 800 desk with the card in the middle: the cascade would sit under it.
+  const card = { x: 220, y: 240, width: 560, height: 320 }
+  s.deskAvoid = card
+  const a = S.createTab(s, { url: 'https://a.example/' }, 1)
+  assert.equal(touches(a.desk, card), false)
+  assert.ok(a.desk.width >= 240 && a.desk.height >= 160)
+  assert.ok(a.desk.x >= 0 && a.desk.y >= 0 && a.desk.x + a.desk.width <= 1000 && a.desk.y + a.desk.height <= 800)
+  // A host's remembered rect under the card is not reused.
+  s.deskHosts['b.example'] = { x: 300, y: 300, width: 400, height: 300 }
+  const b = S.createTab(s, { url: 'https://b.example/' }, 1)
+  assert.equal(touches(b.desk, card), false)
+  // A free rect elsewhere is still taken as is.
+  s.deskHosts['c.example'] = { x: 20, y: 100, width: 150, height: 300 }
+  s.deskHosts['d.example'] = { x: 800, y: 60, width: 190, height: 200 }
+  assert.deepEqual(S.createTab(s, { url: 'https://d.example/' }, 1).desk, { x: 800, y: 60, width: 190, height: 200, z: 3 })
+  // Without a card, the cascade as before; no card either once the state has none.
+  delete s.deskAvoid
+  const e = S.createTab(onDesk(), { url: 'https://e.example/' }, 1)
+  assert.deepEqual(e.desk, { ...S.deskLayouts(onDesk()).fill, z: 1 })
+  assert.equal('deskAvoid' in S.persistable({ ...s, deskAvoid: card }), false)
+})
+
 test('a new desk window of a host takes the last rect used for it, 28px down and right while that one is showing', () => {
   const s = onDesk()
   const a = S.createTab(s, { url: 'https://reddit.com/r/one' }, 1)

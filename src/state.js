@@ -732,7 +732,7 @@ function openIncognito(s) {
 function persistable(s) {
   const gone = new Set(s.spaces.filter((x) => x.incognito).map((x) => x.id))
   const keep = (map) => Object.fromEntries(Object.entries(map).filter(([key]) => !gone.has(key.split('/')[0])))
-  const { deskSize, deskTop, desktops, agentTabs, peek, userPeek, ...rest } = s
+  const { deskSize, deskTop, deskAvoid, desktops, agentTabs, peek, userPeek, ...rest } = s
   return { ...rest, spaces: s.spaces.filter((x) => !x.incognito), tabs: s.tabs.filter((t) => !gone.has(t.spaceId) && !t.userPeek), folders: s.folders.filter((f) => !gone.has(f.spaceId)), splitBySpace: keep(s.splitBySpace), activeSpaceId: normalSpace(s).id, activeTabBySpace: keep(s.activeTabBySpace), collapsed: keep(s.collapsed) }
 }
 
@@ -1068,7 +1068,27 @@ function largestGap(W, H, rects) {
 }
 
 // A new window goes where its host's windows were last put (28px down and right of one showing there), else into the largest free part of the desk, else to the cascade.
+// s.deskAvoid, the open Buoy card, is never covered when any part of the desk beside it can hold a window.
 function newDesk(s, tab) {
+  const rect = placeNew(s, tab)
+  const avoid = s.deskAvoid
+  if (!avoid || !meets({ ...rect, y: rect.y - (s.deskTop || 0), height: rect.height + (s.deskTop || 0) }, avoid)) return rect
+  const { width: W, height: H, top: T } = deskOf(s)
+  const others = shownTabs(s, tab.spaceId).filter((t) => t !== tab).map((t) => t.desk || defaultDesk(s, t))
+  const framed = (r) => ({ x: r.x, y: r.y - T, width: r.width, height: r.height + T })
+  for (const rects of [[...others.map(framed), avoid], [avoid]]) {
+    const gap = largestGap(W, H, rects)
+    if (gap && gap.width - 2 * MARGIN >= 240 && gap.height - 2 * MARGIN - T >= 160) {
+      const width = Math.min(rect.width, gap.width - 2 * MARGIN)
+      const height = Math.min(rect.height, gap.height - 2 * MARGIN - T)
+      return { x: Math.round(gap.x + (gap.width - width) / 2), y: Math.round(gap.y + T + (gap.height - T - height) / 2), width, height }
+    }
+  }
+  return rect
+}
+const meets = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+
+function placeNew(s, tab) {
   const { width: W, height: H, top: T } = deskOf(s)
   const others = shownTabs(s, tab.spaceId).filter((t) => t !== tab).map((t) => t.desk || defaultDesk(s, t))
   const last = s.deskHosts[hostOf(tab.url)]

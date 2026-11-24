@@ -206,6 +206,19 @@ function start(e, kind) {
   e.currentTarget.setPointerCapture(e.pointerId)
 }
 
+// Past the left, right or bottom desk edge the window keeps that edge on it and loses the rest, down to the smallest size (or its start size if smaller); back again it regrows to at most its start size.
+// The top stays a limit (the ear's), the edge a drag goes to to tile.
+function shrunkAtEdges(f, st, s) {
+  const minW = Math.min(MIN.w, s.w, st.w)
+  const minH = Math.min(MIN.h + EAR, s.h, st.h)
+  let { x, y, w, h } = f
+  if (x < 0) { w = Math.max(minW, Math.min(st.w, x + w)); x = 0 }
+  else if (x + w > s.w) { x = Math.min(x, s.w - minW); w = Math.max(minW, Math.min(st.w, s.w - x)) }
+  if (y < 0) y = 0
+  else if (y + h > s.h) { y = Math.min(y, s.h - minH); h = Math.max(minH, Math.min(st.h, s.h - y)) }
+  return { x, y, w, h }
+}
+
 function step(ev) {
   const g = gesture
   if (!g) return
@@ -219,13 +232,16 @@ function step(ev) {
   let guides
   if (g.kind === 'move') {
     ;({ rect: f, guides } = snap({ ...st, x: st.x + dx, y: st.y + dy }, g.others, 'move'))
-    f.x = clamp(f.x, 0, Math.max(0, s.w - f.w))
-    f.y = clamp(f.y, 0, Math.max(0, s.h - f.h))
     const p = { x: g.at0.x + dx, y: g.at0.y + dy }
     g.over = overlapsRect(p, g.buoy)
     const zone = g.over ? null : zoneAt(p)
     g.cell = g.over ? null : stripStep(g, p, zone === 'strip')
     g.zone = g.cell || zone === 'strip' ? null : zone
+    // Going to tile or hide it, the window is not shrunk on the way.
+    if (g.over || g.cell || zone) {
+      f.x = clamp(f.x, 0, Math.max(0, s.w - f.w))
+      f.y = clamp(f.y, 0, Math.max(0, s.h - f.h))
+    } else f = shrunkAtEdges(f, st, s)
   } else {
     const e = g.kind
     const min = { w: Math.min(MIN.w, s.w), h: Math.min(MIN.h, s.h - EAR) + EAR }

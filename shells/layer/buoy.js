@@ -114,8 +114,18 @@ function fit() {
 }
 
 const cardRect = () => ({ x: at.x, y: at.y, width: at.width, height: card.offsetHeight })
+// New windows are placed clear of the open card.
+let avoided = ''
+function syncAvoid() {
+  const avoid = open && at ? cardRect() : null
+  const key = JSON.stringify(avoid)
+  if (key === avoided) return
+  avoided = key
+  skiff.call('ui.setDesk', { avoid }).catch(() => {})
+}
 function sync(r = buoyRect(state, place)) {
   const { width, height } = deskSize(state)
+  syncAvoid()
   // The import dialog is modal over the whole desk.
   const hit = [open ? (importer ? { x: 0, y: 0, width, height } : cardRect()) : r]
   const key = JSON.stringify([width, height, hit])
@@ -256,6 +266,7 @@ function openCard(mode = 'new') {
   openBar(mode)
   const height = card.offsetHeight
   at = { x: Math.round((W - width) / 2), y: Math.round((H - height) / 2), width }
+  syncAvoid()
   const from = pill.getBoundingClientRect()
   const dot = corner(card.querySelector('.palette-field .space-dot'))
   renderPill()
@@ -288,6 +299,7 @@ function openCard(mode = 'new') {
 function closeCard(back = true) {
   if (!open) return
   open = false
+  syncAvoid()
   closing = true
   clearTimeout(settling)
   settling = null
