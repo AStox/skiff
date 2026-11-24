@@ -20,6 +20,8 @@ const test = base.extend({
     fs.mkdirSync(data)
     fs.mkdirSync(path.join(home, 'app-data'))
     fs.writeFileSync(path.join(root, '.skiff-visual-fixture'), 'owned by this test')
+    // Specs assume the plain shell; fixtureOptions.shell picks another, and null leaves the profile fresh.
+    if (fixtureOptions.shell !== null) fs.writeFileSync(path.join(data, 'state.json'), JSON.stringify({ settings: { shell: fixtureOptions.shell ?? 'default' } }))
     // A supplied source-only legacy shell exercises the same startup migration
     // as an installed custom UI, inside this fixture's disposable profile.
     if (fixtureOptions.legacyShell) fs.cpSync(fixtureOptions.legacyShell, path.join(data, 'shell'), { recursive: true })

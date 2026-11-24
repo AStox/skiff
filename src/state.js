@@ -174,7 +174,7 @@ function load(raw = {}) {
     activeTabBySpace: { ...raw.activeTabBySpace },
     archive: Array.isArray(raw.archive) ? raw.archive : [],
     collapsed: { ...raw.collapsed },
-    settings: { autoArchiveHours: 12, searchUrl: GOOGLE, shell: 'default', historyRetentionDays: 90, downloadAskWhere: true, downloadDirectory: '', memorySaver: false, memorySaverMinutes: 30, transcriptRecovery: false, transcriptRetentionDays: 30, ...raw.settings, browserIdentity: loadBrowserIdentity(raw.settings?.browserIdentity), ai: loadAi(raw.settings?.ai), shortcuts: { ...SHORTCUTS, ...raw.settings?.shortcuts }, globalShortcuts: { ...GLOBAL_SHORTCUTS, ...raw.settings?.globalShortcuts } },
+    settings: { autoArchiveHours: 12, searchUrl: GOOGLE, shell: 'layer', historyRetentionDays: 90, downloadAskWhere: true, downloadDirectory: '', memorySaver: false, memorySaverMinutes: 30, transcriptRecovery: false, transcriptRetentionDays: 30, ...raw.settings, browserIdentity: loadBrowserIdentity(raw.settings?.browserIdentity), ai: loadAi(raw.settings?.ai), shortcuts: { ...SHORTCUTS, ...raw.settings?.shortcuts }, globalShortcuts: { ...GLOBAL_SHORTCUTS, ...raw.settings?.globalShortcuts } },
     window: { width: 1280, height: 800, ...raw.window },
     deskHosts: Object.fromEntries(Object.entries(isObject(raw.deskHosts) ? raw.deskHosts : {}).map(([host, rect]) => [host, deskRect(rect)]).filter(([, rect]) => rect).slice(-HOSTS))
   }

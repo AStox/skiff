@@ -246,6 +246,13 @@ test('resolveInput turns addresses into URLs and everything else into a search',
   assert.equal(S.resolveInput('skiff', search), 'https://www.google.com/search?q=skiff')
 })
 
+test('a profile with no saved shell starts on Layer and one that saved a shell keeps it', () => {
+  assert.equal(S.load().settings.shell, 'layer')
+  assert.equal(S.load({ settings: { searchUrl: 'https://kagi.com/search?q=%s' } }).settings.shell, 'layer')
+  assert.equal(S.load({ settings: { shell: 'default' } }).settings.shell, 'default')
+  assert.equal(S.load({ settings: { shell: 'quiet' } }).settings.shell, 'quiet')
+})
+
 test('search defaults to Google and an old saved DuckDuckGo default moves to Google once', () => {
   const ddg = 'https://duckduckgo.com/?q=%s'
   const google = 'https://www.google.com/search?q=%s'

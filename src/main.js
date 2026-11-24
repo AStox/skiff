@@ -72,7 +72,7 @@ app.on('open-url', (event, url) => {
   else pendingUrls.push(url)
 })
 const SPARKLE = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#8b5cf6" d="M8 0c.6 4.2 3.8 7.4 8 8-4.2.6-7.4 3.8-8 8-.6-4.2-3.8-7.4-8-8 4.2-.6 7.4-3.8 8-8z"/></svg>'
-const shells = ['default', ...(fs.existsSync(bundledShells) ? fs.readdirSync(bundledShells).filter((name) => fs.existsSync(path.join(bundledShells, name, 'index.html'))).sort() : [])]
+const shells = ['layer', 'default', ...(fs.existsSync(bundledShells) ? fs.readdirSync(bundledShells).filter((name) => name !== 'layer' && fs.existsSync(path.join(bundledShells, name, 'index.html'))).sort() : [])]
 const CODES = ['unknown_method', 'bad_params', 'not_found', 'forbidden', 'unauthorized', 'cancelled', 'timeout', 'component_error', 'command_collision', 'bad_schema', 'bad_result']
 
 let state
@@ -1658,10 +1658,10 @@ def('ui.reloadShell', '', 'Reload the shell from disk', () => {
   reloadShell()
   return null
 })
-def('ui.resetShell', '', 'Back up the live shell and restore the default shell', async () => {
+def('ui.resetShell', '', 'Back up the live shell and restore Layer, the default shell', async () => {
   const backup = fs.existsSync(shellDir) ? path.join(dataDir, `shell.bak-${Date.now()}`) : null
   if (backup) fs.renameSync(shellDir, backup)
-  await installShell('default')
+  await installShell('layer')
   return { backup }
 })
 def('ui.setShell', '{name}', 'Replace the live shell while preserving native pages and custom role bindings', async (p) => {
@@ -2069,7 +2069,7 @@ function buildMenu() {
       { label: 'Make Interface Smaller', click: () => zoomShell(win.webContents.getZoomLevel() - 0.5) },
       { label: 'Interface Actual Size', click: () => zoomShell(0) }
     ] },
-    { label: 'Shell', submenu: shells.map((name) => ({ label: name, type: 'radio', checked: name === state.settings.shell, click: () => rpc('ui.setShell', { name }) })) },
+    { label: 'Shell', submenu: shells.map((name) => ({ label: name === 'layer' ? 'layer (default)' : name === 'default' ? 'plain' : name, type: 'radio', checked: name === state.settings.shell, click: () => rpc('ui.setShell', { name }) })) },
     { label: 'Recovery', submenu: [
       { label: 'Use Safe Mode (keep tabs)', click: () => rpc('ui.safeMode', {}, { trusted: true }) },
       { label: 'Manage Components', click: () => showHostSurface(path.join(toolsDir, 'index.html'), { query: { section: 'components' } }) },

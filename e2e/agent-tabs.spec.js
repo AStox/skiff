@@ -291,6 +291,7 @@ test('without a debugger attached, a hidden agent page keeps its timers and anim
   const data = path.join(root, 'data')
   for (const dir of [home, data, path.join(home, 'app-data')]) fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(path.join(root, '.skiff-visual-fixture'), 'owned by this test')
+  fs.writeFileSync(path.join(data, 'state.json'), JSON.stringify({ settings: { shell: 'default' } }))
   writeArc(home, skiff.origin)
   const port = new URL(skiff.origin).port
   const env = { ...process.env, HOME: home, USERPROFILE: home, SKIFF_DATA: data, SKIFF_VISUAL_ROOT: root, SKIFF_VISUAL_PORT: port, SKIFF_VISUAL_CONSENT: '0', SKIFF_VISUAL_THEME: 'light', SKIFF_VISUAL_EXTENSIONS: '0', SKIFF_BUILTIN_EXTENSIONS: '[]', XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache') }
