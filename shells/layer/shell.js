@@ -7,7 +7,7 @@ const clock = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-dig
 const weekday = new Intl.DateTimeFormat('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
 const calendar = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' })
 
-const ui = { archive: false, agentList: false, settings: false, renaming: false, imported: '', filling: false, quick: [], quickKey: '', quickRequest: 0, extensions: [], agents: [], agentForm: null, agentError: '', warmed: '' }
+const ui = { archive: false, settings: false, renaming: false, imported: '', filling: false, quick: [], quickKey: '', quickRequest: 0, extensions: [], agents: [], agentForm: null, agentError: '', warmed: '' }
 const drawn = {}
 const importDialog = $('arc-import')
 let importer = null
@@ -126,7 +126,7 @@ function tabRow(tab, current, depth) {
     onkeydown: (event) => moveTabWithKeyboard(event, tab)
   },
     h('button', { class: 'row-main', title: `${tab.url}\n${MOVE_HINT}`, 'aria-keyshortcuts': MOVE_KEYS, 'aria-current': current ? 'true' : null, onclick: () => show(tab) },
-      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), tab.bucket === 'unread' && h('span', { class: 'sr-only' }, ', unread'), tab.bucket === 'progress' && h('span', { class: 'spinner', 'aria-hidden': 'true' }), when(tab) && h('span', { class: 'when' }, when(tab))),
+      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), tab.bucket === 'unread' && h('span', { class: 'sr-only' }, ', unread'), tab.bucket === 'progress' && h('span', { class: 'spinner', 'aria-hidden': 'true' }), agentBadge(tab), agentDot(tab), when(tab) && h('span', { class: 'when' }, when(tab))),
     !tab.pinned && eye(tab, shown),
     h('button', { class: 'icon-btn reveal', title: 'Close tab', 'aria-label': 'Close tab', onclick: () => call('tabs.close', { id: tab.id }) }, icon('x')))
   if (depth != null) row.style.setProperty('--depth', String(Math.min(depth, 6)))
@@ -185,7 +185,7 @@ function favoriteTile(tab, current) {
     class: `tile${current ? ' current' : ''}${tab.loading ? ' loading' : ''}`, 'data-tab-id': tab.id, draggable: 'true',
     ondragstart: (event) => startDrag(event, 'tab', tab.id),
     onkeydown: (event) => moveTabWithKeyboard(event, tab)
-  }, h('button', { class: 'tile-main', title: `${tab.title || tab.url}\n${MOVE_HINT}`, 'aria-label': tab.title || tab.url, 'aria-keyshortcuts': MOVE_KEYS, 'aria-current': current ? 'true' : null, onclick: () => show(tab) }, favicon(tab, icon('globe'))))
+  }, h('button', { class: 'tile-main', title: `${tab.title || tab.url}\n${MOVE_HINT}`, 'aria-label': tab.title || tab.url, 'aria-keyshortcuts': MOVE_KEYS, 'aria-current': current ? 'true' : null, onclick: () => show(tab) }, favicon(tab, icon('globe')), agentDot(tab)))
 }
 
 function archiveRows() {
@@ -197,22 +197,6 @@ function archiveRows() {
       h('button', { class: 'row-main', title: entry.url, onclick: () => restore(entry) },
         favicon(entry), h('span', { class: 'label' }, entry.title || entry.url), h('span', { class: 'when' }, ago(entry.archivedAt)))))
   ]
-}
-
-// Every space's agent tabs by agent; picking one peeks at it over the current space.
-function agentTabRows() {
-  if (!state.agentTabs.length) return h('li', { class: 'hint archive-empty' }, h('strong', {}, 'No agent tabs'), h('p', {}, 'Tabs your agents open in the background appear here.'))
-  const spaceName = (id) => state.spaces.find((s) => s.id === id)?.name || ''
-  return [...new Set(state.agentTabs.map((t) => t.agent))].map((agent) => {
-    const tabs = state.agentTabs.filter((t) => t.agent === agent)
-    return [
-      h('li', { class: 'list-head' }, h('span', { class: 'label' }, `${agent} · ${tabCount(tabs.length)}`)),
-      tabs.map((tab) => h('li', { class: `row${tab.id === state.peek ? ' current' : ''}${tab.loading ? ' loading' : ''}`, 'data-tab-id': tab.id },
-        h('button', { class: 'row-main', title: tab.url, 'aria-current': tab.id === state.peek ? 'true' : null, onclick: () => show(tab) },
-          favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), h('span', { class: 'when' }, spaceName(tab.spaceId))),
-        h('button', { class: 'icon-btn reveal', title: 'Close tab', 'aria-label': 'Close tab', onclick: () => call('tabs.close', { id: tab.id }) }, icon('x'))))
-    ]
-  })
 }
 
 async function restore(entry) {
@@ -788,11 +772,11 @@ function showAgents() {
 }
 
 function spaceHead(space, count, windows) {
-  const plain = !ui.settings && !ui.archive && !ui.agentList
-  const dot = !ui.archive && !ui.agentList && h('span', { class: 'space-dot', 'aria-hidden': 'true' })
+  const plain = !ui.settings && !ui.archive
+  const dot = !ui.archive && h('span', { class: 'space-dot', 'aria-hidden': 'true' })
   if (!ui.renaming) return [
     dot,
-    h('h1', { title: space.name, ondblclick: () => { if (plain && !space.incognito) { ui.renaming = true; renderPanel() } } }, ui.settings ? 'Settings' : ui.archive ? 'Archive' : ui.agentList ? 'Agents' : space.name),
+    h('h1', { title: space.name, ondblclick: () => { if (plain && !space.incognito) { ui.renaming = true; renderPanel() } } }, ui.settings ? 'Settings' : ui.archive ? 'Archive' : space.name),
     plain && !space.incognito && h('button', { id: 'rename-space', class: 'icon-btn', title: 'Rename space', 'aria-label': 'Rename space', onclick: () => { ui.renaming = true; renderPanel() } }, icon('edit')),
     plain && space.incognito && h('button', { id: 'close-incognito', class: 'icon-btn', title: 'Close Incognito', 'aria-label': 'Close Incognito', onclick: () => call('spaces.remove', { id: space.id }) }, icon('x')),
     plain && h('span', { id: 'space-count', class: 'count' }, `${windowCount(windows)}, ${tabCount(count)}`),
@@ -1019,7 +1003,7 @@ function tabTarget(event) {
     return id === tab.spaceId || isIncognito(id) !== isIncognito(tab.spaceId) ? null : { space: id }
   }
   const box = event.target.closest('#favorites, #list')
-  if (!box || box.hidden || ui.archive || ui.agentList || ui.settings) return null
+  if (!box || box.hidden || ui.archive || ui.settings) return null
   const { clientX: x, clientY: y } = event
   const grid = box.id === 'favorites'
   const distance = (el) => {
@@ -1204,7 +1188,7 @@ function renderPanel() {
   const space = activeSpace()
   if (space.incognito) ui.renaming = false
   const tab = activeTab()
-  const windows = deskWindows(state).filter((w) => !w.tab.agent).length
+  const windows = deskWindows(state).length
   const tabs = state.tabs.filter((t) => !t.favorite && t.spaceId === space.id)
   const favorites = state.tabs.filter((t) => t.favorite && t.spaceId === space.id)
 
@@ -1214,19 +1198,16 @@ function renderPanel() {
   $('reload').disabled = !tab
   $('archive-toggle').setAttribute('aria-pressed', String(ui.archive))
   $('archive-count').textContent = state.archive.length ? String(state.archive.length) : ''
-  $('agents-toggle').hidden = !state.agentTabs.length && !ui.agentList
-  $('agents-toggle').setAttribute('aria-pressed', String(ui.agentList))
-  $('agents-count').textContent = state.agentTabs.length ? String(state.agentTabs.length) : ''
   $('settings-toggle').setAttribute('aria-pressed', String(ui.settings))
   $('panel').hidden = !ui.settings
   $('list').hidden = ui.settings
-  $('list').setAttribute('aria-label', ui.archive ? 'Archived tabs' : ui.agentList ? 'Agent tabs' : 'Tabs')
-  if (!holds) $('favorites').hidden = !favorites.length || ui.settings || ui.archive || ui.agentList
+  $('list').setAttribute('aria-label', ui.archive ? 'Archived tabs' : 'Tabs')
+  if (!holds) $('favorites').hidden = !favorites.length || ui.settings || ui.archive
   $('favorites').classList.toggle('spread', favorites.length >= 5)
 
   if (!holds) section('favorites', [favorites, tab?.id], () => favorites.map((t) => favoriteTile(t, t.id === tab?.id)))
   const plain = state.tabs.filter((t) => !t.favorite && !t.pinned && t.spaceId === space.id).length
-  section('space-head', [space.id, space.name, plain, windows, ui.renaming, ui.settings, ui.archive, ui.agentList], () => spaceHead(space, plain, windows))
+  section('space-head', [space.id, space.name, plain, windows, ui.renaming, ui.settings, ui.archive], () => spaceHead(space, plain, windows))
   section('dots', state.spaces.map((s) => [s.id, s.name, s.color, s.incognito]), () => state.spaces.map((s) => spaceDot(s, s.id === space.id)))
   if (drawn.activeSpaceId !== space.id) {
     const from = state.spaces.findIndex((s) => s.id === drawn.activeSpaceId)
@@ -1246,9 +1227,9 @@ function renderPanel() {
   if (ui.settings) warmDefault()
   if (!holds) {
     let was
-    const rebuilt = section('list', ui.archive ? [state.archive] : ui.agentList ? ['agents', state.agentTabs, state.peek, state.spaces.map((s) => s.name)] : [tabs, tab?.id, state.collapsed, state.deskSize], () => {
+    const rebuilt = section('list', ui.archive ? [state.archive] : [tabs, tab?.id, state.collapsed, state.deskSize], () => {
       was = tops()
-      return ui.archive ? archiveRows() : ui.agentList ? agentTabRows() : [
+      return ui.archive ? archiveRows() : [
         tabRows(space, tabs, (t, depth) => tabRow(t, t.id === tab?.id, depth)),
         h('li', { class: 'row quiet', 'data-new-tab': true }, h('button', { id: 'new-tab', class: 'row-main', onclick: () => bar.focus() }, icon('plus'), h('span', { class: 'label' }, 'New tab')))
       ]
@@ -1269,17 +1250,6 @@ $('reload').addEventListener('click', () => call('tabs.reload'))
 function toggleArchive() {
   if (importer || confirmation) return
   ui.archive = !ui.archive
-  ui.agentList = false
-  ui.settings = false
-  ui.renaming = false
-  ui.imported = ''
-  renderPanel()
-}
-
-function toggleAgents() {
-  if (importer || confirmation) return
-  ui.agentList = !ui.agentList
-  ui.archive = false
   ui.settings = false
   ui.renaming = false
   ui.imported = ''
@@ -1292,7 +1262,6 @@ function toggleSettings(data) {
   const agents = data?.section === 'agents'
   ui.settings = agents || !ui.settings
   ui.archive = false
-  ui.agentList = false
   ui.renaming = false
   renderPanel()
   if (!ui.settings) return
@@ -1301,13 +1270,11 @@ function toggleSettings(data) {
 }
 
 $('archive-toggle').addEventListener('click', toggleArchive)
-$('agents-toggle').addEventListener('click', toggleAgents)
 $('add-space').addEventListener('click', async () => {
   if (importer || confirmation) return
   const space = await call('spaces.create', { name: `Space ${state.spaces.length + 1}` })
   if (!space) return
   ui.archive = false
-  ui.agentList = false
   ui.settings = false
   ui.renaming = true
   call('spaces.activate', { id: space.id })
@@ -1336,7 +1303,7 @@ $('confirm-accept').addEventListener('click', async () => {
 function resetPanel() {
   if (importer || confirmation) return
   if (drag) endDrag()
-  Object.assign(ui, { archive: false, agentList: false, settings: false, renaming: false, imported: '' })
+  Object.assign(ui, { archive: false, settings: false, renaming: false, imported: '' })
   $('shell-error').hidden = true
   renderPanel()
 }
@@ -1416,7 +1383,7 @@ skiff.on('ai-agents', (next) => {
   if (ui.settings) renderPanel()
 })
 // A section of the panel's content shows only while the bar is empty, so a query is cleared.
-for (const [name, handler] of [['toggle-settings', toggleSettings], ['toggle-archive', toggleArchive], ['toggle-agents', toggleAgents], ['import-arc', importArc]]) {
+for (const [name, handler] of [['toggle-settings', toggleSettings], ['toggle-archive', toggleArchive], ['import-arc', importArc]]) {
   skiff.on(name, (data) => {
     if (open) {
       clearBar()

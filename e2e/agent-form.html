@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agent form</title>
+<style>body{margin:0;padding:60px 32px;font:16px system-ui;background:#fff;color:#111}label{display:block;margin:14px 0}input,textarea{display:block;width:360px;padding:8px;font:inherit}button{padding:8px 16px;font:inherit}#out{margin-top:20px;white-space:pre}</style>
+</head>
+<body>
+<h1>Query console</h1>
+<label>Query<input id="q" aria-label="Query"></label>
+<label>Notes<textarea id="n" aria-label="Notes"></textarea></label>
+<button id="run" type="button">Run Query</button>
+<div id="out"></div>
+<script>
+window.log = { clicks: [], keys: [] }
+const out = document.getElementById('out')
+document.getElementById('run').addEventListener('click', () => { out.textContent = `RAN: ${document.getElementById('q').value}` })
+document.addEventListener('mousedown', (e) => window.log.clicks.push({ target: e.target.id || e.target.tagName, trusted: e.isTrusted }))
+document.addEventListener('keydown', (e) => window.log.keys.push(`${e.metaKey ? 'Meta+' : ''}${e.key}`))
+</script>
+</body>
+</html>

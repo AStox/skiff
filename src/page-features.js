@@ -331,7 +331,7 @@ function createPageFeatures({ state, views, runtime, changed = () => {}, emit = 
     const reasons = []
     if (isShown(rec.view, tab)) { rec.lastShownAt = Date.now(); reasons.push('visible') }
     const state = currentState()
-    if (state.activeTabBySpace?.[state.activeSpaceId] === tab.id || state.peek === tab.id || state.userPeek === tab.id) reasons.push('selected')
+    if (state.activeTabBySpace?.[state.activeSpaceId] === tab.id || state.userPeek === tab.id) reasons.push('selected')
     if (tab.agent || tab.chat || tab.userPeek || S.isIncognito(state, tab.spaceId)) reasons.push('special-tab')
     if (live.lifecycle !== 'live' || rec.wc.isLoading()) reasons.push('loading')
     if (rec.pending.size || rec.reading || rec.article || rec.find.active) reasons.push('in-use')

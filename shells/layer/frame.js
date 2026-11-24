@@ -38,17 +38,17 @@ const sameRect = (a, b) => ['x', 'y', 'width', 'height'].every((k) => Math.abs(a
 
 function render() {
   const w = mine()
-  const tab = w?.tab || state?.tabs.find((t) => t.id === id) || state?.agentTabs?.find((t) => t.id === id)
+  const tab = w?.tab || state?.tabs.find((t) => t.id === id)
   if (!tab) return
   paintSpace(state)
   document.documentElement.classList.toggle('active', Boolean(w?.active))
   const title = earTitle(tab)
-  const key = JSON.stringify([title, tab.favicon, tab.url])
+  const key = JSON.stringify([title, tab.favicon, tab.url, tab.agent, tab.agentState])
   if (key !== painted) {
     painted = key
     $('ear').title = hostOf(tab.url) || title
     $('ear').setAttribute('aria-label', title)
-    $('ear-fav').replaceChildren(favicon(tab))
+    $('ear-fav').replaceChildren(...[favicon(tab), agentDot(tab)].filter(Boolean))
     $('ear-title').textContent = title
     $('ear-hide').setAttribute('aria-label', `Hide ${title}`)
     $('ear-close').setAttribute('aria-label', `Close ${title}`)

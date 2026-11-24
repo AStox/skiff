@@ -102,6 +102,18 @@ function favicon(tab, fallback = h('span', { class: 'favicon letter', 'aria-hidd
   return img
 }
 
+// A tab an agent drives or asks for: the agent's name and a dot, pulsing while it works, steady while it waits or asks, green when it is done.
+const AGENT_STATES = { working: 'working', idle: 'waiting', done: 'done', asking: 'asking for this tab' }
+const agentNameOf = (tab) => tab.agentRequest?.agent || tab.agent
+function agentDot(tab) {
+  const name = agentNameOf(tab)
+  if (!name) return null
+  const state = tab.agentRequest ? 'asking' : tab.agentState
+  const text = `${name}, ${AGENT_STATES[state] || state}`
+  return h('span', { class: 'agent-dot', 'data-state': state, role: 'img', 'aria-label': text, title: text })
+}
+const agentBadge = (tab) => (agentNameOf(tab) ? h('span', { class: 'agent-badge' }, tab.agentRequest ? `${agentNameOf(tab)} asks` : tab.agent) : null)
+
 /* ---------- the offer on a tab the bar just opened: do the other thing with the same text (tabs.reroute) ---------- */
 
 const OFFER_LIFE = 8000

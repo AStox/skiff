@@ -5,19 +5,30 @@ const fail = (message) => Object.assign(new Error(message), { code: 'forbidden' 
 const bad = (message) => Object.assign(new Error(message), { code: 'bad_params' })
 const aliases = {
   browser_list_tabs: 'tabs.list', browser_read_page: 'tabs.read', browser_open_tab: 'tabs.create',
-  browser_navigate: 'tabs.navigate', browser_activate_tab: 'tabs.activate', browser_close_tab: 'tabs.close'
+  browser_navigate: 'tabs.navigate', browser_activate_tab: 'tabs.activate', browser_close_tab: 'tabs.close',
+  browser_snapshot: 'tabs.snapshot', browser_click: 'tabs.click', browser_type: 'tabs.type', browser_press: 'tabs.press',
+  browser_scroll: 'tabs.scroll', browser_screenshot: 'tabs.screenshot', browser_wait: 'tabs.wait',
+  browser_request_tab: 'agent.requestTab', browser_finish: 'agent.finish'
 }
+// Commands that act as a named agent: a scoped grant always acts as its own agent, never one it names.
+const agentCommands = new Set(['tabs.snapshot', 'tabs.click', 'tabs.type', 'tabs.press', 'tabs.scroll', 'tabs.screenshot', 'tabs.wait', 'agent.requestTab', 'agent.finish'])
 const rules = {
   'tabs.list': 'list', 'tabs.read': 'read', 'tabs.capture': 'read',
   'tabs.create': 'create', 'tabs.navigate': 'mutate', 'tabs.activate': 'mutate',
-  'tabs.close': 'mutate', 'tabs.reload': 'mutate'
+  'tabs.close': 'mutate', 'tabs.reload': 'mutate',
+  ...Object.fromEntries([...agentCommands].map((command) => [command, 'mutate']))
 }
 const componentCommands = new Set(['components.list', 'components.inspect', 'components.source.read', 'components.source.write', 'components.check', 'components.preview', 'components.create', 'components.apply', 'components.enable', 'components.revert', 'components.bind'])
 const componentId = (id) => string(id) && /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/.test(id) && id !== 'core'
 const commandOf = (name) => Object.hasOwn(aliases, name) ? aliases[name] : name
 const string = (value) => typeof value === 'string' && value.length > 0 && value.length <= 200
 function scopedSchema(command, schema) {
-  if (!componentCommands.has(command) || !schema) return schema
+  if (!schema) return schema
+  if (agentCommands.has(command) || command === 'tabs.create') {
+    const { agent, ...properties } = schema.properties || {}
+    return { ...schema, properties, required: (schema.required || []).filter((key) => key !== 'agent') }
+  }
+  if (!componentCommands.has(command)) return schema
   const properties = Object.fromEntries(Object.entries(schema.properties || {}).filter(([key]) => !['path', 'instance'].includes(key)))
   const required = command === 'components.list' ? [] : [...new Set([...(schema.required || []), 'id'])]
   return { ...schema, properties, required, additionalProperties: false }
@@ -41,7 +52,7 @@ function createAccess({ state, registry, changed = () => {}, emit = () => {} }) 
   }
   const componentScoped = (grant, id) => Boolean(grant && grant.components.includes(id) && (!grant.parentId || componentScoped(grants.get(grant.parentId), id)))
   const normalSpace = (id) => current().spaces.find((space) => space.id === id && !space.incognito)
-  const isNormalTab = (tab) => !tab.agent && !tab.userPeek && normalSpace(tab.spaceId) && !String(tab.sessionPartition || '').startsWith('incognito-')
+  const isNormalTab = (tab) => !tab.userPeek && normalSpace(tab.spaceId) && !String(tab.sessionPartition || '').startsWith('incognito-')
   const normalTab = (id) => current().tabs.find((tab) => tab.id === id && isNormalTab(tab))
   const listNormalTabs = () => current().tabs.filter(isNormalTab)
   const scoped = (grant, tab) => Boolean(grant && tab && (grant.tabIds.includes(tab.id) || grant.spaceIds.includes(tab.spaceId)) && (!grant.parentId || scoped(grants.get(grant.parentId), tab)))
@@ -118,8 +129,9 @@ function createAccess({ state, registry, changed = () => {}, emit = () => {} }) 
     if (rule === 'list') return context
     if (rule === 'create') {
       if (!normalSpace(params.spaceId) || !grant.spaceIds.includes(params.spaceId)) throw fail('Creating a tab requires a grant for its space')
-      // No hidden agent tabs, profile overrides, parent injection or privileged URLs.
-      if (params.agent !== undefined || params.sessionPartition !== undefined || params.profileId !== undefined || params.parentId !== undefined) throw fail('The requested tab creation is outside this grant')
+      // No profile overrides, parent injection or privileged URLs; a tab it opens is its own (the tools wrapper names it).
+      if (params.agent !== undefined && params.agent !== grant.owner && !grant.ownerBrowser) throw fail('The requested tab creation is outside this grant')
+      if (params.sessionPartition !== undefined || params.profileId !== undefined || params.parentId !== undefined) throw fail('The requested tab creation is outside this grant')
     } else {
       const id = params.tabId ?? params.id
       const tab = normalTab(id)
@@ -174,6 +186,7 @@ function createAccess({ state, registry, changed = () => {}, emit = () => {} }) 
         const command = commandOf(tool.command || tool.name)
         const rule = Object.hasOwn(rules, command) ? rules[command] : null
         const params = { ...input }
+        if (!grant.ownerBrowser && (agentCommands.has(command) || command === 'tabs.create')) params.agent = grant.owner
         if (rule && params.tabId !== undefined && params.id !== undefined && params.tabId !== params.id) throw fail('id and tabId must identify the same granted tab')
         if (rule === 'create' && params.spaceId === undefined) {
           const active = current().activeSpaceId
@@ -260,7 +273,8 @@ function createAccess({ state, registry, changed = () => {}, emit = () => {} }) 
     credentials.clear()
     selections.clear()
   }
-  return { issue, authorize, ownerBrowserContext, listNormalTabs, assert, tools, list, revoke, select, selected, stop }
+  const sessionOf = (context) => contexts.get(context)?.sessionId ?? null
+  return { issue, authorize, ownerBrowserContext, listNormalTabs, assert, tools, list, revoke, select, selected, stop, sessionOf }
 }
 
 module.exports = { createAccess }

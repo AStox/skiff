@@ -1,0 +1,27 @@
+:root { --agent: #7a5af8; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; color-scheme: light dark; font: 13px/1.2 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; user-select: none; -webkit-user-select: none; }
+body[data-mode="lock"] { cursor: default; }
+#rim { position: fixed; inset: 0; border: 3px solid var(--agent); border-radius: inherit; pointer-events: none; display: none; }
+body[data-mode="lock"] #rim { display: block; }
+#bar { position: fixed; top: 0; left: 0; right: 0; height: 36px; box-sizing: border-box; display: none; align-items: center; gap: 10px; padding: 0 12px; background: var(--agent); color: #fff; }
+body[data-mode] #bar { display: flex; }
+body[data-mode=""] #bar { display: none; }
+#dot { width: 8px; height: 8px; border-radius: 50%; background: #fff; flex: none; }
+body[data-mode="lock"] #dot { animation: pulse 1.6s infinite; }
+#text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+#actions { display: flex; gap: 8px; flex: none; }
+#actions button { appearance: none; border: 0; border-radius: 999px; padding: 5px 14px; font: inherit; font-weight: 700; font-size: 12px; background: #fff; color: var(--agent); cursor: pointer; }
+#actions button.quiet { background: rgba(255, 255, 255, .2); color: #fff; }
+#actions button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+#cursor { position: fixed; left: 0; top: 0; color: var(--agent); display: none; pointer-events: none; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .35)); will-change: transform; }
+#cursor.on { display: block; }
+#cursor svg { display: block; }
+#label { position: absolute; left: 16px; top: 22px; background: var(--agent); color: #fff; font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 6px; white-space: nowrap; }
+#ripple { position: fixed; left: 0; top: 0; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%; border: 2px solid var(--agent); background: rgba(122, 90, 248, .18); opacity: 0; pointer-events: none; }
+#ripple.go { animation: ripple .55s ease-out; }
+#field { position: fixed; display: none; box-sizing: border-box; border: 2px solid var(--agent); border-radius: 6px; background: rgba(122, 90, 248, .12); box-shadow: 0 0 0 3px rgba(122, 90, 248, .25); pointer-events: none; }
+#field.on { display: block; }
+body:not([data-mode="lock"]) #cursor, body:not([data-mode="lock"]) #ripple, body:not([data-mode="lock"]) #field { display: none; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 5px rgba(255, 255, 255, .3); } }
+@keyframes ripple { from { transform: scale(.4); opacity: .9; } to { transform: scale(1.5); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { body[data-mode="lock"] #dot, #ripple.go { animation: none; } #cursor { transition: none !important; } }

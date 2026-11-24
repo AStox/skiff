@@ -12,6 +12,8 @@ const PULL = 24
 // The favorites fill the pill up to this share of the desk width; the rest go behind a +N.
 const FAVORITES_SHARE = 0.6
 const CARD_WIDTH = 560
+const AGENTS_WIDTH = 300
+const AGENTS_MAX = 360
 // The card keeps this far from the desk's edges.
 const CARD_MARGIN = 40
 // The pill's growth and its way back; the card's content fades in over the last part and out over the first.
@@ -22,6 +24,9 @@ let state = null
 let place = readStore('buoy')
 let list = false
 let open = false
+// The agent tabs' list, grown from its chip, and where it lies in desk pixels while it is open.
+let agentsOpen = false
+let agentsAt = null
 // Where the card lies while it is open, in desk pixels; its height follows its content.
 let at = null
 // Set from the first frame of the card's way back until the pill is home.
@@ -41,9 +46,11 @@ function renderPill() {
   const space = paintSpace(state)
   const n = state.tabs.filter((t) => t.spaceId === space.id && isPlain(t)).length
   const note = hiding ? 'Drop to hide' : noticeText
-  const agentTabs = state.agentTabs || []
-  const agents = new Set(agentTabs.map((t) => t.agent)).size
-  const chip = agentTabs.length ? `${agents} ${agents === 1 ? 'agent' : 'agents'} · ${tabCount(agentTabs.length)}` : ''
+  const going = state.tabs.filter((t) => t.agent && t.agentState !== 'done')
+  const listed = state.tabs.filter((t) => t.agentRequest || (t.agent && (t.agentState !== 'done' || t.agentUnseen)))
+  const chip = agentChip(going, listed)
+  const unseen = state.tabs.some((t) => t.agentUnseen || t.agentRequest)
+  if (agentsOpen && !listed.length) agentsOpen = false
   const unread = state.tabs.filter((t) => t.bucket === 'unread').length
   $('buoy-name').textContent = space.name
   $('buoy-unread').textContent = String(unread)
@@ -52,7 +59,12 @@ function renderPill() {
   $('buoy-notice').hidden = !note
   $('buoy-agents').textContent = chip
   $('buoy-agents').hidden = !chip
-  $('buoy-main').setAttribute('aria-label', `${space.name}${unread ? `, ${unread} unread` : ''}${chip && `, ${chip}`}. Open the command bar`)
+  $('buoy-agents').title = `${chip}. Show the agent tabs`
+  $('buoy-agents').setAttribute('aria-label', `${chip}. Show the agent tabs`)
+  $('buoy-agents').setAttribute('aria-expanded', String(agentsOpen))
+  $('buoy-unseen').hidden = !unseen
+  renderAgents(listed)
+  $('buoy-main').setAttribute('aria-label', `${space.name}${unread ? `, ${unread} unread` : ''}${chip && `, ${chip}`}${unseen ? ', an agent tab is ready to see' : ''}. Open the command bar`)
   $('buoy-main').setAttribute('aria-expanded', String(open))
   $('buoy-tabs').textContent = String(n)
   $('buoy-tabs').setAttribute('aria-label', tabCount(n))
@@ -65,6 +77,69 @@ function renderPill() {
   pill.classList.toggle('drop', hiding)
   renderFavorites()
   fit()
+}
+
+// Names of the agents at work when they fit the pill, else their count; with none at work, those waiting, then those asking for a tab, then those whose finished tabs wait to be seen.
+function agentChip(going, listed) {
+  const working = going.filter((t) => t.agentState === 'working')
+  const asking = listed.filter((t) => t.agentRequest)
+  const [tabs, verb] = working.length ? [working, 'working'] : going.length ? [going, 'idle'] : asking.length ? [asking, 'asking'] : [listed, 'done']
+  const names = [...new Set(tabs.map((t) => t.agentRequest?.agent || t.agent))]
+  const text = names.join(', ')
+  return !names.length ? '' : `${text.length <= 16 ? text : `${names.length} ${names.length === 1 ? 'agent' : 'agents'}`} ${verb}`
+}
+
+function agentRow(tab) {
+  const asking = tab.agentRequest
+  return h('li', { class: 'row buoy-agent', 'data-tab-id': tab.id },
+    h('button', { class: 'row-main', type: 'button', title: tab.url, onclick: () => pickAgent(tab) },
+      agentDot(tab), h('span', { class: 'label' }, tab.title || tab.url), h('span', { class: 'when' }, asking ? `${asking.agent} asks` : tab.agent)))
+}
+
+// The base page activates it, as for the tab list, since it knows whether another app is in front.
+function pickAgent(tab) {
+  closeAgents()
+  buoyAction('pick', { id: tab.id })
+}
+
+let agentsKey = ''
+function renderAgents(listed) {
+  const box = $('buoy-agents-list')
+  box.hidden = !agentsOpen
+  if (!agentsOpen) return
+  const key = JSON.stringify(listed.map((t) => [t.id, t.title, t.url, t.agent, t.agentState, t.agentRequest?.agent]))
+  if (key === agentsKey) return
+  agentsKey = key
+  box.replaceChildren(...listed.map(agentRow))
+}
+
+// Under the chip, or above it with the pill in the lower half; only the list takes clicks beside the pill.
+function placeAgents() {
+  const box = $('buoy-agents-list')
+  if (!agentsOpen) return void (agentsAt = null)
+  const { width: W, height: H } = deskSize(state)
+  const b = buoyRect(state, place)
+  const below = b.y + b.height / 2 < H / 2
+  const room = below ? H - b.y - b.height - 2 * GAP : b.y - 2 * GAP
+  const width = Math.min(AGENTS_WIDTH, W - 2 * GAP)
+  box.style.maxHeight = `${Math.min(AGENTS_MAX, room)}px`
+  const height = box.offsetHeight
+  const chip = $('buoy-agents').getBoundingClientRect()
+  agentsAt = { x: Math.round(clamp(chip.x, GAP, W - GAP - width)), y: below ? b.y + b.height + GAP : b.y - GAP - height, width, height }
+  Object.assign(box.style, { left: `${agentsAt.x}px`, top: `${agentsAt.y}px`, width: `${width}px` })
+}
+
+function openAgents() {
+  if (open || !state || $('buoy-agents').hidden) return
+  agentsOpen = true
+  agentsKey = ''
+  buoyAction('agents')
+  renderPill()
+}
+function closeAgents() {
+  if (!agentsOpen) return
+  agentsOpen = false
+  renderPill()
 }
 
 // The space's favorites in the panel's order, the active one ringed; a click brings its window forward.
@@ -110,6 +185,7 @@ function fit() {
   }
   const r = buoyRect(state, place)
   if (!open && !closing) Object.assign(pill.style, { left: `${r.x}px`, top: `${r.y}px` })
+  placeAgents()
   sync(r)
 }
 
@@ -128,6 +204,7 @@ function sync(r = buoyRect(state, place)) {
   syncAvoid()
   // The import dialog is modal over the whole desk.
   const hit = [open ? (importer ? { x: 0, y: 0, width, height } : cardRect()) : r]
+  if (agentsAt && !open) hit.push(agentsAt)
   const key = JSON.stringify([width, height, hit])
   if (key !== shownAt) {
     shownAt = key
@@ -164,6 +241,7 @@ document.addEventListener('pointermove', (e) => {
   if (!press.moved) {
     if (Math.hypot(dx, dy) < 4) return
     press.moved = true
+    closeAgents()
     pill.setPointerCapture(e.pointerId)
     document.documentElement.classList.add('dragging')
     skiff.call('ui.setDesk', { capture: true }).catch(() => {})
@@ -195,6 +273,7 @@ document.addEventListener('pointerup', release)
 document.addEventListener('pointercancel', release)
 
 $('buoy-main').addEventListener('click', () => { if (!press?.moved) openCard('new') })
+$('buoy-agents').addEventListener('click', () => { if (!press?.moved) return agentsOpen ? closeAgents() : openAgents() })
 $('buoy-tabs').addEventListener('click', () => { if (!press?.moved) buoyAction('tabs') })
 $('update-pill').addEventListener('click', () => { if (!press?.moved) skiff.call('updates.install').catch((error) => notice(error.message || 'Update failed')) })
 $('buoy-new').addEventListener('click', () => { if (!press?.moved) openCard('new') })
@@ -248,6 +327,7 @@ async function grab() {
 
 function openCard(mode = 'new') {
   if (open) return
+  closeAgents()
   // A page that has just loaded has not heard the state yet.
   if (!state) return void skiff.call('state.get').then((first) => { state ||= first; openCard(mode) }, () => {})
   open = true
@@ -347,14 +427,25 @@ skiff.on('toggle-sidebar', toggle)
 skiff.on('focus-address', () => reveal('edit'))
 skiff.on('ask-agent', () => reveal('ask'))
 // Exposé and the tab list take over the desk.
-skiff.on('expose', (data) => { if (!data?.forwarded && !data?.close) closeCard(false) })
+skiff.on('expose', (data) => {
+  if (data?.forwarded || data?.close) return
+  closeCard(false)
+  closeAgents()
+})
 // Anywhere else a press or the keyboard going elsewhere closes it; the keyboard coming back within a moment is not leaving.
-document.addEventListener('pointerdown', (e) => { if (open && !e.target.closest('#buoy')) closeCard() })
+document.addEventListener('pointerdown', (e) => {
+  if (open && !e.target.closest('#buoy')) closeCard()
+  if (agentsOpen && !e.target.closest('#buoy-agents, #buoy-agents-list')) closeAgents()
+})
+document.addEventListener('keydown', (e) => { if (agentsOpen && e.key === 'Escape') closeAgents() })
 addEventListener('focus', () => { focusedAt = performance.now() })
 addEventListener('blur', () => {
   const lost = performance.now()
   clearTimeout(blurred)
-  blurred = setTimeout(() => { if (open && focusedAt < lost) closeCard(false) }, 80)
+  blurred = setTimeout(() => {
+    if (open && focusedAt < lost) closeCard(false)
+    if (agentsOpen && focusedAt < lost) closeAgents()
+  }, 80)
 })
 
 skiff.on('buoy-state', (data) => {

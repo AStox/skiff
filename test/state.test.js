@@ -1021,7 +1021,7 @@ test('tabs.thumbnails takes up to 24 known tab ids in order and a width up to 38
   assert.deepEqual(S.thumbnailTabs(s, { ids: [secret.id, a.id] }).tabs, [null, a])
 })
 
-test('an agent tab uses the session of its space, stays out of the tab list and is never saved', () => {
+test('an agent tab is an ordinary tab of its space in the space session and is never activated', () => {
   const s = S.load()
   const home = s.activeSpaceId
   const user = S.createTab(s, { url: 'user.example' }, 1)
@@ -1029,15 +1029,31 @@ test('an agent tab uses the session of its space, stays out of the tab list and 
   work.sessionPartition = 'persist:work'
   const agent = S.createTab(s, { url: 'agent.example', agent: '  omp  ', spaceId: work.id, activate: true, parentId: user.id }, 2)
   assert.deepEqual([agent.agent, agent.spaceId, agent.sessionPartition, agent.parentId], ['omp', work.id, 'persist:work', undefined])
-  assert.deepEqual(ids(s.tabs), [user.id])
-  assert.deepEqual(ids(s.agentTabs), [agent.id])
-  assert.deepEqual([s.activeSpaceId, s.activeTabBySpace, s.peek], [home, { [home]: user.id }, null])
+  assert.deepEqual([agent.agentState, agent.agentControl], ['working', 'agent'])
+  assert.deepEqual(ids(s.tabs), [user.id, agent.id])
+  assert.deepEqual(ids(S.visibleTabs(s, work.id)), [agent.id])
+  assert.deepEqual([s.activeSpaceId, s.activeTabBySpace], [home, { [home]: user.id }])
   assert.equal(S.getTab(s, agent.id), agent)
-  const saved = S.persistable(s)
-  assert.equal('agentTabs' in saved || 'peek' in saved, false)
-  assert.deepEqual(S.load(JSON.parse(JSON.stringify({ ...saved, agentTabs: [agent], peek: agent.id }))).agentTabs, [])
   assert.equal(S.createTab(s, { url: 'b.example', agent: 'x'.repeat(50) }, 3).agent, 'x'.repeat(40))
   assert.throws(() => S.createTab(s, { url: 'c.example', agent: ' ' }, 3), { code: 'bad_params' })
+})
+
+test('an agent tab is saved with its agent name only and comes back idle, still the agent\'s', () => {
+  const s = S.load()
+  const agent = S.createTab(s, { url: 'agent.example', agent: 'omp' }, 2)
+  agent.agentUnseen = true
+  agent.agentSummary = 'x'
+  agent.agentRequest = { agent: 'bb' }
+  S.takeOver(s, { id: agent.id }, 3)
+  const saved = JSON.parse(JSON.stringify(S.persistable(s)))
+  const stored = saved.tabs.find((t) => t.id === agent.id)
+  assert.deepEqual(Object.keys(stored).filter((k) => k.startsWith('agent')), ['agent'])
+  const back = S.load(saved).tabs.find((t) => t.id === agent.id)
+  assert.deepEqual([back.agent, back.agentState, back.agentControl, back.agentUnseen, back.agentRequest], ['omp', 'idle', 'agent', undefined, undefined])
+  assert.equal(S.agentCall(S.load(saved), { agent: 'omp', tabId: agent.id }, 5).agentState, 'working')
+  // A saved agent mark on something an agent cannot drive is dropped.
+  const odd = S.load({ ...saved, tabs: [{ ...stored, agent: '  ' }, { ...stored, id: 'tchat', url: 'skiff://chat/c0123456789ab', chat: { agent: 'x', sessionId: null } }] })
+  assert.deepEqual(odd.tabs.map((t) => t.agent), [undefined, undefined])
 })
 
 test('agent tabs open in a normal space; the incognito space is refused', () => {
@@ -1046,54 +1062,130 @@ test('agent tabs open in a normal space; the incognito space is refused', () => 
   const incognito = S.openIncognito(s)
   assert.equal(S.createTab(s, { url: 'a.example', agent: 'omp' }, 1).spaceId, home)
   assert.throws(() => S.createTab(s, { url: 'b.example', agent: 'omp', spaceId: incognito.id }, 1), { code: 'bad_params' })
-  assert.equal(s.agentTabs.length, 1)
+  assert.equal(s.tabs.length, 1)
 })
 
-test('activating an agent tab peeks at it without changing the active tab; showing a user tab or space ends it', () => {
+test('on the desk an agent tab starts as a hidden window; showing it makes it the active tab like any other', () => {
   const s = S.load()
-  const home = s.activeSpaceId
+  s.deskSize = { width: 1200, height: 800 }
   const user = S.createTab(s, { url: 'user.example' }, 1)
-  const work = S.createSpace(s, { name: 'Work' })
-  const agent = S.createTab(s, { url: 'agent.example', agent: 'omp', spaceId: work.id }, 2)
-  const before = { ...s.activeTabBySpace }
-  assert.equal(S.activateTab(s, { id: agent.id }, 3), agent)
-  assert.deepEqual([s.peek, s.activeSpaceId, s.activeTabBySpace], [agent.id, home, before])
-  S.activateTab(s, { id: user.id }, 4)
-  assert.equal(s.peek, null)
-  S.showDesk(s, { id: agent.id }, 5)
-  assert.equal(s.peek, agent.id)
-  S.hideDesk(s, { id: agent.id })
-  assert.deepEqual([s.peek, agent.desk], [null, undefined])
-  for (const end of [() => S.activateSpace(s, { id: work.id }), () => S.cycleSpace(s, { delta: 1 }), () => S.openIncognito(s), () => S.createTab(s, { url: 'next.example' }, 6)]) {
-    S.activateTab(s, { id: agent.id }, 6)
-    end()
-    assert.equal(s.peek, null)
-  }
+  const agent = S.createTab(s, { url: 'agent.example', agent: 'omp' }, 2)
+  assert.equal(agent.desk.hidden, true)
+  assert.deepEqual(ids(S.shownTabs(s)), [user.id])
+  agent.agentState = 'done'
+  agent.agentUnseen = true
+  S.showDesk(s, { id: agent.id }, 3)
+  assert.deepEqual([s.activeTabBySpace[s.activeSpaceId], agent.desk.hidden, agent.agentUnseen], [agent.id, undefined, undefined])
 })
 
-test('closing an agent tab drops it without archiving and ends its peek; removing its space drops it', () => {
+test('closing an agent tab archives it like any tab, and it restores as a plain tab', () => {
   const s = S.load()
   const work = S.createSpace(s, { name: 'Work' })
   const a = S.createTab(s, { url: 'a.example', agent: 'omp' }, 1)
   const b = S.createTab(s, { url: 'b.example', agent: 'omp', spaceId: work.id }, 1)
-  S.activateTab(s, { id: a.id }, 2)
-  assert.deepEqual(S.closeTab(s, { id: a.id }, 3), { closed: a.id })
-  assert.deepEqual([s.agentTabs, s.archive, s.peek], [[b], [], null])
-  S.activateTab(s, { id: b.id }, 4)
+  assert.deepEqual(S.closeTab(s, { id: a.id }, 3), { archived: a.id })
+  assert.deepEqual([ids(s.tabs), ids(s.archive)], [[b.id], [a.id]])
+  assert.equal('agent' in s.archive[0], false)
+  const restored = S.restore(s, { id: a.id }, 4)
+  assert.deepEqual([restored.agent, restored.agentState], [undefined, undefined])
   S.removeSpace(s, { id: work.id }, 5)
-  assert.deepEqual([s.agentTabs, s.archive, s.peek], [[], [], null])
+  assert.deepEqual(ids(s.archive), [b.id])
 })
 
-test('agent tabs cannot be moved, favorited or pinned, and sweep and lists ignore them', () => {
+test('agent tabs move, pin and favorite like any tab, and sweep leaves a working one alone', () => {
   const s = S.load()
   const work = S.createSpace(s, { name: 'Work' })
   const agent = S.createTab(s, { url: 'a.example', agent: 'omp' }, 0)
-  assert.throws(() => S.moveTab(s, { id: agent.id, spaceId: work.id }, 1), { code: 'bad_params' })
-  assert.throws(() => S.setFavorite(s, { id: agent.id, favorite: true }, 1), { code: 'bad_params' })
-  assert.throws(() => S.setPinned(s, { id: agent.id, pinned: true }, 1), { code: 'bad_params' })
-  assert.deepEqual(S.sweep(s, {}, 1000 * HOUR), { archived: [], done: [], settled: [] })
-  assert.deepEqual([S.visibleTabs(s), S.shownTabs(s)], [[], []])
-  assert.equal(s.agentTabs.length, 1)
+  S.moveTab(s, { id: agent.id, spaceId: work.id }, 1)
+  assert.equal(agent.spaceId, work.id)
+  S.setPinned(s, { id: agent.id, pinned: true }, 1)
+  assert.equal(agent.agent, 'omp')
+  S.setPinned(s, { id: agent.id, pinned: false }, 1)
+  const swept = S.sweep(s, { loading: [] }, 1000 * HOUR)
+  assert.deepEqual([swept.archived, swept.done], [[], []])
+  agent.agentState = 'idle'
+  assert.deepEqual(S.sweep(s, { loading: [] }, 1000 * HOUR).done, [agent.id])
+})
+
+test('an agent drives only the tab it opened or was handed, and never one the user took over', () => {
+  const s = S.load()
+  const user = S.createTab(s, { url: 'user.example' }, 1)
+  const mine = S.createTab(s, { url: 'mine.example', agent: 'bb' }, 2)
+  const chat = S.createTab(s, { activate: false }, 2, { id: 'c0123456789ab', agent: 'Fake', title: 'Hi', favicon: '' })
+  assert.equal(S.agentCall(s, { agent: 'bb', tabId: mine.id }, 3), mine)
+  assert.equal(S.agentCall(s, { agent: 'bb', id: mine.id }, 3), mine)
+  assert.throws(() => S.agentCall(s, { agent: 'bb', tabId: user.id }, 3), { code: 'forbidden' })
+  assert.throws(() => S.agentCall(s, { agent: 'omp', tabId: mine.id }, 3), { code: 'forbidden' })
+  assert.throws(() => S.agentCall(s, { agent: 'bb', tabId: chat.id }, 3), { code: 'bad_params' })
+  assert.throws(() => S.agentCall(s, { agent: 'bb' }, 3), { code: 'bad_params' })
+  assert.throws(() => S.agentCall(s, { tabId: mine.id }, 3), { code: 'bad_params' })
+  S.handToAgent(s, { id: user.id, agent: 'bb' }, 4)
+  assert.deepEqual([user.agent, user.agentState], ['bb', 'idle'])
+  assert.equal(S.agentCall(s, { agent: 'bb', tabId: user.id }, 5).agentState, 'working')
+  S.takeOver(s, { id: user.id }, 6)
+  assert.throws(() => S.agentCall(s, { agent: 'bb', tabId: user.id }, 7), { code: 'user_has_control' })
+  S.agentFinish(s, { agent: 'bb', tabId: user.id }, 7)
+  assert.equal(user.agentState, 'done')
+  S.giveBack(s, { id: user.id }, 8)
+  assert.deepEqual([user.agentControl, user.agentState], ['agent', 'idle'])
+  assert.equal(S.agentCall(s, { agent: 'bb', tabId: user.id }, 9).agentState, 'working')
+  assert.throws(() => S.takeOver(s, { id: chat.id }, 9), { code: 'bad_params' })
+})
+
+test('a request for a tab waits for an answer: allow hands it over, deny drops it', () => {
+  const s = S.load()
+  const tab = S.createTab(s, { url: 'user.example' }, 1)
+  assert.equal(S.agentRequest(s, { id: tab.id, agent: 'bb' }).granted, false)
+  assert.deepEqual(tab.agentRequest, { agent: 'bb' })
+  assert.throws(() => S.agentRequest(s, { id: tab.id, agent: 'omp' }), { code: 'bad_params' })
+  assert.deepEqual(S.agentAnswer(s, { id: tab.id, allow: false }, 2), { tab, agent: 'bb', allowed: false })
+  assert.deepEqual([tab.agentRequest, tab.agent], [undefined, undefined])
+  S.agentRequest(s, { id: tab.id, agent: 'bb' })
+  assert.equal(S.agentAnswer(s, { id: tab.id, allow: true }, 3).allowed, true)
+  assert.deepEqual([tab.agent, tab.agentRequest], ['bb', undefined])
+  assert.equal(S.agentRequest(s, { id: tab.id, agent: 'bb' }).granted, true)
+  assert.throws(() => S.agentAnswer(s, { id: tab.id, allow: true }, 4), { code: 'bad_params' })
+})
+
+test('a finished agent tab is unseen until it is shown; a tab with no call for two minutes is idle; handed tabs are saved with their agent', () => {
+  const s = S.load()
+  const first = S.createTab(s, { url: 'first.example' }, 1)
+  const agent = S.createTab(s, { url: 'agent.example', agent: 'bb' }, 2)
+  S.agentFinish(s, { agent: 'bb', tabId: agent.id, summary: '  all done  ' }, 3)
+  assert.deepEqual([agent.agentState, agent.agentUnseen, agent.agentSummary], ['done', true, 'all done'])
+  S.activateTab(s, { id: agent.id }, 4)
+  assert.equal(agent.agentUnseen, undefined)
+  S.agentFinish(s, { agent: 'bb', tabId: agent.id }, 5, true)
+  assert.equal(agent.agentUnseen, undefined)
+  S.agentCall(s, { agent: 'bb', tabId: agent.id }, 10)
+  assert.deepEqual(S.agentSweep(s, 10 + 119000), [])
+  assert.deepEqual(S.agentSweep(s, 10 + 121000), [agent.id])
+  assert.equal(agent.agentState, 'idle')
+  S.handToAgent(s, { id: first.id, agent: 'bb' }, 6)
+  const back = S.load(JSON.parse(JSON.stringify(S.persistable(s))))
+  assert.deepEqual(back.tabs.map((t) => [t.id, t.agent, t.agentState]), [[first.id, 'bb', 'idle'], [agent.id, 'bb', 'idle']])
+})
+
+test('closing the active tab never lands on an agent tab, and an agent tab without a window stays off the desk', () => {
+  const s = S.load()
+  const a = S.createTab(s, { url: 'a.example' }, 1)
+  const agent = S.createTab(s, { url: 'agent.example', agent: 'bb' }, 2)
+  const b = S.createTab(s, { url: 'b.example' }, 3)
+  S.activateTab(s, { id: a.id }, 4)
+  S.closeTab(s, { id: a.id }, 5)
+  assert.equal(s.activeTabBySpace[s.activeSpaceId], b.id)
+  S.closeTab(s, { id: b.id }, 6)
+  assert.equal(s.activeTabBySpace[s.activeSpaceId], undefined)
+  // With a favorite and an agent tab left, closing the last ordinary tab leaves none active.
+  const fav = S.createTab(s, { url: 'fav.example', activate: false }, 7)
+  S.setFavorite(s, { id: fav.id, favorite: true }, 7)
+  const c = S.createTab(s, { url: 'c.example' }, 8)
+  S.closeTab(s, { id: c.id }, 9)
+  assert.equal(s.activeTabBySpace[s.activeSpaceId], undefined)
+  // Made where there was no desk, it is still not a window when the desk comes.
+  s.deskSize = { width: 1200, height: 800 }
+  assert.equal(agent.desk, undefined)
+  assert.deepEqual(S.shownTabs(s), [])
 })
 
 test('legacy folder labels migrate as literal names, including separators, with stable identity and empty records', () => {
@@ -1591,7 +1683,7 @@ test('buckets: setBucket moves a tab by hand and validates the bucket', () => {
   for (const bucketName of ['progress', 'nope', undefined, 3]) assert.throws(() => S.setBucket(s, { id: b.id, bucket: bucketName }, 20), { code: 'bad_params' })
   assert.throws(() => S.setBucket(s, { id: 'nope', bucket: 'done' }, 20), { code: 'not_found' })
   const agent = S.createTab(s, { url: 'agent.example', agent: 'omp' }, 0)
-  assert.throws(() => S.setBucket(s, { id: agent.id, bucket: 'done' }, 20), { code: 'bad_params' })
+  assert.equal(S.setBucket(s, { id: agent.id, bucket: 'done' }, 20), agent)
   const source = S.activeTab(s)
   const peek = S.createPeek(s, { sourceId: source.id, url: 'https://peek.example/' }, 21)
   assert.throws(() => S.setBucket(s, { id: peek.id, bucket: 'done' }, 22), { code: 'bad_params' })

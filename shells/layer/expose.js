@@ -134,14 +134,14 @@ function card(c, image) {
   const at = c.rect
   const scale = c.to.width / at.width
   const win = h('span', { class: `win${c.active ? ' active' : ''}` },
-    h('span', { class: 'ear', 'aria-hidden': 'true' }, h('span', { class: 'ear-fav' }, favicon(c.tab)), h('span', { class: 'ear-title' }, title)),
+    h('span', { class: 'ear', 'aria-hidden': 'true' }, h('span', { class: 'ear-fav' }, favicon(c.tab), agentDot(c.tab)), h('span', { class: 'ear-title' }, title)),
     h('span', { class: 'ring' }),
     h('span', { class: 'glow' }),
     h('span', { class: 'card' }, image ? h('img', { class: 'shot', src: image, alt: '', draggable: 'false' }) : h('span', { class: 'blank' }, favicon(c.tab), h('span', { class: 'blank-title' }, title))))
   Object.assign(win.style, { left: px(at.x - c.to.x), top: px(at.y - c.to.y), width: px(at.width), height: px(at.height), transform: over(at, c.to) })
   win.style.setProperty('--k', 1 / scale)
   const el = h('button', { class: `slot${c.hidden ? ' shelved' : ''}`, type: 'button', 'data-tab-id': c.tab.id, 'aria-label': c.group ? `${title}, Desktop ${c.group.number}` : c.hidden ? `${title}, hidden` : title, onclick: () => pick(c) },
-    win, h('span', { class: 'label' }, favicon(c.tab), h('span', { class: 'label-title' }, title)))
+    win, h('span', { class: 'label' }, favicon(c.tab), h('span', { class: 'label-title' }, title), agentDot(c.tab)))
   Object.assign(el.style, { left: px(c.to.x), top: px(c.to.y), width: px(c.to.width), height: px(c.to.height), zIndex: c.z })
   el.style.setProperty('--r', px(c.hidden ? 7 : RADIUS * scale))
   return el

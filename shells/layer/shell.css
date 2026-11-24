@@ -128,7 +128,9 @@ html[data-lit*='w'] #lit { border-left-color: var(--accent); }
 html.earless #ear, html.earless #bar { display: none; }
 @media (prefers-reduced-motion: no-preference) { html.settled:not([data-gesture]) #ear { transition: left .18s ease, width .18s ease; } }
 html.frame.active #ear, .win.active .ear { background: var(--accent); color: #fff; box-shadow: none; }
-#ear-fav, .ear-fav { flex: none; display: inline-flex; width: 14px; height: 14px; }
+#ear-fav, .ear-fav { position: relative; flex: none; display: inline-flex; width: 14px; height: 14px; }
+#ear-fav .agent-dot, .win .ear-fav .agent-dot { position: absolute; right: -3px; bottom: -3px; width: 7px; height: 7px; box-shadow: 0 0 0 1.5px var(--ear); }
+html.frame.active #ear-fav .agent-dot, .win.active .ear-fav .agent-dot { box-shadow: 0 0 0 1.5px var(--accent); }
 #ear-fav .favicon, .ear-fav .favicon { width: 14px; height: 14px; border-radius: 3px; }
 #ear-fav .favicon.letter, .ear-fav .favicon.letter { background: color-mix(in srgb, currentColor 16%, transparent); color: inherit; font-size: 9px; }
 #ear-title, .ear-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -194,6 +196,13 @@ html.dragging #buoy, html.dragging #buoy * { cursor: grabbing !important; }
 #buoy-name { max-width: 200px; overflow: hidden; font-weight: 600; letter-spacing: .005em; text-overflow: ellipsis; }
 #buoy-notice, #buoy-agents { font-size: 11px; color: var(--buoy-soft); }
 #buoy-agents { padding: 3px 7px; border-radius: 999px; background: color-mix(in srgb, var(--buoy-ink) 8%, transparent); }
+#buoy-agents:hover, #buoy-agents[aria-expanded='true'] { background: color-mix(in srgb, var(--buoy-ink) 14%, transparent); }
+/* Any agent tab finished and not yet looked at. */
+#buoy-unseen { position: absolute; top: -4px; right: -3px; width: 12px; height: 12px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 0 2px var(--buoy-bg); pointer-events: none; }
+#buoy.open #buoy-unseen { display: none; }
+#buoy-agents-list { position: fixed; z-index: 3; padding: 6px; border-radius: 14px; background: var(--buoy-bg); color: var(--buoy-ink); box-shadow: inset 0 0 0 1px var(--buoy-rim), 0 8px 24px rgba(0, 0, 0, .22), 0 1px 3px rgba(0, 0, 0, .12); list-style: none; overflow-x: hidden; overflow-y: auto; }
+#buoy-agents-list[hidden] { display: none; }
+.buoy-agent .when { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #buoy-unread { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 10px; font-weight: 600; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums; }
 #buoy-row .update-pill { flex: none; height: 22px; margin: 0 4px 0 3px; padding: 0 9px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 600; }
 #buoy-row .update-pill[hidden] { display: none; }
@@ -363,6 +372,14 @@ input.setting-input[type='number'] { width: 80px; font-family: var(--data); font
 .agent-dot[data-status='ready'] { background: #2f9e5b; }
 .agent-dot[data-status='starting'] { background: var(--accent); }
 .agent-dot[data-status='error'] { background: var(--danger); }
+/* A tab an agent drives: purple, a ring pulsing while it works (steady with reduced motion), green when it is done. */
+.agent-dot[data-state] { position: relative; background: #7a5af8; }
+.agent-dot[data-state='done'] { background: #2f9e5b; }
+.agent-dot[data-state='working']::after { content: ''; position: absolute; inset: -3px; border: 1.5px solid #7a5af8; border-radius: 50%; opacity: .55; }
+@media (prefers-reduced-motion: no-preference) { .agent-dot[data-state='working']::after { animation: agent-ping 1.4s ease-out infinite; } }
+@keyframes agent-ping { from { opacity: .9; transform: scale(.55); } to { opacity: 0; transform: scale(1.2); } }
+.agent-badge { flex: none; max-width: 72px; overflow: hidden; padding: 2px 6px; border-radius: 999px; background: color-mix(in srgb, #7a5af8 14%, transparent); color: color-mix(in srgb, #7a5af8 70%, var(--ink)); font-size: 11px; font-weight: 500; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.tile .agent-dot { position: absolute; right: 4px; bottom: 4px; box-shadow: 0 0 0 1.5px var(--hover); }
 .agent-text { flex: 1; min-width: 0; display: grid; }
 .agent-text .label { font-weight: 500; }
 .agent-text code { overflow: hidden; color: var(--soft); font: 11px/1.5 ui-monospace, 'SF Mono', Menlo, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
@@ -397,9 +414,9 @@ input.setting-input[type='number'] { width: 80px; font-family: var(--data); font
 .dot.drop-target { outline: 2px solid var(--ink); outline-offset: 0; }
 #add-space { min-width: 26px; min-height: 26px; }
 .sidebar-tools { flex: none; display: flex; align-items: center; gap: 4px; margin-left: auto; }
-#archive-toggle, #agents-toggle { min-height: 26px; padding: 0 8px; font-weight: 400; }
-#archive-count, #agents-count { font-size: 11px; color: var(--soft); }
-#archive-count:empty, #agents-count:empty { display: none; }
+#archive-toggle { min-height: 26px; padding: 0 8px; font-weight: 400; }
+#archive-count { font-size: 11px; color: var(--soft); }
+#archive-count:empty { display: none; }
 #settings-toggle { min-width: 26px; min-height: 26px; }
 
 #arc-import { width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--bg); color: var(--ink); box-shadow: var(--shadow); user-select: text; }

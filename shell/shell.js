@@ -139,7 +139,7 @@ function tabRow(tab, current, depth) {
     onkeydown: (event) => moveTabWithKeyboard(event, tab)
   },
     h('button', { class: 'row-main', title: `${tab.url}\n${MOVE_HINT}`, 'aria-keyshortcuts': MOVE_KEYS, 'aria-current': current ? 'true' : null, onclick: () => show(tab) },
-      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url)),
+      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), agentBadge(tab), agentDot(tab)),
     h('button', { class: 'icon-btn reveal', title: 'Close tab', 'aria-label': 'Close tab', onclick: () => call('tabs.close', { id: tab.id }) }, icon('x')), pill)
   if (depth != null) row.style.setProperty('--depth', String(Math.min(depth, 6)))
   return row
@@ -188,7 +188,7 @@ function favoriteTile(tab, current) {
     class: `tile${current ? ' current' : ''}${tab.loading ? ' loading' : ''}`, 'data-tab-id': tab.id, draggable: 'true',
     ondragstart: (event) => startDrag(event, 'tab', tab.id),
     onkeydown: (event) => moveTabWithKeyboard(event, tab)
-  }, h('button', { class: 'tile-main', title: `${tab.title || tab.url}\n${MOVE_HINT}`, 'aria-label': tab.title || tab.url, 'aria-keyshortcuts': MOVE_KEYS, 'aria-current': current ? 'true' : null, onclick: () => show(tab) }, favicon(tab, icon('globe'))))
+  }, h('button', { class: 'tile-main', title: `${tab.title || tab.url}\n${MOVE_HINT}`, 'aria-label': tab.title || tab.url, 'aria-keyshortcuts': MOVE_KEYS, 'aria-current': current ? 'true' : null, onclick: () => show(tab) }, favicon(tab, icon('globe')), agentDot(tab)))
 }
 
 function archiveRows() {

@@ -195,6 +195,16 @@ input.setting-input[type='number'] { width: 80px; }
 .agent-dot[data-status='ready'] { background: #2f9e5b; }
 .agent-dot[data-status='starting'] { background: var(--accent); }
 .agent-dot[data-status='error'] { background: var(--danger); }
+/* A tab an agent drives: purple, a ring pulsing while it works (steady with reduced motion), green when it is done. */
+.agent-dot[data-state] { position: relative; background: #7a5af8; }
+.agent-dot[data-state='done'] { background: #2f9e5b; }
+.agent-dot[data-state='working']::after { content: ''; position: absolute; inset: -3px; border: 1.5px solid #7a5af8; border-radius: 50%; opacity: .55; }
+@media (prefers-reduced-motion: no-preference) { .agent-dot[data-state='working']::after { animation: agent-ping 1.4s ease-out infinite; } }
+@keyframes agent-ping { from { opacity: .9; transform: scale(.55); } to { opacity: 0; transform: scale(1.2); } }
+.agent-badge { flex: none; max-width: 72px; overflow: hidden; padding: 2px 6px; border-radius: 999px; background: color-mix(in srgb, #7a5af8 14%, transparent); color: color-mix(in srgb, #7a5af8 70%, var(--ink)); font-size: 11px; font-weight: 500; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.row.current .agent-badge { background: color-mix(in srgb, var(--bg) 18%, var(--ink)); color: var(--bg); }
+.tile .agent-dot { position: absolute; right: 5px; bottom: 5px; box-shadow: 0 0 0 1.5px var(--hover); }
+.tile.current .agent-dot { box-shadow: 0 0 0 1.5px var(--ink); }
 .agent-text { flex: 1 1 calc(100% - 15px); min-width: 0; display: grid; }
 .agent-text .label { font-weight: 500; }
 .agent-text code { overflow: hidden; color: var(--soft); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; user-select: text; }

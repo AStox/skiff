@@ -47,6 +47,9 @@ const OFFSET = 28
 const HOSTS = 200
 const AI = { agents: [], agent: '', model: '', effort: '' }
 const CHAT = /^skiff:\/\/chat\/c[0-9a-f]{12}$/
+// Who may drive a tab, and where that stands. Only the agent's name is saved; the rest is runtime, and a restored tab is idle.
+const AGENT_RUNTIME = ['agentState', 'agentControl', 'agentAt', 'agentUnseen', 'agentSummary', 'agentRequest']
+const AGENT_IDLE_MS = 120000
 
 const err = (code, message) => Object.assign(new Error(message), { code })
 const bad = (message) => err('bad_params', message)
@@ -54,7 +57,7 @@ const newId = (prefix) => prefix + crypto.randomBytes(4).toString('hex')
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 
 const findSpace = (s, id) => s.spaces.find((x) => x.id === id)
-const findTab = (s, id) => s.tabs.find((x) => x.id === id) || s.agentTabs.find((x) => x.id === id)
+const findTab = (s, id) => s.tabs.find((x) => x.id === id)
 const activeTab = (s) => findTab(s, s.activeTabBySpace[s.activeSpaceId])
 const isPlain = (t) => !t.favorite && !t.pinned
 const BUCKETS = ['favorites', 'unread', 'active', 'progress', 'later', 'done']
@@ -78,7 +81,8 @@ const visibleTabs = (s, spaceId = s.activeSpaceId) => {
 }
 const isIncognito = (s, spaceId) => !!findSpace(s, spaceId)?.incognito
 const deskTabs = (s, spaceId = s.activeSpaceId) => s.tabs.filter((t) => t.spaceId === spaceId && t.desk).sort((a, b) => a.desk.z - b.desk.z)
-const isShown = (s, tab) => s.activeTabBySpace[tab.spaceId] === tab.id || (tab.desk ? !tab.desk.hidden : isPlain(tab))
+// An agent's tab is on the desk only once the user showed it, even if it was opened where there was no desk to give it a window.
+const isShown = (s, tab) => s.activeTabBySpace[tab.spaceId] === tab.id || (tab.desk ? !tab.desk.hidden : isPlain(tab) && !tab.agent)
 // s.desktops {current, list: [{id, number}]} is runtime state, set only where macOS desktops are known; without it every tab is on the one desktop.
 const onDesktop = (s, tab) => !s.desktops || tab.desktopId === s.desktops.current
 const here = (s) => (s.desktops ? { desktopId: s.desktops.current } : {})
@@ -161,8 +165,6 @@ function loadAi(raw) {
 
 function load(raw = {}) {
   const s = {
-    agentTabs: [],
-    peek: null,
     userPeek: null,
     folders: [],
     profiles: [],
@@ -189,7 +191,13 @@ function load(raw = {}) {
     if (space.background !== undefined) space.background = background(space.background) || null
   }
   if (!findSpace(s, s.activeSpaceId)) s.activeSpaceId = s.spaces[0].id
-  for (const tab of s.tabs) if (!Number.isSafeInteger(tab.desktopId)) delete tab.desktopId
+  for (const tab of s.tabs) {
+    if (!Number.isSafeInteger(tab.desktopId)) delete tab.desktopId
+    for (const key of AGENT_RUNTIME) delete tab[key]
+    const agent = typeof tab.agent === 'string' ? tab.agent.trim().slice(0, 40) : ''
+    if (agent && !tab.chat && /^https?:/.test(tab.url)) Object.assign(tab, { agent, agentState: 'idle', agentControl: 'agent', agentAt: 0 })
+    else delete tab.agent
+  }
   for (const item of [...s.tabs, ...s.archive]) {
     const chat = chatOf(item)
     if (chat) item.chat = chat
@@ -238,7 +246,8 @@ function load(raw = {}) {
 
 function release(s, tab) {
   if (s.activeTabBySpace[tab.spaceId] !== tab.id) return
-  const list = visibleTabs(s, tab.spaceId).filter((t) => (!(t.pinned || t.favorite) || t === tab) && (!s.desktops || t.desktopId === tab.desktopId))
+  // Closing the tab you are in never lands you on an agent's tab.
+  const list = visibleTabs(s, tab.spaceId).filter((t) => (!(t.pinned || t.favorite) || t === tab) && (t === tab || !t.agent) && (!s.desktops || t.desktopId === tab.desktopId))
   // On the desk the window beneath comes forward, the opener first, so no other window changes place.
   const beneath = tab.desk && shownTabs(s, tab.spaceId).filter((t) => t !== tab && t.desk)
   const next = (beneath?.find((t) => t.id === tab.parentId) || beneath?.at(-1)) || list[list.indexOf(tab) + 1] || list[list.indexOf(tab) - 1]
@@ -475,7 +484,7 @@ function removeProfile(s, p) {
   if (profile.partition === 'persist:main') throw bad('The default profile cannot be removed')
   const fallback = ensureProfile(s, 'persist:main')
   for (const space of s.spaces) if (space.profileId === profile.id) assignProfile(s, { spaceId: space.id, profileId: fallback.id })
-  for (const tab of [...s.tabs, ...s.archive, ...s.agentTabs]) if (tab.profileId === profile.id) delete tab.profileId
+  for (const tab of [...s.tabs, ...s.archive]) if (tab.profileId === profile.id) delete tab.profileId
   s.linkRules = s.linkRules.filter((x) => x.profileId !== profile.id)
   s.profiles.splice(s.profiles.indexOf(profile), 1)
   return null
@@ -577,7 +586,6 @@ function createPeek(s, p, now) {
   const tab = { id: newId('t'), spaceId: source.spaceId, sourceId: source.id, sessionPartition: source.sessionPartition, ...(source.profileId && { profileId: source.profileId }), userPeek: true, url, title: url, favicon: '', favorite: false, createdAt: now, lastActiveAt: now, ...here(s), ...(source.browserIdentity !== undefined && { browserIdentity: source.browserIdentity }) }
   s.tabs.push(tab)
   s.userPeek = tab.id
-  s.peek = null
   return tab
 }
 
@@ -701,8 +709,6 @@ function removeSpace(s, p, now) {
   if (!space.incognito && s.spaces.filter((x) => !x.incognito).length === 1) throw bad('The last space cannot be removed')
   const i = s.spaces.indexOf(space)
   for (const tab of s.tabs.filter((t) => t.spaceId === space.id)) (space.incognito || tab.userPeek ? dropTab : archiveTab)(s, tab, now)
-  s.agentTabs = s.agentTabs.filter((t) => t.spaceId !== space.id)
-  if (!findTab(s, s.peek)) s.peek = null
   s.spaces.splice(i, 1)
   delete s.activeTabBySpace[space.id]
   delete s.splitBySpace[space.id]
@@ -717,7 +723,6 @@ function activateSpace(s, p) {
   const spaceId = getSpace(s, p.id).id
   if (s.userPeek && getTab(s, s.userPeek).spaceId !== spaceId) dismissPeek(s, {})
   s.activeSpaceId = spaceId
-  s.peek = null
   if (p.show !== false) look(s)
   return null
 }
@@ -739,19 +744,28 @@ function openIncognito(s) {
   return space
 }
 
+// The live tab objects that are saved: not a link peek or a tab of the incognito space.
+function storedTabs(s) {
+  const gone = new Set(s.spaces.filter((x) => x.incognito).map((x) => x.id))
+  return s.tabs.filter((t) => !gone.has(t.spaceId) && !t.userPeek)
+}
+
 function persistable(s) {
   const gone = new Set(s.spaces.filter((x) => x.incognito).map((x) => x.id))
   const keep = (map) => Object.fromEntries(Object.entries(map).filter(([key]) => !gone.has(key.split('/')[0])))
-  const { deskSize, deskTop, deskAvoid, desktops, agentTabs, peek, userPeek, ...rest } = s
-  return { ...rest, spaces: s.spaces.filter((x) => !x.incognito), tabs: s.tabs.filter((t) => !gone.has(t.spaceId) && !t.userPeek).map((t) => { if (!t.intent) return t; const { intent, ...saved } = t; return saved }), folders: s.folders.filter((f) => !gone.has(f.spaceId)), splitBySpace: keep(s.splitBySpace), activeSpaceId: normalSpace(s).id, activeTabBySpace: keep(s.activeTabBySpace), collapsed: keep(s.collapsed) }
+  const { deskSize, deskTop, deskAvoid, desktops, userPeek, ...rest } = s
+  // A tab is saved without its open-intent; an agent tab with its agent's name only (who is working and who has control is runtime state).
+  const stored = (t) => {
+    if (t.agent === undefined && !t.intent) return t
+    const { intent, ...saved } = t
+    return Object.fromEntries(Object.entries(saved).filter(([key]) => !AGENT_RUNTIME.includes(key)))
+  }
+  return { ...rest, spaces: s.spaces.filter((x) => !x.incognito), tabs: storedTabs(s).map(stored), folders: s.folders.filter((f) => !gone.has(f.spaceId)), splitBySpace: keep(s.splitBySpace), activeSpaceId: normalSpace(s).id, activeTabBySpace: keep(s.activeTabBySpace), collapsed: keep(s.collapsed) }
 }
 
 // In a desk window (s.deskSize set) a favorite or pinned tab becomes a window when activated and stays one until hidden.
-// An agent tab is peeked instead: shown over the current space without becoming its active tab.
 function activateTab(s, p, now) {
   const tab = getTab(s, p.id)
-  s.peek = tab.agent ? tab.id : null
-  if (tab.agent) return tab
   if (tab.userPeek) {
     if (tab.spaceId !== s.activeSpaceId) throw bad('Peek must remain in the active space')
     s.userPeek = tab.id
@@ -777,52 +791,38 @@ function activateTab(s, p, now) {
 }
 
 // chat {id, agent, title, favicon} makes a conversation tab; only the agent core passes it.
-// agent makes a tab of that agent: kept apart from the tab list, never saved or archived, and never activated on creation.
+// agent makes a tab the agent may drive: an ordinary tab of the space, never activated (on the desk it starts hidden).
 function createTab(s, p, now, chat) {
   const url = chat ? `skiff://chat/${chat.id}` : navUrl(s, p.url)
-  if (p.agent !== undefined) return createAgentTab(s, p, url, now)
-  const spaceId = p.spaceId === undefined ? s.activeSpaceId : getSpace(s, p.spaceId).id
-  const parent = s.tabs.find((t) => t.id === p.parentId)
+  const agent = p.agent === undefined ? '' : agentName(p.agent)
+  const spaceId = p.spaceId === undefined ? (agent ? normalSpace(s).id : s.activeSpaceId) : getSpace(s, p.spaceId).id
+  const parent = agent ? null : s.tabs.find((t) => t.id === p.parentId)
   const space = getSpace(s, spaceId)
+  if (agent && space.incognito) throw bad('Agent tabs cannot open in the incognito space')
   const profile = p.profileId === undefined ? s.profiles.find((x) => x.id === space.profileId) : getProfile(s, p.profileId)
   if (space.incognito && p.profileId !== undefined) throw bad('Incognito tabs cannot use persistent profiles')
   const partition = p.profileId !== undefined ? profile.partition : space.sessionPartition || profile?.partition || 'persist:main'
-  const tab = { id: newId('t'), spaceId, sessionPartition: partition, ...(profile?.partition === partition && { profileId: profile.id }), url, title: chat ? chat.title : url, favicon: chat ? chat.favicon : '', favorite: false, status: chat ? 'active' : 'progress', lastActiveAt: now, createdAt: now, ...here(s), ...(whatsappURL(url) && { browserIdentity: 'compatible' }), ...(chat && { chat: { agent: chat.agent, sessionId: null } }), ...(isObject(p.intent) && { intent: p.intent }) }
+  const tab = { id: newId('t'), spaceId, sessionPartition: partition, ...(profile?.partition === partition && { profileId: profile.id }), url, title: chat ? chat.title : url, favicon: chat ? chat.favicon : '', favorite: false, status: chat ? 'active' : 'progress', lastActiveAt: now, createdAt: now, ...here(s), ...(whatsappURL(url) && { browserIdentity: 'compatible' }), ...(chat && { chat: { agent: chat.agent, sessionId: null } }), ...(isObject(p.intent) && { intent: p.intent }), ...(agent && { agent, agentState: 'working', agentControl: 'agent', agentAt: now }) }
   if (parent && parent.spaceId === spaceId && isPlain(parent)) tab.parentId = parent.id
   s.tabs.push(tab)
   if (s.deskSize) {
-    tab.desk = { ...newDesk(s, tab), z: 0 }
-    if (p.activate === false) behind(s, tab)
+    tab.desk = { ...(agent ? defaultDesk(s, tab) : newDesk(s, tab)), z: 0, ...(agent && { hidden: true }) }
+    if (agent || p.activate === false) behind(s, tab)
     else front(s, tab)
   }
-  if (p.activate !== false) activateTab(s, { id: tab.id }, now)
-  return tab
-}
-
-function createAgentTab(s, p, url, now) {
-  const agent = typeof p.agent === 'string' ? p.agent.trim().slice(0, 40) : ''
-  if (!agent) throw bad('agent must be a non-empty string')
-  const space = p.spaceId === undefined ? normalSpace(s) : getSpace(s, p.spaceId)
-  if (space.incognito) throw bad('Agent tabs cannot open in the incognito space')
-  const tab = { id: newId('t'), spaceId: space.id, sessionPartition: space.sessionPartition || 'persist:main', url, title: url, favicon: '', agent, ...(whatsappURL(url) && { browserIdentity: 'compatible' }), createdAt: now, lastActiveAt: now }
-  s.agentTabs.push(tab)
+  if (p.activate !== false && !agent) activateTab(s, { id: tab.id }, now)
   return tab
 }
 
 const userTab = (s, id) => {
   const tab = getTab(s, id)
-  if (tab.agent || tab.userPeek) throw bad('Agent tabs and unpromoted peeks cannot be moved, pinned or made favorites')
+  if (tab.userPeek) throw bad('Unpromoted peeks cannot be moved, pinned or made favorites')
   return tab
 }
 
 function closeTab(s, p, now) {
   const tab = getTab(s, p.id)
   if (tab.userPeek) return dismissPeek(s, { id: tab.id })
-  if (tab.agent) {
-    s.agentTabs.splice(s.agentTabs.indexOf(tab), 1)
-    if (s.peek === tab.id) s.peek = null
-    return { closed: tab.id }
-  }
   if (isIncognito(s, tab.spaceId)) {
     dropTab(s, tab)
     return { closed: tab.id }
@@ -834,7 +834,7 @@ function closeTab(s, p, now) {
   cleanupSplit(s, tab.id)
   if (tab.desk) tab.desk.hidden = true
   if (s.activeTabBySpace[tab.spaceId] === tab.id) {
-    const next = s.tabs.filter((t) => !t.favorite && !t.pinned && t.spaceId === tab.spaceId && (!s.desktops || t.desktopId === tab.desktopId)).sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]
+    const next = s.tabs.filter((t) => !t.favorite && !t.pinned && !t.agent && t.spaceId === tab.spaceId && (!s.desktops || t.desktopId === tab.desktopId)).sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]
     if (next) s.activeTabBySpace[tab.spaceId] = next.id
     else delete s.activeTabBySpace[tab.spaceId]
     if (tab.spaceId === s.activeSpaceId) look(s)
@@ -925,12 +925,103 @@ function setBucket(s, p, now) {
   return tab
 }
 
-// Showing the active tab ends its wait: unread and done become active. Returns whether it changed.
+// Showing the active tab ends its wait: unread and done become active, and a finished agent's note is read. Returns whether it changed.
 function look(s) {
   const tab = activeTab(s)
-  if (tab?.status !== 'unread' && tab?.status !== 'done') return false
+  if (!tab) return false
+  const seen = tab.agentUnseen === true
+  delete tab.agentUnseen
+  if (tab.status !== 'unread' && tab.status !== 'done') return seen
   mark(tab, 'active')
   return true
+}
+
+const agentName = (value) => {
+  const name = typeof value === 'string' ? value.trim().slice(0, 40) : ''
+  if (!name) throw bad('agent must be a non-empty string')
+  return name
+}
+
+// A tab an agent could drive at all: a web page of a normal space.
+function agentTarget(s, id) {
+  if (typeof id !== 'string') throw bad('A tab id is required')
+  const tab = getTab(s, id)
+  if (tab.chat || tab.userPeek || isIncognito(s, tab.spaceId)) throw bad('Agents can only use web tabs of a normal space')
+  return tab
+}
+
+// The rule for every agent call, owner CLI included: an agent drives only the tab it opened or one handed to it, and never one the user has taken over.
+// Returns the tab, now working; the caller's call counts as the agent's activity.
+function agentCall(s, p, now, { finishing = false } = {}) {
+  const agent = agentName(p.agent)
+  const tab = agentTarget(s, p.tabId ?? p.id)
+  if (tab.agent !== agent) throw err('forbidden', `Tab ${tab.id} is not ${agent}'s: open a tab with tabs.create {agent} or ask for this one with agent.requestTab`)
+  if (finishing) return tab
+  if (tab.agentControl === 'user') throw err('user_has_control', 'The user has taken over this tab. Stop using it and wait until they give it back.')
+  tab.agentState = 'working'
+  tab.agentAt = now
+  delete tab.agentUnseen
+  delete tab.agentSummary
+  return tab
+}
+
+function handToAgent(s, p, now) {
+  const agent = agentName(p.agent)
+  const tab = agentTarget(s, p.id)
+  Object.assign(tab, { agent, agentState: 'idle', agentControl: 'agent', agentAt: now })
+  for (const key of ['agentUnseen', 'agentSummary', 'agentRequest']) delete tab[key]
+  return tab
+}
+
+// The agent asks for a tab it does not own; the answer is agentAnswer. Asking for its own tab changes nothing.
+function agentRequest(s, p) {
+  const agent = agentName(p.agent)
+  const tab = agentTarget(s, p.tabId ?? p.id)
+  if (tab.agent === agent) return { tab, granted: true }
+  if (tab.agentRequest) throw bad(`${tab.agentRequest.agent} is already asking to use this tab`)
+  tab.agentRequest = { agent }
+  return { tab, granted: false }
+}
+
+function agentAnswer(s, p, now) {
+  const tab = agentTarget(s, p.id)
+  if (!tab.agentRequest) throw bad('No agent is asking to use this tab')
+  if (typeof p.allow !== 'boolean') throw bad('allow must be true or false')
+  const { agent } = tab.agentRequest
+  delete tab.agentRequest
+  if (p.allow) handToAgent(s, { id: tab.id, agent }, now)
+  return { tab, agent, allowed: p.allow }
+}
+
+function agentControl(s, p, now, control) {
+  const tab = agentTarget(s, p.id)
+  if (!tab.agent) throw bad('No agent is using this tab')
+  tab.agentControl = control
+  // Handing the tab back leaves the agent's next call to start work again.
+  if (control === 'agent') Object.assign(tab, { agentState: 'idle', agentAt: now })
+  return tab
+}
+const takeOver = (s, p, now) => agentControl(s, p, now, 'user')
+const giveBack = (s, p, now) => agentControl(s, p, now, 'agent')
+
+// The agent is done with a tab. watching: the user is looking at it, so there is nothing unseen.
+function agentFinish(s, p, now, watching = false) {
+  const tab = agentCall(s, p, now, { finishing: true })
+  const summary = p.summary === undefined ? '' : typeof p.summary === 'string' ? p.summary.trim().slice(0, 200) : null
+  if (summary === null) throw bad('summary must be a string')
+  Object.assign(tab, { agentState: 'done', agentAt: now })
+  if (summary) tab.agentSummary = summary
+  else delete tab.agentSummary
+  if (watching) delete tab.agentUnseen
+  else tab.agentUnseen = true
+  return tab
+}
+
+// A working tab with no agent call for AGENT_IDLE_MS is idle. Returns the ids that changed.
+function agentSweep(s, now, idleMs = AGENT_IDLE_MS) {
+  const idle = s.tabs.filter((t) => t.agentState === 'working' && now - t.agentAt > idleMs)
+  for (const tab of idle) tab.agentState = 'idle'
+  return idle.map((t) => t.id)
 }
 
 // A web page finished loading: seen if the user is watching it, else unread. Only a tab still in progress moves.
@@ -1185,10 +1276,6 @@ function placeNew(s, tab) {
 
 function hideDesk(s, p) {
   const tab = getTab(s, p.id)
-  if (tab.agent) {
-    if (s.peek === tab.id) s.peek = null
-    return tab
-  }
   if (tab.userPeek) { dismissPeek(s, { id: tab.id }); return tab }
   cleanupSplit(s, tab.id)
   tab.desk = { ...(tab.desk || { ...defaultDesk(s, tab), z: 0 }), hidden: true }
@@ -1277,7 +1364,7 @@ function sweep(s, p, now) {
   const loading = new Set(p.loading)
   const settled = s.tabs.filter((t) => t.status === 'progress' && !t.chat && !loading.has(t.id))
   for (const tab of settled) mark(tab, 'unread')
-  const idle = (t) => !t.userPeek && !s.splitBySpace[t.spaceId]?.ids.includes(t.id) && s.activeTabBySpace[t.spaceId] !== t.id
+  const idle = (t) => !t.userPeek && t.agentState !== 'working' && !s.splitBySpace[t.spaceId]?.ids.includes(t.id) && s.activeTabBySpace[t.spaceId] !== t.id
   const done = limit > 0 ? s.tabs.filter((t) => idle(t) && (bucketOf(t) === 'active' || bucketOf(t) === 'unread') && now - t.lastActiveAt > limit) : []
   for (const tab of done) mark(tab, 'done', now)
   const old = s.tabs.filter((t) => t.status === 'done' && idle(t) && !isIncognito(s, t.spaceId) && now - t.doneAt > DONE_HOURS * HOUR)
@@ -1421,11 +1508,12 @@ function setSettings(s, p) {
 }
 
 module.exports = {
-  INCOGNITO_PARTITION, err, isObject, load, resolveInput, webUrl, findTab, activeTab, getTab, visibleTabs, isIncognito, persistable, deskTabs, shownTabs, onDesktop, desktopNumber, setDesktops,
+  INCOGNITO_PARTITION, err, isObject, load, resolveInput, webUrl, findTab, activeTab, getTab, visibleTabs, isIncognito, persistable, storedTabs, deskTabs, shownTabs, onDesktop, desktopNumber, setDesktops,
   createSpace, updateSpace, moveSpace, removeSpace, activateSpace, cycleSpace, openIncognito,
   createFolder, updateFolder, moveFolder, removeFolder, setTrailCollapsed, refreshFolderLabels,
   createProfile, updateProfile, removeProfile, assignProfile, setLinkRule, removeLinkRule, routeLink,
   setSplit, resizeSplit, clearSplit, createPeek, promotePeek, dismissPeek,
   createTab, closeTab, activateTab, navigateTab, moveTab, setFavorite, setPinned, setBucket, bucketOf, look, settle, chatState, setCollapsed, cycleTab, selectTab,
-  placeDesk, tileDesk, deskLayouts, arrange, hideDesk, showDesk, defaultDesk, thumbnailTabs, restore, removeArchived, clearArchive, sweep, setSettings, importSetup
+  placeDesk, tileDesk, deskLayouts, arrange, hideDesk, showDesk, defaultDesk, thumbnailTabs, restore, removeArchived, clearArchive, sweep, setSettings, importSetup,
+  agentCall, handToAgent, agentRequest, agentAnswer, takeOver, giveBack, agentFinish, agentSweep
 }

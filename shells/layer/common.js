@@ -104,6 +104,18 @@ function favicon(tab, fallback = h('span', { class: 'favicon letter', 'aria-hidd
 
 const tabCount = (n) => `${n} ${n === 1 ? 'tab' : 'tabs'}`
 
+// A tab an agent drives or asks for: the agent's name and a dot, pulsing while it works, steady while it waits or asks, green when it is done.
+const AGENT_STATES = { working: 'working', idle: 'waiting', done: 'done', asking: 'asking for this tab' }
+const agentNameOf = (tab) => tab.agentRequest?.agent || tab.agent
+function agentDot(tab) {
+  const name = agentNameOf(tab)
+  if (!name) return null
+  const state = tab.agentRequest ? 'asking' : tab.agentState
+  const text = `${name}, ${AGENT_STATES[state] || state}`
+  return h('span', { class: 'agent-dot', 'data-state': state, role: 'img', 'aria-label': text, title: text })
+}
+const agentBadge = (tab) => (agentNameOf(tab) ? h('span', { class: 'agent-badge' }, tab.agentRequest ? `${agentNameOf(tab)} asks` : tab.agent) : null)
+
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 const readStore = (key) => { try { return JSON.parse(localStorage.getItem(`layer.${key}`)) } catch { return null } }
 const writeStore = (key, value) => { try { localStorage.setItem(`layer.${key}`, JSON.stringify(value)) } catch {} }
@@ -230,22 +242,19 @@ function defaultRect(state, tab) {
 }
 const rectOf = (state, tab) => (tab.desk ? { x: tab.desk.x, y: tab.desk.y, width: tab.desk.width, height: tab.desk.height } : defaultRect(state, tab))
 const activeTabOf = (state) => state.tabs.find((t) => t.id === state.activeTabBySpace[state.activeSpaceId])
-const isShown = (state, tab) => tab === activeTabOf(state) || (tab.desk ? !tab.desk.hidden : isPlain(tab))
+const isShown = (state, tab) => tab === activeTabOf(state) || (tab.desk ? !tab.desk.hidden : isPlain(tab) && !tab.agent)
 // The core sets state.desktops only where macOS desktops are known; each tab belongs to one, and the desk shows the current desktop's.
 const onDesktop = (state, tab) => !state.desktops || tab.desktopId === state.desktops.current
 // Labels exist only with two or more desktops.
 const desktopOf = (state, tab) => (state.desktops?.list.length > 1 ? state.desktops.list.find((d) => d.id === tab.desktopId) : null)
-// Back to front, as the core stacks them: unplaced windows, placed ones by z, the active tab, then a peeked agent tab in front; only the foreground set while there is one.
+// Back to front, as the core stacks them: unplaced windows, placed ones by z, then the active tab; only the foreground set while there is one.
 function deskWindows(state) {
   const active = activeTabOf(state)
   const only = state.deskOnly
   const shown = visibleTabs(state, state.activeSpaceId).filter((t) => t !== active && onDesktop(state, t) && isShown(state, t) && (!only || only.includes(t.id)))
   const list = [...shown.filter((t) => !t.desk), ...shown.filter((t) => t.desk).sort((a, b) => a.desk.z - b.desk.z)]
   if (active) list.push(active)
-  const peeked = state.agentTabs?.find((t) => t.id === state.peek && t.desk)
-  if (peeked) list.push(peeked)
-  const front = peeked || active
-  return list.map((tab) => ({ tab, active: tab === front, rect: rectOf(state, tab) }))
+  return list.map((tab) => ({ tab, active: tab === active, rect: rectOf(state, tab) }))
 }
 /* ---------- ears: each window's tag on its top edge, clear of whatever is drawn in front of it ---------- */
 

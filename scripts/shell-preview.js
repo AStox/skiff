@@ -73,6 +73,12 @@ const tabs = [
   tab('u3', 's2', 'https://bikes.example/fit', 'Bike fit notes', { createdAt: ago(2200), lastActiveAt: ago(2150) }),
   tab('u4', 's2', 'https://food.example/recipes', 'Recipes', { createdAt: ago(2300), lastActiveAt: ago(2250) })
 ]
+// PREVIEW_AGENTS=1 hands four tabs to agents: working, idle, done and unseen, done and seen.
+const AGENT_PREVIEW = [['working', 'omp'], ['idle', 'Claude'], ['done', 'omp', true], ['done', 'Codex']]
+const withAgents = (list, ids) => (!process.env.PREVIEW_AGENTS ? list : list.map((t) => {
+  const [agentState, agent, unseen] = AGENT_PREVIEW[ids.indexOf(t.id)] || []
+  return agent ? { ...t, agent, agentState, ...(unseen && { agentUnseen: true }) } : t
+}))
 const archived = (id, url, title, minutes) => ({ id, spaceId: 's1', url, title, favicon: '', sessionPartition: 'persist:main', archivedAt: ago(minutes) })
 const archive = [
   archived('a1', 'https://margin.example/reading/october', 'Reading list for October', 2900),
@@ -81,7 +87,7 @@ const archive = [
   ...Array.from({ length: 9 }, (_, i) => archived(`a${i + 4}`, `https://older.example/${i + 4}`, `Older page ${i + 4}`, 5000 + i * 700))
 ]
 const state = {
-  spaces, activeSpaceId: 's1', tabs, activeTabBySpace: { s1: 't1', s2: 'u1' }, archive, collapsed: {}, agentTabs: [], peek: null,
+  spaces, activeSpaceId: 's1', tabs: withAgents(tabs, ['t4', 't5', 't6', 't7']), activeTabBySpace: { s1: 't1', s2: 'u1' }, archive, collapsed: {},
   shells: ['default', 'filmstrip', 'index', 'lacquer', 'ledger', 'quiet', 'timeline'],
   settings: { autoArchiveHours: 12, searchUrl: 'https://www.google.com/search?q=%s', shell: path.basename(path.resolve(shellDir)) === 'shell' ? 'default' : path.basename(path.resolve(shellDir)), shortcuts: {}, ai: { agents: [], agent: '', model: '', effort: '' } },
   window: { width: size[0], height: size[1] }
@@ -178,7 +184,7 @@ function deskState([W, H], shell) {
   const gone = (id, url, title, minutes) => ({ id, spaceId: 'work', url, title, favicon: '', sessionPartition: 'persist:main', archivedAt: ago(minutes) })
   return {
     spaces: [{ id: 'work', name: 'Work', color: '#4f6bed' }, { id: 'personal', name: 'Personal', color: '#2f6b4f' }],
-    activeSpaceId: 'work', tabs: [...tabs, ...DESK_THREADS].map((t) => ({ ...t, bucket: S.bucketOf(t) })), activeTabBySpace: { work: 'github', personal: 'nytimes' }, collapsed: {}, agentTabs: [], peek: null,
+    activeSpaceId: 'work', tabs: withAgents([...tabs, ...DESK_THREADS], ['electron', 'youtube', 'hn', 'figma']).map((t) => ({ ...t, bucket: S.bucketOf(t) })), activeTabBySpace: { work: 'github', personal: 'nytimes' }, collapsed: {},
     archive: [gone('a1', 'https://linear.app/skiff/issue/SKF-80', 'SKF-80 Buoy notices', 300), gone('a2', 'https://github.com/skiff/skiff/pull/38', 'skiff#38 Quiet pill', 2900)],
     shells: ['default', 'filmstrip', 'index', 'lacquer', 'layer', 'ledger', 'quiet', 'timeline'],
     settings: { autoArchiveHours: 12, searchUrl: 'https://www.google.com/search?q=%s', shell, shortcuts: {}, ai: { agents: [], agent: '', model: '', effort: '' } },

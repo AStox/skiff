@@ -374,6 +374,9 @@ test('the chat tab takes follow-ups, effort changes, permission answers, Stop an
   await settled(skiff, chatId)
   const opened = (await skiff.state()).tabs.find((t) => t.url === target)
   expect(opened, 'The agent opened the tab through Skiff').toBeTruthy()
+  // It is the chat agent's own tab, and the end of the turn finishes it.
+  expect(opened).toMatchObject({ agent: 'Fake' })
+  await expect.poll(async () => (await skiff.state()).tabs.find((t) => t.id === opened.id)).toMatchObject({ agentState: 'done', agentUnseen: true })
   await expect(skiff.shell.locator(`#list li.row[data-tab-id="${opened.id}"]`)).toBeVisible()
 
   await skiff.shell.locator(`#list li.row[data-tab-id="${tab.id}"]`).click()

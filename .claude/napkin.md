@@ -78,6 +78,18 @@
 10. **[2026-11-17] Under Playwright a page never gets a window `focus` event when its view takes the keyboard**
    Do instead: after `ui.showOverlay {focus: true}`, `ui.emit` an event (`ai-shown`, the command bar's `new-tab`) and focus the field in its handler; never rely on `addEventListener('focus')` in an overlay. Check the field with `toBeFocused()` and the view with `webContents.isFocused()`.
 
+## Agent Control
+1. **[2026-11-24] `before-input-event` and `before-mouse-event` also see DevTools input; only `keyDown` with `text` is missed**
+   Do instead: tell an agent's events from the user's by what it is sending right now (`sent(id, event)` in `src/agent-browser.js`, keyed on type and key), never by a flag, and never let a user-key guard `preventDefault` everything: the symptom of that mistake is that Shift+Tab, Meta+Enter and arrow keys (all `rawKeyDown`) never reach the page while a plain Enter (`keyDown` with text) does. Proven with a scratch main process: `Input.dispatchKeyEvent` rawKeyDown/keyUp and `Input.dispatchMouseEvent` press/release reach both events.
+2. **[2026-11-24] `Page.captureScreenshot` on a page parked in the hidden agent window waits forever once the page has changed**
+   Do instead: `wc.capturePage()` after `wake(view)` (`screenshot` in `src/agent-browser.js`). A first DevTools screenshot of a never-changed page works, which makes the hang look random; typing or clicking first reproduces it every time. A concurrent `capturePage` nudge, `incrementCapturerCount` (not in Electron 45) and `invalidate()` did not help.
+3. **[2026-11-24] Playwright cannot show that the control layer locks a page**
+   Do instead: for "the user's click is swallowed" send a real X click with `e2e/native-pointer.py` at the element's screen position (window content bounds + view bounds + rect) and read the page's own `mousedown` log; a Playwright `click` goes through DevTools into the page and passes straight under the layer. User keys are `wc.sendInputEvent` on the page (reaches `before-input-event`), not `page.keyboard`. The layer's own page is a new view each time it is created (idle, take over and give back destroy it), so fetch it again (`control()` in `e2e/agent-browser.spec.js`) instead of holding a Playwright page.
+4. **[2026-11-24] Hand-run Electron under a fixed Xvfb display fails on its second start (`GPU process isn't usable`, zygote errors)**
+   Do instead: stop Xvfb, delete `/tmp/.X11-unix/X<n>` and `/tmp/.X<n>-lock`, start it again and use a new `SKIFF_DATA`/`HOME` each run (`xvfb-run -a` does this for e2e). Use `setsid`-less `( cmd & echo $! > pid )` subshells from the agent shell; a `setsid` start died at once. For x11grab frames the window sits at its centre of a 1440x1000 screen (80,100 for 1280x800).
+5. **[2026-11-24] A Layer chip's list closes by itself right after the shell switch, because the desk window is still taking focus**
+   Do instead: open it inside `expect(...).toPass()` (the keyboard leaving closes the list, as it should); a plain click then `toBeVisible` fails every time and passes with a one second sleep.
+
 ## User Directives
 1. **[2026-11-11] Keep it bare**
    Do instead: add a feature only when Adam asks for it; every UI action must also be a registry command.
