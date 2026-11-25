@@ -532,13 +532,13 @@ test('explicit tab identity stays through navigation, archive, restore and reset
 
 test('agent settings default to none, migrate the old single command and the old Cmd+J', () => {
   const s = S.load()
-  assert.deepEqual(s.settings.ai, { agents: [], agent: '', model: '', effort: '' })
+  assert.deepEqual(s.settings.ai, { agents: [], agent: '', model: '', effort: '', machine: '' })
   assert.deepEqual(s.settings.shortcuts['CmdOrCtrl+J'], { method: 'ui.emit', params: { name: 'ask-agent' } })
-  assert.deepEqual(S.load({ settings: { ai: { command: '  /opt/bin/omp acp  ' } } }).settings.ai, { agents: [{ name: 'omp', command: '/opt/bin/omp acp' }], agent: 'omp', model: '', effort: '' })
+  assert.deepEqual(S.load({ settings: { ai: { command: '  /opt/bin/omp acp  ' } } }).settings.ai, { agents: [{ name: 'omp', command: '/opt/bin/omp acp' }], agent: 'omp', model: '', effort: '', machine: '' })
   assert.deepEqual(S.load({ settings: { ai: { command: "'/usr/bin/gemini' --acp" } } }).settings.ai.agents[0].name, 'gemini')
-  assert.deepEqual(S.load({ settings: { ai: { command: '  ' } } }).settings.ai, { agents: [], agent: '', model: '', effort: '' })
-  for (const ai of ['broken', { agents: 'x' }, { agents: [{ name: 'a', command: 'b' }], agent: 'z' }]) assert.deepEqual(S.load({ settings: { ai } }).settings.ai, { agents: [], agent: '', model: '', effort: '' })
-  const kept = { agents: [{ name: 'omp', command: 'omp acp' }], agent: 'omp', model: 'm', effort: 'high' }
+  assert.deepEqual(S.load({ settings: { ai: { command: '  ' } } }).settings.ai, { agents: [], agent: '', model: '', effort: '', machine: '' })
+  for (const ai of ['broken', { agents: 'x' }, { agents: [{ name: 'a', command: 'b' }], agent: 'z' }]) assert.deepEqual(S.load({ settings: { ai } }).settings.ai, { agents: [], agent: '', model: '', effort: '', machine: '' })
+  const kept = { agents: [{ name: 'omp', command: 'omp acp' }], agent: 'omp', model: 'm', effort: 'high', machine: '' }
   assert.deepEqual(S.load({ settings: { ai: kept } }).settings.ai, kept)
   const old = { 'CmdOrCtrl+J': { method: 'ui.emit', params: { name: 'toggle-ai' } } }
   assert.deepEqual(S.load({ settings: { shortcuts: old } }).settings.shortcuts['CmdOrCtrl+J'], { method: 'ui.emit', params: { name: 'ask-agent' } })
@@ -549,10 +549,10 @@ test('agent settings default to none, migrate the old single command and the old
 test('agent settings are validated, trimmed and merged into the current ones', () => {
   const s = S.load()
   S.setSettings(s, { ai: { agents: [{ name: ' omp ', command: '  omp acp  ', extra: 1 }, { name: 'Gemini', command: 'gemini --acp' }] } })
-  assert.deepEqual(s.settings.ai, { agents: [{ name: 'omp', command: 'omp acp' }, { name: 'Gemini', command: 'gemini --acp' }], agent: 'omp', model: '', effort: '' })
+  assert.deepEqual(s.settings.ai, { agents: [{ name: 'omp', command: 'omp acp' }, { name: 'Gemini', command: 'gemini --acp' }], agent: 'omp', model: '', effort: '', machine: '' })
   S.setSettings(s, { ai: { model: 'fake-large' } })
   S.setSettings(s, { ai: { agent: 'Gemini', effort: 'high' } })
-  assert.deepEqual({ ...s.settings.ai, agents: s.settings.ai.agents.length }, { agents: 2, agent: 'Gemini', model: 'fake-large', effort: 'high' })
+  assert.deepEqual({ ...s.settings.ai, agents: s.settings.ai.agents.length }, { agents: 2, agent: 'Gemini', model: 'fake-large', effort: 'high', machine: '' })
   S.setSettings(s, { ai: { agents: [{ name: 'omp', command: 'omp acp' }] } })
   assert.equal(s.settings.ai.agent, 'omp')
   const agent = (name, command = 'x') => ({ name, command })
@@ -561,7 +561,7 @@ test('agent settings are validated, trimmed and merged into the current ones', (
     { agents: [agent('')] }, { agents: [agent('n'.repeat(41))] }, { agents: [agent('a', '  ')] }, { agents: [agent('a', 'c'.repeat(501))] },
     { agents: [agent('Omp'), agent('omp')] }, { agent: 'nobody' }, { model: 3 }, { effort: 'e'.repeat(201) }
   ]) assert.throws(() => S.setSettings(s, { ai }), { code: 'bad_params' })
-  assert.deepEqual(s.settings.ai, { agents: [{ name: 'omp', command: 'omp acp' }], agent: 'omp', model: 'fake-large', effort: 'high' })
+  assert.deepEqual(s.settings.ai, { agents: [{ name: 'omp', command: 'omp acp' }], agent: 'omp', model: 'fake-large', effort: 'high', machine: '' })
   S.setSettings(s, { ai: { agents: Array.from({ length: 10 }, (_, i) => agent(`a${i}`, 'c'.repeat(500))), agent: '' } })
   assert.equal(s.settings.ai.agents.length, 10)
   assert.equal(s.settings.ai.agent, '')
@@ -595,6 +595,21 @@ test('chat tabs load only with a valid chat, keep it through the archive and bec
   const web = S.navigateTab(again, { id: back.id, url: 'b.example' }, 4)
   assert.deepEqual([web.url, web.chat, web.title, web.favicon], ['https://b.example/', undefined, 'https://b.example/', ''])
   assert.throws(() => S.createTab(again, { url: 'skiff://chat/c0123456789ab' }, 5), { code: 'bad_params' })
+})
+
+test('a chat records its machine through save, load and the archive; a chat without one stays on this machine', () => {
+  const s = S.load()
+  const far = S.createTab(s, {}, 1, { id: 'c0123456789ab', agent: 'omp', machine: 'host_abc', title: 'Far', favicon: '../favicons/0123456789abcdef01234567.svg' })
+  const near = S.createTab(s, {}, 2, { id: 'c0123456789ac', agent: 'omp', machine: '', title: 'Near', favicon: '../favicons/0123456789abcdef01234567.svg' })
+  assert.deepEqual([far.chat, near.chat], [{ agent: 'omp', machine: 'host_abc', sessionId: null }, { agent: 'omp', sessionId: null }])
+  const loaded = S.load(JSON.parse(JSON.stringify(S.persistable(s))))
+  assert.deepEqual(loaded.tabs.map((t) => t.chat.machine), ['host_abc', undefined])
+  S.closeTab(loaded, { id: far.id }, 3)
+  assert.equal(S.restore(S.load(JSON.parse(JSON.stringify(S.persistable(loaded)))), {}, 4).chat.machine, 'host_abc')
+  S.setSettings(s, { ai: { machine: 'host_abc' } })
+  assert.equal(s.settings.ai.machine, 'host_abc')
+  assert.throws(() => S.setSettings(s, { ai: { machine: 'm'.repeat(201) } }), { code: 'bad_params' })
+  assert.throws(() => S.setSettings(s, { ai: { machine: 3 } }), { code: 'bad_params' })
 })
 
 test('selectTab shows a tab by its place in Ctrl+Tab order', () => {

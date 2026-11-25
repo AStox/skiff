@@ -347,6 +347,7 @@ async function previewDesk(dir) {
     'commands.list': () => [],
     'extensions.list': () => [],
     'ai.agents': () => [],
+    'ai.machines': () => [],
     'ui.shellPath': () => ({ path: '/preview' }),
     'ui.focusPage': () => null,
     'ui.inFront': () => ({ front: false }),

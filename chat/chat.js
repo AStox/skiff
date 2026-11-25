@@ -15,6 +15,7 @@ const INLINE = /`([^`\n]+)`|\*\*(?=\S)(.+?)\*\*|__(?=\S)(.+?)__|\*(?=[^\s*])([^*
 
 let chat = null
 let agents = []
+let machines = []
 let state = null
 let failure = ''
 let permissionKey = ''
@@ -199,6 +200,16 @@ function fill(select, options, value) {
   select.parentElement.hidden = !options.length
 }
 
+const machineName = (m) => (m.status && m.status !== 'connected' && m.status !== 'unknown' ? `${m.name} (${m.status})` : m.name)
+
+// With only this machine there is nothing to pick, so the pill stays hidden.
+function drawMachines() {
+  const known = machines.some((m) => m.id === (chat.machine || ''))
+  const options = machines.map((m) => ({ value: m.id, name: machineName(m) }))
+  fill($('chat-machine'), known || !chat.machine ? options : [...options, { value: chat.machine, name: chat.machine }], chat.machine || '')
+  $('chat-machine').parentElement.hidden = options.length < 2
+}
+
 function render() {
   if (!chat) return
   const setup = inSetup()
@@ -214,9 +225,10 @@ function render() {
   $('chat-status').dataset.status = chat.status
   $('chat-status').title = STATUS[chat.status] || chat.status
   $('chat-status').setAttribute('aria-label', $('chat-status').title)
+  drawMachines()
   fill($('chat-model'), chat.models || [], chat.model)
   fill($('chat-effort'), chat.efforts || [], chat.effort)
-  $('chat-model').disabled = $('chat-effort').disabled = busy()
+  $('chat-machine').disabled = $('chat-model').disabled = $('chat-effort').disabled = busy()
   $('chat-stop').hidden = chat.status !== 'running'
   $('chat-send').hidden = chat.status === 'running'
   $('chat-send').disabled = chat.status === 'restoring' || Boolean(chat.recovery?.requiresFresh)
@@ -285,6 +297,12 @@ input.addEventListener('input', () => {
 })
 $('chat-stop').addEventListener('click', () => skiff.call('ai.cancel', { chatId }).catch((error) => showError(error.message || 'The agent did not stop.')))
 $('chat-start-fresh').addEventListener('click', () => send(true))
+const loadMachines = (refresh) => skiff.call('ai.machines', refresh ? { refresh: true } : {}).then((list) => {
+  machines = list || []
+  render()
+}).catch(() => {})
+$('chat-machine').addEventListener('change', () => configure('machine'))
+$('chat-machine').addEventListener('focus', () => loadMachines(true))
 $('chat-model').addEventListener('change', () => configure('model'))
 $('chat-effort').addEventListener('change', () => configure('effort'))
 $('chat-agents').addEventListener('click', openAgents)
@@ -316,6 +334,7 @@ skiff.call('ai.agents').then((first) => {
   render()
   sendPending()
 }).catch(() => {})
+loadMachines(false)
 skiff.call('state.get').then((first) => {
   state = state || first
   theme()
