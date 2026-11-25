@@ -195,10 +195,6 @@ test('native wheel and scrollbar drags scroll pages without moving the root wind
   const wcId = (await pageIds(skiff))['/scroll-fixture']
   const protectedArea = await guardNativeDesk(skiff, wcId)
   await cursor(skiff, null)
-  await skiff.app.evaluate(({ ipcMain }) => {
-    global.__nativeScrollDrags = []
-    ipcMain.on('skiff:page-drag', (_event, phase, x, y) => global.__nativeScrollDrags.push({ phase, x, y }))
-  })
   const geometry = () => skiff.app.evaluate(({ BrowserWindow, webContents }, id) => {
     const wc = webContents.fromId(id)
     const win = BrowserWindow.getAllWindows().find((w) => w.contentView.children.some((v) => v.webContents === wc))
@@ -257,7 +253,6 @@ test('native wheel and scrollbar drags scroll pages without moving the root wind
       await testInfo.attach('native-scroll-result', { body: JSON.stringify({
         scroller: selector || 'document', metrics, original, final: await geometry(),
         originalDesk, finalDesk: (await tabOf(skiff, tab.id)).desk, scrollTop: await offset(),
-        pageDrags: await skiff.app.evaluate(() => global.__nativeScrollDrags),
         events: await page.evaluate(() => window.nativeScrollEvents)
       }, null, 2), contentType: 'application/json' })
     }
@@ -819,92 +814,26 @@ const spots = (page) => page.evaluate(() => {
   return { empty: [Math.round(r('main').left + 400), Math.round(r('main').top + 120)], margin: [12, 12], text: mid(r('h1'), 30), link: mid(r('a'), 10), input: mid(r('input'), 20), scrollbar: [document.documentElement.clientWidth + 5, 200] }
 })
 
-test('a drag from a desk page\'s empty background goes to its frame as page-drag; text, links, inputs, scrollbars and a page that keeps the press stay the page\'s', async ({ skiff }) => {
-  await inertShell(skiff, "<script>window.drags = []; window.skiff.on('page-drag', (d) => window.drags.push(d))</script>")
-  // Every report the page sends, accepted or not.
-  await skiff.app.evaluate(({ ipcMain }) => { global.__pageDrags = []; ipcMain.on('skiff:page-drag', (_e, phase) => global.__pageDrags.push(phase)) })
-  const reports = () => skiff.app.evaluate(() => global.__pageDrags.splice(0))
+test('a press and drag on a desk page\'s empty background never moves its window, and over text it selects', async ({ skiff }) => {
   const id = (await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })).id
-  const other = (await skiff.rpc('tabs.create', { url: skiff.origin + '/two', activate: false })).id
-  await skiff.rpc('desk.place', { id: other, x: 950, y: 100, width: 400, height: 400 })
-  await skiff.rpc('desk.place', { id, x: 100, y: 100, width: 800, height: 600 })
-  const page = await skiff.page('/one')
-  await page.waitForLoadState()
-  // Links stay put, so a press on one cannot leave the page.
-  await page.evaluate(() => { window.clicks = 0; addEventListener('click', (e) => { window.clicks++; e.preventDefault() }) })
-  await skiff.rpc('ui.focusPage')
-  const frame = await shellPage(skiff, `/frame.html?tab=${id}`)
-  const otherFrame = await shellPage(skiff, `/frame.html?tab=${other}`)
-  const drags = () => frame.evaluate(() => window.drags.splice(0))
-  const at = (start, [x, y], phase) => ({ tab: id, phase, screenX: start.x + x, screenY: start.y + y })
-  const spot = await spots(page)
-
-  // Past 4px: start where it was pressed, each move, the end where it was let go, all in screen pixels; the page keeps its focus and sees no click.
-  const { empty } = spot
-  let start = await pointer(skiff, page.url(), press(empty, [60, 40]))
-  const by = (dx, dy, phase = 'move') => at(start, [empty[0] + dx, empty[1] + dy], phase)
-  expect(await drags()).toEqual([at(start, empty, 'start'), by(15, 10), by(30, 20), by(45, 30), by(60, 40), by(60, 40, 'end')])
-  expect(start).toEqual({ x: 100, y: 100 })
-  expect(await hasFocus(skiff, page)).toBe(true)
-  expect(await page.evaluate(() => window.clicks)).toBe(0)
-  await pointer(skiff, page.url(), [['mouseDown', ...empty], ['mouseUp', ...empty]])
-  expect(await page.evaluate(() => window.clicks)).toBe(1)
-  // 4px or less is a click, not a drag.
-  await pointer(skiff, page.url(), press(empty, [3, 2], 2))
-  expect(await drags()).toEqual([])
-  // The body margin is background too.
-  await pointer(skiff, page.url(), press(spot.margin, [20, 0], 1))
-  expect((await drags()).map((d) => d.phase)).toEqual(['start', 'move', 'end'])
-  // Escape cancels at the last point; the rest of that press is the page's.
-  start = await pointer(skiff, page.url(), [['mouseDown', ...empty], ['mouseMove', empty[0] + 20, empty[1]], ['keyDown', 'Escape'], ['mouseMove', empty[0] + 40, empty[1]], ['mouseUp', empty[0] + 40, empty[1]]])
-  expect(await drags()).toEqual([by(0, 0, 'start'), by(20, 0), by(20, 0, 'cancel')])
-  // A move with the button already up cancels too.
-  start = await pointer(skiff, page.url(), [['mouseDown', ...empty], ['mouseMove', empty[0] + 20, empty[1]]])
-  await skiff.app.evaluate(({ webContents }, url) => webContents.getAllWebContents().find((w) => w.getURL() === url).sendInputEvent({ type: 'mouseMove', x: 300, y: 300 }), page.url())
-  await expect.poll(drags).toEqual([by(0, 0, 'start'), by(20, 0), by(20, 0, 'cancel')])
-  await pointer(skiff, page.url(), [['mouseUp', ...empty]])
-  expect(await reports()).toHaveLength(6 + 3 + 3 + 3)
-
-  // Text keeps selecting, and a link, an input and the scrollbar keep their own presses.
-  await pointer(skiff, page.url(), press(spot.text, [80, 0]))
-  expect(await page.evaluate(() => getSelection().toString())).toMatch(/\w{3}/)
-  for (const name of ['link', 'input', 'scrollbar']) await pointer(skiff, page.url(), press(spot[name], [20, 10]))
-  expect(await reports()).toEqual([])
-  await page.evaluate(() => scrollTo(0, 0))
-  // A page that cancels the press, or the first move after it, keeps the drag.
-  await page.evaluate(() => addEventListener('mousedown', (e) => e.preventDefault(), { once: true }))
-  await pointer(skiff, page.url(), press(empty, [40, 0]))
-  await page.evaluate(() => addEventListener('mousedown', () => addEventListener('mousemove', (e) => e.preventDefault(), { once: true }), { once: true }))
-  await pointer(skiff, page.url(), press(empty, [40, 0]))
-  expect(await reports()).toEqual([])
-  await pointer(skiff, page.url(), press(empty, [40, 0]))
-  expect((await drags()).map((d) => d.phase)).toEqual(['start', 'move', 'move', 'move', 'move', 'end'])
-  // Only that window's frame hears it.
-  expect(await otherFrame.evaluate(() => window.drags)).toEqual([])
-  expect(await skiff.shell.evaluate(() => window.drags)).toEqual([])
-})
-
-test('in the layer shell a drag from the page background moves its window as the ear does, and a drop on the top edge fills the desk', async ({ skiff }) => {
-  const id = (await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })).id
-  await skiff.rpc('desk.place', { id, x: 300, y: 200, width: 700, height: 500 })
+  const rect = { x: 300, y: 200, width: 700, height: 500 }
+  await skiff.rpc('desk.place', { id, ...rect })
   const page = await skiff.page('/one')
   await page.waitForLoadState()
   const frame = await shellPage(skiff, `/frame.html?tab=${id}`)
   await frame.waitForLoadState()
   await expect(frame.locator('#ear')).toBeVisible()
-  const { empty } = await spots(page)
+  const { empty, text } = await spots(page)
+  const unmoved = async () => {
+    await page.waitForTimeout(300)
+    expect((await tabOf(skiff, id)).desk).toMatchObject(rect)
+    expect((await views(skiff)).find((v) => v.path === '/one')).toMatchObject(rect)
+  }
   await pointer(skiff, page.url(), press(empty, [120, 80], 8))
-  await expect.poll(async () => (await tabOf(skiff, id)).desk).toMatchObject({ x: 420, y: 280, width: 700, height: 500 })
-  await expect.poll(async () => (await views(skiff)).find((v) => v.path === '/one')).toMatchObject({ x: 420, y: 280, width: 700, height: 500 })
-  // Text on the page still selects instead.
-  const { text } = await spots(page)
-  await pointer(skiff, page.url(), press(text, [60, 40]))
-  expect((await tabOf(skiff, id)).desk).toMatchObject({ x: 420, y: 280 })
-  // Up to the desk's top edge, away from its middle, the window fills the desk.
-  const { width } = (await skiff.state()).deskSize
-  const layouts = await skiff.rpc('desk.layouts')
-  await pointer(skiff, page.url(), press(empty, [width / 6 - 420 - empty[0], 1 - 280 - empty[1]], 8))
-  await expect.poll(async () => (await tabOf(skiff, id)).desk).toMatchObject(layouts.fill)
+  await unmoved()
+  await pointer(skiff, page.url(), press(text, [80, 0]))
+  expect(await page.evaluate(() => getSelection().toString())).toMatch(/\w{3}/)
+  await unmoved()
 })
 
 test('desk.layouts names the window rects of the desk, desk.tile and the tiling keys put a window there', async ({ skiff }) => {
@@ -946,59 +875,6 @@ test('desk.layouts names the window rects of the desk, desk.tile and the tiling 
     await expect.poll(async () => (await tabOf(skiff, other)).desk).toMatchObject(layouts[name])
   }
   await expect.poll(async () => (await children(skiff)).find((c) => c.kind === 'page' && c.name === '/two')).toMatchObject(layouts.center)
-})
-
-test('dragging a window past the left, right or bottom desk edge shrinks it from that side, regrows it back to its start size, and stops at the smallest size', async ({ skiff }) => {
-  const id = (await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })).id
-  const page = await skiff.page('/one')
-  await page.waitForLoadState()
-  const { deskSize: { width: W, height: H } } = await skiff.state()
-  const frame = await shellPage(skiff, `/frame.html?tab=${id}`)
-  await frame.waitForLoadState()
-  const { empty } = await spots(page)
-  const place = async (rect) => {
-    await skiff.rpc('desk.place', { id, ...rect })
-    await expect.poll(() => views(skiff).then((v) => v.find((x) => x.path === '/one'))).toMatchObject(rect)
-    await expect.poll(() => frame.evaluate(() => mine()?.rect)).toEqual(rect)
-  }
-  const rectOf = async () => { const { x, y, width, height } = (await tabOf(skiff, id)).desk; return { x, y, width, height } }
-  // A press on the page background, a move by each of the deltas in turn, and a release where the last one ends.
-  const drag = (...deltas) => {
-    let at = [...empty]
-    const steps = [['mouseDown', ...at]]
-    for (const [dx, dy] of deltas) {
-      for (let i = 1; i <= 4; i++) steps.push(['mouseMove', at[0] + dx * i / 4, at[1] + dy * i / 4])
-      at = [at[0] + dx, at[1] + dy]
-    }
-    steps.push(['mouseUp', ...at])
-    return pointer(skiff, page.url(), steps)
-  }
-  const start = { x: 300, y: 200, width: 700, height: 500 }
-  // 100px past the left edge: the left edge stays on it, the right one follows the pointer.
-  await place(start)
-  await drag([-400, 0])
-  await expect.poll(rectOf).toEqual({ x: 0, y: 200, width: 600, height: 500 })
-  // Back the other way it grows again, never past its start size, and then moves.
-  await place(start)
-  await drag([-400, 0], [250, 0])
-  await expect.poll(rectOf).toEqual({ x: 150, y: 200, width: 700, height: 500 })
-  // The right edge.
-  await place(start)
-  await drag([W - 900, 0])
-  await expect.poll(rectOf).toEqual({ x: W - 600, y: 200, width: 600, height: 500 })
-  // The bottom edge.
-  await place(start)
-  await drag([0, H - 600])
-  await expect.poll(rectOf).toEqual({ x: 300, y: H - 400, width: 700, height: 400 })
-  // The top stays a limit, the ear's: the frame's top, 26px above the page, stops at the desk's edge and the window keeps its size.
-  await place(start)
-  await drag([0, -274])
-  await expect.poll(rectOf).toEqual({ x: 300, y: 26, width: 700, height: 500 })
-  // However far, a window stops at the smallest size, 340 wide.
-  const narrow = { x: 100, y: 200, width: 470, height: 500 }
-  await place(narrow)
-  await drag([-300, 0])
-  await expect.poll(rectOf).toEqual({ x: 0, y: 200, width: 340, height: 500 })
 })
 
 test('a new desk window goes where its host was last put, else into the largest free part of the desk', async ({ skiff }) => {
@@ -1772,7 +1648,7 @@ test.describe('layer frame sizing', () => {
         await atDesk(skiff, frame.url(), Array.from({ length: n }, (_, i) => ['mouseMove', from.x + (p.x - from.x) * (i + 1) / n, from.y + (p.y - from.y) * (i + 1) / n]))
       }
       const drop = () => atDesk(skiff, frame.url(), [['mouseUp', at.x, at.y]])
-      return { to, drop }
+      return { to, drop, start: at }
     }
     const zone = () => skiff.shell.evaluate(() => {
       const z = document.querySelector('#desk .zone')
@@ -1900,32 +1776,21 @@ test.describe('layer frame sizing', () => {
     await frame.keyboard.up('Control')
     await expect.poll(async () => { const r = await rectOfTab(); return [r.width, r.height] }).toEqual([340, 200])
   })
-  test('a drag from the page background drives the same strip and Buoy drop as the ear', async ({ skiff }) => {
-    const { one, frame, deskSize, layouts, place, rectOfTab, zone, stripShown } = await frameSetup(skiff)
-    const rect = { x: 300, y: 200, width: 700, height: 500 }
-    await place(rect)
-    const page = await skiff.page('/one')
-    await page.waitForLoadState()
-    const { empty } = await spots(page)
-    // Page points where the view was at the press, for desk points.
-    const toPage = (p, r) => [p.x - r.x, p.y - r.y]
-    const glide = (from, to, n = 6) => Array.from({ length: n }, (_, i) => ['mouseMove', from[0] + (to[0] - from[0]) * (i + 1) / n, from[1] + (to[1] - from[1]) * (i + 1) / n])
-    const strip = await frame.evaluate(() => layoutStrip(state))
-    const centre = strip.cells.find((c) => c.name === 'center')
-    const top = toPage({ x: deskSize.width / 2, y: 4 }, rect)
-    const cellAt = toPage({ x: centre.x + centre.width / 2, y: centre.y + centre.height / 2 }, rect)
-    await pointer(skiff, page.url(), [['mouseDown', ...empty], ...glide(empty, top), ...glide(top, cellAt, 3)])
-    await expect.poll(stripShown).toBe(true)
-    await expect.poll(zone).toEqual({ label: 'Centre', ...layouts.center })
-    await pointer(skiff, page.url(), [['mouseUp', 0, 0]])
-    await expect.poll(rectOfTab).toEqual(layouts.center)
-    await expect.poll(stripShown).toBe(false)
-
-    // Let go over the Buoy and the window hides.
-    const buoy = await frame.evaluate(() => buoyRect(state))
-    const from = empty
-    const over = toPage({ x: buoy.x + buoy.width / 2, y: buoy.y + buoy.height / 2 }, layouts.center)
-    await pointer(skiff, page.url(), [['mouseDown', ...from], ...glide(from, over), ['mouseUp', ...over]])
-    await expect.poll(async () => (await tabOf(skiff, one)).desk.hidden).toBe(true)
+  test('dragging the ear far past the right or bottom desk edge shrinks the window from that side', async ({ skiff }) => {
+    const { deskSize: { width: W, height: H }, place, rectOfTab, grabEar } = await frameSetup(skiff)
+    const start = { x: 300, y: 200, width: 700, height: 500 }
+    const drag = async (dx, dy) => {
+      const { to, drop, start: from } = await grabEar()
+      await to({ x: from.x + dx, y: from.y + dy }, 4)
+      await drop()
+    }
+    // The right edge: the window keeps its left edge and its right one follows the pointer.
+    await place(start)
+    await drag(W - 900, 0)
+    await expect.poll(rectOfTab).toEqual({ x: W - 600, y: 200, width: 600, height: 500 })
+    // The bottom edge.
+    await place(start)
+    await drag(0, H - 600)
+    await expect.poll(rectOfTab).toEqual({ x: 300, y: H - 400, width: 700, height: 400 })
   })
 })

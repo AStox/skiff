@@ -5,7 +5,7 @@
 // sample tab.desk rects, a frame view under each when shell.json declares one, named overlays, and a small core behind desk.*, tabs.*
 // and ui.setDesk. Steps run in the order given:
 //   --click sel | --hover sel | --drag "x,y x,y ..." (held, not released) | --drop "x,y x,y ..." | --pinch "x,y dy" (Ctrl+wheel) | --emit name=json | --type text | --eval js | --wait ms
-// A press on a stand-in page's empty background reports page-drag to its frame, as the core does. A selector (or --eval code) starting with "overlay:"
+// A selector (or --eval code) starting with "overlay:"
 // targets the main overlay, "panel:" the panel's, "buoy:" the Buoy's, "tabs:" the tab list's, "layouts:" the layout strip, "frame:<tab id>:" that window's frame. Default size 1440x900.
 // The preview stands for Skiff behind another app, so a pick from the tab list shows just that window.
 'use strict'
@@ -253,34 +253,6 @@ async function previewDesk(dir) {
         root.style.cssText = 'position:fixed;inset:0;z-index:2147482000;pointer-events:none'
         document.head.append(Object.assign(document.createElement('style'), { textContent: css }))
         document.body.append(root)
-        // The core's page-drag, roughly: a press on a page's background (not a control, not text) that travels more than 4px drags the window.
-        root.addEventListener('pointerdown', (e) => {
-          const pv = e.target.closest('.pv')
-          if (!pv || e.button !== 0 || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.target.closest('a, button, input, textarea, select, label, summary, [contenteditable], [draggable="true"]')) return
-          const caret = document.caretRangeFromPoint(e.clientX, e.clientY)
-          if (caret?.startContainer.nodeType === Node.TEXT_NODE) {
-            const text = document.createRange()
-            text.selectNodeContents(caret.startContainer)
-            if ([...text.getClientRects()].some((r) => e.clientX >= r.left && e.clientX < r.right && e.clientY >= r.top && e.clientY < r.bottom)) return
-          }
-          e.preventDefault()
-          pv.setPointerCapture(e.pointerId)
-          const send = (phase, ev) => window.__skiffCall('preview.pageDrag', { tab: pv.dataset.id, phase, screenX: ev.screenX, screenY: ev.screenY })
-          let started = false
-          const move = (ev) => {
-            if (!started && Math.hypot(ev.screenX - e.screenX, ev.screenY - e.screenY) <= 4) return
-            if (!started) send('start', e)
-            started = true
-            send('move', ev)
-          }
-          const up = (ev) => {
-            pv.removeEventListener('pointermove', move)
-            pv.removeEventListener('pointerup', up)
-            if (started) send('end', ev)
-          }
-          pv.addEventListener('pointermove', move)
-          pv.addEventListener('pointerup', up)
-        })
       }
       const at = (el, r, z) => Object.assign(el.style, { position: 'absolute', left: `${r.x}px`, top: `${r.y}px`, width: `${r.width}px`, height: `${r.height}px`, zIndex: String(z), display: '' })
       for (const el of [...root.children]) {
@@ -404,12 +376,6 @@ async function previewDesk(dir) {
       t.desk = { ...only(r), z: 0 }
       raise(t)
       await push()
-      return null
-    },
-    // Sent to the dragged window's frame only, as the core does.
-    'preview.pageDrag': async (p) => {
-      const frame = page.frames().find((f) => f.url().includes(`${inset.file}?tab=${encodeURIComponent(p.tab)}`))
-      await frame?.evaluate((d) => window.__skiffEmit?.('page-drag', d), p).catch(() => {})
       return null
     },
     'desk.hide': async (p) => {

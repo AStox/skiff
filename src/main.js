@@ -1208,7 +1208,6 @@ function createWindow(near = state.window, { quiet = false } = {}) {
   readDesktops()
   deskId = state.desktops?.current ?? null
   frameSpec = deskMode ? readFrame(manifest()) : null
-  for (const view of views.values()) view.webContents.send('skiff:desk-page', deskMode)
   laidOutSpace = null
   shown = []
   attached = null
@@ -2451,14 +2450,6 @@ async function start() {
     if (!id || !canGo(e.sender, way)) return
     swipedAt.set(e.sender, Date.now())
     rpc(`tabs.${way}`, { id })
-  })
-  // A desk window's page reports drags that start on its empty background; they go to that window's frame only.
-  const deskPage = (e) => deskMode && pageTab(e)
-  ipcMain.handle('skiff:desk-page', (e) => Boolean(deskPage(e)))
-  ipcMain.on('skiff:page-drag', (e, phase, screenX, screenY) => {
-    const id = deskPage(e)
-    if (!id || !['start', 'move', 'end', 'cancel'].includes(phase) || ![screenX, screenY].every(Number.isFinite)) return
-    sendEvent(frames.get(id)?.webContents, 'page-drag', { tab: id, phase, screenX, screenY })
   })
   buildMenu()
   registerGlobalShortcuts()

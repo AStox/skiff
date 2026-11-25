@@ -277,12 +277,12 @@ function within(r) {
 /* ---------- gestures: move by the ear or the page's background, resize by the insets, pinch the ear ---------- */
 
 // The view moves under the pointer while it drags, so positions come from screen deltas, never from this view's own coordinates.
-// source: 'pointer' for this frame's own handles, 'page' for page-drag reports from the page above it. at: the pointer on the desk.
-function begin(kind, source, screen, at) {
+// at: the pointer on the desk.
+function begin(kind, screen, at) {
   const w = mine()
   if (gesture || pinch || !w) return false
   const g = gesture = {
-    kind, source, start: frameOf(w.rect), p0: screen, at0: at,
+    kind, start: frameOf(w.rect), p0: screen, at0: at,
     others: deskWindows(state).filter((o) => o.tab.id !== id).map((o) => frameOf(o.rect)), buoy: buoyRect(state), moved: false, zone: null, cell: null, over: false, strip: null, rects: null
   }
   layouts().then((rects) => {
@@ -298,7 +298,7 @@ function begin(kind, source, screen, at) {
 
 function start(e, kind) {
   const w = mine()
-  if (e.button !== 0 || !w || !begin(kind, 'pointer', { x: e.screenX, y: e.screenY }, { x: w.rect.x - IN.left + e.clientX, y: w.rect.y - IN.top + e.clientY })) return
+  if (e.button !== 0 || !w || !begin(kind, { x: e.screenX, y: e.screenY }, { x: w.rect.x - IN.left + e.clientX, y: w.rect.y - IN.top + e.clientY })) return
   e.preventDefault()
   e.currentTarget.setPointerCapture(e.pointerId)
 }
@@ -479,12 +479,11 @@ async function toggleFill() {
   call('desk.place', { id, ...within(back) })
 }
 
-const byPointer = (fn) => (e) => { if (gesture?.source === 'pointer') fn(e) }
 const grab = (el, kind) => {
   el.addEventListener('pointerdown', (e) => { if (!e.target.closest('button')) start(e, kind) })
-  el.addEventListener('pointermove', byPointer(step))
-  el.addEventListener('pointerup', byPointer(finish))
-  el.addEventListener('pointercancel', byPointer(finish))
+  el.addEventListener('pointermove', step)
+  el.addEventListener('pointerup', finish)
+  el.addEventListener('pointercancel', finish)
 }
 grab($('ear'), 'move')
 grab($('bar'), 'move')
@@ -521,15 +520,6 @@ appearance.addEventListener('change', () => { painted = ''; render() })
 // Titles measured in the fallback font are wrong once the shell's font arrives.
 document.fonts.addEventListener('loadingdone', () => { earWidths.clear(); offerWidths.clear(); placeEar() })
 skiff.on('drag-cancel', cancel)
-// A press on the page's empty background drags the window as the ear does; the core sends it here in screen coordinates.
-skiff.on('page-drag', (d) => {
-  if (d?.tab !== id) return
-  if (d.phase === 'start') begin('move', 'page', { x: d.screenX, y: d.screenY }, { x: d.screenX - screenX, y: d.screenY - screenY })
-  else if (gesture?.source !== 'page') return
-  else if (d.phase === 'move') step(d)
-  else if (d.phase === 'end') finish()
-  else cancel()
-})
 skiff.on('desk-guides', (data) => {
   const next = data?.moving?.id && data.moving.id !== id ? data.moving : null
   if (!next && !moving) return

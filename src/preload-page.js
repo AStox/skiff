@@ -1,7 +1,7 @@
 'use strict'
 // Runs in every browser-page frame with no exposed browser API. HTTP(S) frames
 // report draft/media safety; their main frame also owns link peek and the
-// existing swipe and desk-background drag gestures below.
+// existing swipe gesture below.
 const { ipcRenderer, webFrame } = require('electron')
 
 // Errors the page itself raises, for the main-process log; capped so a looping page stays cheap.
@@ -89,102 +89,6 @@ if (window === window.top && /^https?:$/.test(location.protocol)) {
     event.stopImmediatePropagation()
     ipcRenderer.send('skiff:link-peek', { url: link.href })
   }, true)
-  const ROLES = 'button checkbox combobox grid gridcell link listbox menu menubar menuitem menuitemcheckbox menuitemradio option radio radiogroup scrollbar searchbox slider spinbutton switch tab tablist textbox tree treegrid treeitem'
-  const INTERACTIVE = ['a[href]', 'area', 'button', 'input', 'textarea', 'select', 'label', 'summary', 'video', 'audio', 'canvas', 'embed', 'object', 'iframe', ...ROLES.split(' ').map((role) => `[role~="${role}"]`)].join(',')
-  let desk = false
-  let press = null
-  let last = null
-
-  const overText = (x, y) => {
-    const node = document.caretRangeFromPoint(x, y)?.startContainer
-    if (node?.nodeType !== Node.TEXT_NODE || !node.data.trim()) return false
-    const range = document.createRange()
-    range.selectNodeContents(node)
-    return [...range.getClientRects()].some((r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom)
-  }
-  const overScrollbar = (el, x, y) => {
-    const root = document.documentElement
-    if (x >= root.clientWidth || y >= root.clientHeight) return true
-    if (el === root || el === document.body || (el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight)) return false
-    const b = el.getBoundingClientRect()
-    const left = b.left + el.clientLeft
-    const top = b.top + el.clientTop
-    return x < left || x >= left + el.clientWidth || y < top || y >= top + el.clientHeight
-  }
-  const background = (e) => {
-    const path = e.composedPath().filter((node) => node instanceof Element)
-    const target = path[0]
-    if (!target || path.some((el) => el.matches(INTERACTIVE) || el.isContentEditable || el.draggable)) return false
-    return ['auto', 'default'].includes(getComputedStyle(target).cursor) && !overText(e.clientX, e.clientY) && !overScrollbar(target, e.clientX, e.clientY)
-  }
-  // A window resized under a held press makes Chromium send moves with no button down; they are not a release.
-  let held = { at: 0, size: '' }
-  const sizeNow = () => `${innerWidth}x${innerHeight}`
-  const send = (phase, x, y) => ipcRenderer.send('skiff:page-drag', phase, x, y)
-  const stop = (e) => {
-    e.preventDefault()
-    e.stopImmediatePropagation()
-  }
-  const cancel = () => {
-    if (press?.started) send('cancel', last.screenX, last.screenY)
-    press = null
-  }
-
-  ipcRenderer.invoke('skiff:desk-page').then((on) => { desk = on }, () => {})
-  ipcRenderer.on('skiff:desk-page', (_e, on) => {
-    desk = on
-    if (!on) cancel()
-  })
-  addEventListener('mousedown', (e) => {
-    cancel()
-    if (!desk || !e.isTrusted || e.button !== 0 || e.ctrlKey || e.shiftKey || e.altKey || e.metaKey || !background(e)) return
-    press = { down: e, firsts: {}, started: false, pending: false }
-    last = e
-  }, true)
-  for (const type of ['pointermove', 'mousemove']) addEventListener(type, (e) => {
-    if (!press || !e.isTrusted) return
-    if (!(e.buttons & 1)) return !press.started || (performance.now() - held.at < 250 && sizeNow() !== held.size) ? undefined : cancel()
-    held = { at: performance.now(), size: sizeNow() }
-    press.firsts[type] ||= e
-    if (type === 'pointermove') return press.started && stop(e)
-    last = e
-    if (press.started) {
-      stop(e)
-      return send('move', e.screenX, e.screenY)
-    }
-    if (press.pending || Math.hypot(e.clientX - press.down.clientX, e.clientY - press.down.clientY) <= 4) return
-    press.pending = true
-    // Once this move has gone through the page's own listeners, so a page that keeps the press or its first move keeps the drag.
-    const mine = press
-    setTimeout(() => {
-      if (press !== mine) return
-      if (mine.down.defaultPrevented || Object.values(mine.firsts).some((move) => move.defaultPrevented)) return (press = null)
-      mine.started = true
-      getSelection()?.removeAllRanges()
-      send('start', mine.down.screenX, mine.down.screenY)
-      send('move', last.screenX, last.screenY)
-    })
-  }, true)
-  addEventListener('mouseup', (e) => {
-    if (!press || e.button !== 0) return
-    const { started } = press
-    press = null
-    if (!started) return
-    send('end', e.screenX, e.screenY)
-    // The press and release land on the same background, which would make a click.
-    addEventListener('click', stop, { capture: true, once: true })
-    setTimeout(() => removeEventListener('click', stop, { capture: true }))
-  }, true)
-  addEventListener('selectstart', (e) => { if (press?.started) e.preventDefault() }, true)
-  addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || !press?.started) return
-    stop(e)
-    cancel()
-  }, true)
-  addEventListener('blur', cancel)
-  addEventListener('pagehide', cancel)
-  document.addEventListener('visibilitychange', () => document.hidden && cancel())
-
   // A two finger swipe at the scroll edge goes back or forward, as in Chrome on the Mac. A gesture is a wheel stream that a 120 ms pause
   // ends; it counts only if it starts sideways where nothing under the pointer can scroll that way, with history that way and the
   // page not taking the wheel. 140px of travel navigates once, momentum included; reversing first cancels. Page wheel events stay untouched.
