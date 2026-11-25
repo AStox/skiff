@@ -1,9 +1,10 @@
 'use strict'
 const fs = require('node:fs')
 const crypto = require('node:crypto')
-const { spawn } = require('node:child_process')
+const { spawn, execFile } = require('node:child_process')
 const S = require('./state')
 const { connect } = require('./acp')
+const { quote, loginShell } = require('./machines')
 const log = require('./log').scope('ai')
 
 const TURNS = 200
@@ -17,7 +18,7 @@ const KINDS = { model: 'Model', effort: 'Effort' }
 const bad = (message) => S.err('bad_params', message)
 const str = (value, max) => (typeof value === 'string' ? value.slice(0, max) : '')
 const stopped = () => Object.assign(new Error('The agent stopped'), { closed: true })
-const loginShell = () => (!process.env.SHELL || /(nologin|false)$/.test(process.env.SHELL) ? '/bin/sh' : process.env.SHELL)
+const machineKey = (name, machine) => (machine ? `${machine}\n${name}` : name)
 const chatUrl = (id) => `skiff://chat/${id}`
 
 function within(ms, promise, message) {
@@ -49,7 +50,7 @@ function option(list, category) {
 // push(name, data): 'ai-agents' with the agents list, or 'chat' with one chat object (at most once per 30 ms per chat);
 // watching(tabId): whether the user is looking at that tab right now, which decides if a finished turn leaves it unread;
 // skills: {status(command), install(command)} of the Skiff skill in the agent's harness (see agent-skill.js), shown as `skill` in each agent's entry.
-function createAi({ dir, version, state, changed, favicon, api = () => null, revokeAccess = () => {}, pageText, pageGeneration = () => null, push, transcripts, watching = () => false, skills = { status: () => null, install: () => null } }) {
+function createAi({ dir, version, state, changed, favicon, api = () => null, revokeAccess = () => {}, pageText, pageGeneration = () => null, push, transcripts, watching = () => false, skills = { status: () => null, install: () => null }, machines = { list: async () => [], normalize: (id) => id || '', find: async () => null } }) {
   const agents = new Map()
   const chats = new Map()
   let halted = false
@@ -64,18 +65,21 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
   }
 
   const configured = () => state().settings.ai.agents
-  function agentOf(name) {
+  // One agent process per agent and machine, so the same agent can run here and on another machine at once.
+  function agentOf(name, machine = '') {
     const conf = configured().find((a) => a.name === name)
     if (!conf) return null
-    if (!agents.has(name)) agents.set(name, { name, command: conf.command, status: 'idle', error: '', info: null, models: null, model: null, efforts: null, effort: null, loadSession: false, proc: null, ready: null, spare: null })
-    return agents.get(name)
+    const key = machineKey(name, machine)
+    if (!agents.has(key)) agents.set(key, { key, name, machine, command: conf.command, status: 'idle', error: '', info: null, models: null, model: null, efforts: null, effort: null, loadSession: false, proc: null, ready: null, spare: null })
+    return agents.get(key)
   }
-  const currentAgent = (agent) => Boolean(agent && agents.get(agent.name) === agent && configured().some((entry) => entry.name === agent.name && entry.command === agent.command))
-  const entry = (a) => ({ name: a.name, command: a.command, status: a.status, error: a.error, info: a.info, models: a.models, model: a.model, efforts: a.efforts, effort: a.effort, loadSession: a.loadSession, skill: skills.status(a.command) })
+  const currentAgent = (agent) => Boolean(agent && agents.get(agent.key) === agent && configured().some((entry) => entry.name === agent.name && entry.command === agent.command))
+  const entry = (a) => ({ name: a.name, command: a.command, status: a.status, error: a.error, info: a.info, models: a.models, model: a.model, efforts: a.efforts, effort: a.effort, loadSession: a.loadSession, skill: a.machine ? null : skills.status(a.command), ...(a.machine && { machine: a.machine }) })
+  // The settings list is this machine's agents; a remote one is reached through warm() and its chats.
   const list = () => configured().map((a) => entry(agentOf(a.name)))
   const pushAgents = () => push('ai-agents', list())
 
-  const shape = (c) => ({ id: c.id, tabId: c.tabId, agent: c.agent, status: c.status, error: c.error, pending: c.pending, sessionId: c.sessionId, models: c.models, model: c.model, efforts: c.efforts, effort: c.effort, permission: c.permission, turns: c.turns, ...(c.recovery && { recovery: c.recovery }), ...(c.transcriptError && { transcriptError: c.transcriptError }) })
+  const shape = (c) => ({ id: c.id, tabId: c.tabId, agent: c.agent, machine: c.machine, status: c.status, error: c.error, pending: c.pending, sessionId: c.sessionId, models: c.models, model: c.model, efforts: c.efforts, effort: c.effort, permission: c.permission, turns: c.turns, ...(c.recovery && { recovery: c.recovery }), ...(c.transcriptError && { transcriptError: c.transcriptError }) })
   // A chat waiting for a permission answer is not busy: it needs the user, not time.
   const track = (c) => {
     const busy = (c.status === 'running' || c.status === 'restoring') && !c.permission
@@ -92,8 +96,8 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
       push('chat', shape(c))
     }, 30)
   }
-  function newChat(id, tabId, agent, sessionId) {
-    const c = { id, tabId, agent, status: 'ready', error: '', pending: '', sessionId, models: null, model: null, efforts: null, effort: null, permission: null, turns: [], count: 0, timer: null, proc: null, asker: null, config: {}, replay: null, stopping: false, want: {}, credential: null, scopeTabId: null, recovery: null }
+  function newChat(id, tabId, agent, sessionId, machine = '') {
+    const c = { id, tabId, agent, machine, status: 'ready', error: '', pending: '', sessionId, models: null, model: null, efforts: null, effort: null, permission: null, turns: [], count: 0, timer: null, proc: null, asker: null, config: {}, replay: null, stopping: false, want: {}, credential: null, scopeTabId: null, recovery: null }
     chats.set(id, c)
     return c
   }
@@ -149,7 +153,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
   function down(agent, p, message) {
     if (agent.proc !== p) return
     log.info('agent down', { agent: agent.name, pid: p.child.pid, reason: message ? message.split('\n')[0].slice(0, 200) : 'stopped' })
-    for (const c of chats.values()) if (c.agent === agent.name) release(c)
+    for (const c of chats.values()) if (c.agent === agent.name && c.machine === agent.machine) release(c)
     Object.assign(agent, { proc: null, ready: null, spare: null, status: message ? 'error' : 'idle', error: message })
     p.rpc.close()
     // The shell may run the agent as a child (npx, ssh), so its whole process group goes.
@@ -159,7 +163,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
       p.child.kill()
     }
     for (const c of message ? chats.values() : []) {
-      if (c.agent !== agent.name || (c.proc !== p && c.status !== 'running' && c.status !== 'restoring')) continue
+      if (c.agent !== agent.name || c.machine !== agent.machine || (c.proc !== p && c.status !== 'running' && c.status !== 'restoring')) continue
       const reply = openOf(c)
       if (reply) finish(reply, 'error')
       Object.assign(c, { proc: null, status: 'error', error: message, permission: null })
@@ -169,12 +173,17 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
     pushAgents()
   }
 
-  function launch(agent) {
+  // target: the machine to run on over ssh ({alias}), or null for this one.
+  function launch(agent, target) {
     fs.mkdirSync(dir, { recursive: true })
-    const child = spawn(loginShell(), ['-lc', agent.command], { cwd: dir, stdio: 'pipe', detached: true })
+    // The remote login shell runs the command from its home folder; the quoting keeps $SHELL for the remote side to expand.
+    const remote = target && `exec "\${SHELL:-/bin/sh}" -lc ${quote(agent.command)}`
+    const script = target ? `exec ssh -T -o BatchMode=yes -o ServerAliveInterval=30 ${quote(target.alias)} ${quote(remote)}` : agent.command
+    const child = spawn(loginShell(), ['-lc', script], { cwd: dir, stdio: 'pipe', detached: true })
     const started = Date.now()
-    log.info('agent spawn', { agent: agent.name, command: agent.command.trim().split(/\s+/).find((word) => !word.includes('='))?.split('/').pop(), cwd: dir, pid: child.pid })
-    const p = { child, sessions: new Map(), http: false, auth: [] }
+    log.info('agent spawn', { agent: agent.name, command: target ? `ssh ${target.alias}` : agent.command.trim().split(/\s+/).find((word) => !word.includes('='))?.split('/').pop(), cwd: dir, pid: child.pid })
+    const p = { child, sessions: new Map(), http: false, auth: [], home: target ? remoteHome(target) : null }
+    p.home?.catch(() => {})
     let tail = ''
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (data) => {
@@ -203,7 +212,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
       const init = await rpc(agent, p, 'initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: 'skiff', version } })
       agent.info = S.isObject(init?.agentInfo) ? { name: str(init.agentInfo.name, 100), version: str(init.agentInfo.version, 50) } : null
       agent.loadSession = init?.agentCapabilities?.loadSession === true
-      p.http = init?.agentCapabilities?.mcpCapabilities?.http === true
+      p.http = !target && init?.agentCapabilities?.mcpCapabilities?.http === true
       p.auth = Array.isArray(init?.authMethods) ? init.authMethods : []
       log.info('agent ready', { agent: agent.name, pid: child.pid, name: agent.info?.name, version: agent.info?.version, loadSession: agent.loadSession, http: p.http, authMethods: p.auth.length, ms: Date.now() - started })
       agent.status = 'ready'
@@ -213,7 +222,35 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
     agent.ready.catch((e) => { if (!e.closed) log.error('agent initialize failed', { agent: agent.name, err: e.stack }); return e.closed || down(agent, p, `The agent could not start: ${e.message}`) })
     return agent.ready
   }
-  const start = (agent) => halted || !currentAgent(agent) ? Promise.reject(stopped()) : agent.ready || launch(agent)
+  // A remote agent waits for its machine to be found in bb's list; the first call launches it and later ones share that launch.
+  function start(agent) {
+    if (halted || !currentAgent(agent)) return Promise.reject(stopped())
+    if (agent.ready) return agent.ready
+    if (!agent.machine) return launch(agent, null)
+    agent.resolving ??= machines.find(agent.machine).then((target) => {
+      if (halted || !currentAgent(agent)) throw stopped()
+      if (agent.ready) return agent.ready
+      if (!target) {
+        Object.assign(agent, { status: 'error', error: `Machine ${agent.machine} is not in bb's machine list` })
+        pushAgents()
+        throw new Error(agent.error)
+      }
+      return launch(agent, target)
+    }).finally(() => { agent.resolving = null })
+    return agent.resolving
+  }
+
+  // The remote user's home folder, the working folder of its sessions; ssh's own error text when the machine cannot be reached.
+  function remoteHome(target) {
+    const script = `exec ssh -T -o BatchMode=yes -o ConnectTimeout=15 ${quote(target.alias)} ${quote('printf %s "$HOME"')}`
+    return new Promise((resolve, reject) => {
+      execFile(loginShell(), ['-lc', script], { timeout: 30000, encoding: 'utf8' }, (error, stdout, stderr) => {
+        const home = stdout.trim()
+        if (!error && home.startsWith('/')) resolve(home)
+        else reject(new Error(`Could not read the home folder on ${target.alias}: ${(stderr.trim() || error?.message || 'no answer').split('\n').slice(-3).join('\n')}`))
+      })
+    })
+  }
 
   // Warm sessions have no credential. A real chat gets only its explicitly selected grant.
   async function open(agent, p, method, extra, c) {
@@ -223,7 +260,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
     if (halted || c?.stopping || !currentAgent(agent) || agent.proc !== p) { local?.revoke?.(); throw stopped() }
     if (c) c.credential = local
     const mcpServers = local ? [{ type: 'http', name: 'skiff', url: `http://127.0.0.1:${local.port}/mcp`, headers: [{ name: 'Authorization', value: `Bearer ${local.token}` }] }] : []
-    const params = { ...extra, cwd: dir, mcpServers }
+    const params = { ...extra, cwd: p.home ? await p.home : dir, mcpServers }
     try {
       const result = await rpc(agent, p, method, params).catch(async (e) => {
         if (e.code !== -32000 || !p.auth.length) throw e
@@ -315,7 +352,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
   }
 
   async function run(c, user, reply, text, pageTab) {
-    const agent = agentOf(c.agent)
+    const agent = agentOf(c.agent, c.machine)
     try {
       let page = pageTab ? await readPage(pageTab) : null
       const recheckPage = () => {
@@ -440,7 +477,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
   }
 
   async function restore(c) {
-    const agent = agentOf(c.agent)
+    const agent = agentOf(c.agent, c.machine)
     c.status = 'restoring'
     track(c)
     c.restorePending = true
@@ -484,7 +521,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
     if (chats.has(p.chatId)) return shape(chats.get(p.chatId))
     const tab = [...state().tabs, ...state().archive].find((t) => t.chat && t.url === chatUrl(p.chatId))
     if (!tab) throw S.err('not_found', `No chat ${p.chatId}`)
-    const c = newChat(p.chatId, tab.id, tab.chat.agent, tab.chat.sessionId)
+    const c = newChat(p.chatId, tab.id, tab.chat.agent, tab.chat.sessionId, machines.normalize(tab.chat.machine))
     if (!c.agent && !c.sessionId) c.status = 'setup'
     if (c.sessionId) restore(c)
     else if (transcripts) {
@@ -514,13 +551,14 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
     if (typeof p.text !== 'string' || (name && !p.text.trim())) throw bad('text must be a non-empty string')
     const model = choice(p, 'model') ?? s.settings.ai.model
     const effort = choice(p, 'effort') ?? s.settings.ai.effort
+    const machine = machines.normalize(choice(p, 'machine') ?? s.settings.ai.machine)
     const source = p.tabId === undefined ? S.activeTab(s) : S.getTab(s, p.tabId)
     const id = `c${crypto.randomBytes(6).toString('hex')}`
-    const tab = S.createTab(s, { spaceId: source?.spaceId, parentId: source?.id, ...(p.intent === true && { intent: { text: p.text.trim(), sent: 'ask', at: Date.now() } }) }, Date.now(), { id, agent: name, title: p.text.trim().slice(0, 80) || 'New chat', favicon })
-    if (name) S.setSettings(s, { ai: { agent: name, model, effort } })
+    const tab = S.createTab(s, { spaceId: source?.spaceId, parentId: source?.id, ...(p.intent === true && { intent: { text: p.text.trim(), sent: 'ask', at: Date.now() } }) }, Date.now(), { id, agent: name, machine, title: p.text.trim().slice(0, 80) || 'New chat', favicon })
+    if (name) S.setSettings(s, { ai: { agent: name, model, effort, machine } })
     changed()
-    const c = newChat(id, tab.id, name, null)
-    log.info('chat new', { chatId: id, agent: name, length: p.text.length, model, effort })
+    const c = newChat(id, tab.id, name, null, machine)
+    log.info('chat new', { chatId: id, agent: name, machine, length: p.text.length, model, effort })
     if (!name) {
       Object.assign(c, { status: 'setup', pending: p.text })
       touch(c)
@@ -553,16 +591,30 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
     return { turnId: send(c, p.text, null).id }
   }
 
+  // A chat that moves to another machine starts a fresh session there: the old session lives in the old machine's agent.
   async function configure(p) {
     const c = find(p)
     const picks = Object.fromEntries(['model', 'effort'].map((key) => [key, choice(p, key)]).filter(([, value]) => value))
-    const agent = agentOf(c.agent)
+    const machine = p.machine === undefined ? undefined : machines.normalize(choice(p, 'machine'))
+    const moved = machine !== undefined && machine !== c.machine
+    const label = moved ? (await machines.list()).find((m) => m.id === machine)?.name || machine : ''
+    if (moved) {
+      if (c.status === 'running' || c.restorePending) throw bad('The agent is still working.')
+      const { model, effort } = c
+      release(c)
+      c.proc?.sessions.delete(c.sessionId)
+      Object.assign(c, { machine, sessionId: null, proc: null, models: null, model: null, efforts: null, effort: null, config: {}, want: { model, effort }, ...(c.status === 'error' && { status: 'ready', error: '' }) })
+      if (c.turns.length) add(c, { kind: 'notice', text: `Moved to ${label}. The next message starts a fresh session there; earlier turns are not sent.` })
+      saveTab(c, { machine, sessionId: null })
+    }
+    const agent = agentOf(c.agent, c.machine)
     for (const [kind, value] of Object.entries(picks)) {
       if (agent?.proc && c.proc === agent.proc) await choose(c, agent, c.proc, kind, value).catch((e) => { throw bad(e.closed ? e.message : `${KINDS[kind]} ${value} is not available`) })
       else c.want[kind] = value
     }
-    S.setSettings(state(), { ai: picks })
+    S.setSettings(state(), { ai: { ...picks, ...(machine !== undefined && { machine }) } })
     changed()
+    touch(c)
     return shape(c)
   }
 
@@ -580,7 +632,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
 
   // Starts the agent and opens a session for its next ask, so the bar can list its models and efforts.
   function warm(p) {
-    const agent = agentOf(p.agent)
+    const agent = agentOf(p.agent, machines.normalize(choice(p, 'machine')))
     if (!agent) throw bad(`No agent named ${p.agent}`)
     if (!agent.spare) {
       log.debug('warm', { agent: agent.name })
@@ -628,10 +680,10 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
     for (const agent of [...agents.values()]) {
       if (configured().find((a) => a.name === agent.name)?.command === agent.command) continue
       revokeAccess({ owner: agent.name })
-      log.info('agent removed or changed', { agent: agent.name })
+      log.info('agent removed or changed', { agent: agent.name, machine: agent.machine })
       if (agent.proc) down(agent, agent.proc, 'Agent stopped')
       for (const c of chats.values()) {
-        if (c.agent !== agent.name) continue
+        if (c.agent !== agent.name || c.machine !== agent.machine) continue
         c.stopping = true
         release(c)
         if (c.permission) answer(c, { outcome: 'cancelled' })
@@ -640,7 +692,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
         Object.assign(c, { proc: null, status: 'error', error: 'Agent configuration changed' })
         touch(c)
       }
-      agents.delete(agent.name)
+      agents.delete(agent.key)
     }
     pushAgents()
   }
@@ -659,7 +711,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
   }
 
   for (const configuredAgent of configured()) agentOf(configuredAgent.name)
-  return { agents: list, warm, installSkill, skillStatus, ask, chat, prompt, configure, cancel, permit, settingsChanged, stop }
+  return { agents: list, machines: (p = {}) => machines.list({ refresh: p.refresh === true }), warm, installSkill, skillStatus, ask, chat, prompt, configure, cancel, permit, settingsChanged, stop }
 }
 
 // Tool discovery and execution share the owned command registry with the UI and CLI.

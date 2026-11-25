@@ -17,7 +17,7 @@ const PAGE = { title: 'Example page', url: 'https://example.com/a', selection: '
 const ICON = '../favicons/0123456789abcdef01234567.svg'
 const FOOT = '\nModel: fake-small Effort: low'
 
-function setup({ agents = [{ name: 'Fake', command: AGENT }], page = PAGE, api = () => null, revokeAccess, pageGeneration, transcriptRecovery = false, watching } = {}) {
+function setup({ agents = [{ name: 'Fake', command: AGENT }], page = PAGE, api = () => null, revokeAccess, pageGeneration, transcriptRecovery = false, watching, machines } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skiff-ai-'))
   const s = S.load({ settings: { ai: { agents } } })
   s.settings.transcriptRecovery = transcriptRecovery
@@ -27,7 +27,7 @@ function setup({ agents = [{ name: 'Fake', command: AGENT }], page = PAGE, api =
   const live = []
   const make = () => {
     const ai = createAi({
-      dir: path.join(dir, 'ai'), version: '0.0.0', state: () => s, changed: () => {}, favicon: ICON, api, revokeAccess, pageGeneration, watching,
+      dir: path.join(dir, 'ai'), version: '0.0.0', state: () => s, changed: () => {}, favicon: ICON, api, revokeAccess, pageGeneration, watching, machines,
       transcripts: createTranscripts({ dir: path.join(dir, 'journal'), state: () => s }),
       pageText: (tabId) => {
         reads.push(tabId)
@@ -79,7 +79,7 @@ test('ask opens a chat tab under the page, sends the page only when asked and st
   assert.deepEqual({ status: c.status, model: c.model, effort: c.effort, models: c.models.map((m) => m.name), efforts: c.efforts.map((e) => e.value) }, { status: 'ready', model: 'fake-small', effort: 'low', models: ['Fake Small', 'Fake Large'], efforts: ['low', 'high'] })
   assert.match(c.sessionId, /^fake-session-/)
   assert.equal(tab.chat.sessionId, c.sessionId)
-  assert.deepEqual(s.settings.ai, { agents: [{ name: 'Fake', command: AGENT }], agent: 'Fake', model: '', effort: '' })
+  assert.deepEqual(s.settings.ai, { agents: [{ name: 'Fake', command: AGENT }], agent: 'Fake', model: '', effort: '', machine: '' })
   const [agent] = ai.agents()
   assert.deepEqual({ ...agent, models: agent.models.length, efforts: agent.efforts.length }, { name: 'Fake', command: AGENT, status: 'ready', error: '', info: { name: 'Fake agent', version: '1' }, models: 2, model: 'fake-small', efforts: 2, effort: 'low', loadSession: true, skill: null })
   await until(() => pushes.chat.at(-1)?.status === 'ready' && pushes.chat.at(-1).turns.at(-1).done)
@@ -279,11 +279,11 @@ test('after a restart a chat is restored from its tab with session/load, from th
 
 test('with no agent the chat waits in setup, and its text goes once an agent is configured', async () => {
   const { ai, s } = setup({ agents: [] })
-  assert.deepEqual(s.settings.ai, { agents: [], agent: '', model: '', effort: '' })
+  assert.deepEqual(s.settings.ai, { agents: [], agent: '', model: '', effort: '', machine: '' })
   const { tabId, chatId } = ai.ask({ text: 'hello there' })
   assert.deepEqual(S.findTab(s, tabId).chat, { agent: '', sessionId: null })
   assert.equal(S.findTab(s, tabId).title, 'hello there')
-  assert.deepEqual(ai.chat({ chatId }), { id: chatId, tabId, agent: '', status: 'setup', error: '', pending: 'hello there', sessionId: null, models: null, model: null, efforts: null, effort: null, permission: null, turns: [] })
+  assert.deepEqual(ai.chat({ chatId }), { id: chatId, tabId, agent: '', machine: '', status: 'setup', error: '', pending: 'hello there', sessionId: null, models: null, model: null, efforts: null, effort: null, permission: null, turns: [] })
   assert.throws(() => ai.prompt({ chatId, text: 'hello there' }), { code: 'bad_params', message: 'No agent configured.' })
   const empty = ai.ask({ text: '' })
   assert.equal(S.findTab(s, empty.tabId).title, 'New chat')
@@ -649,4 +649,60 @@ test('a chat waiting for an agent is active and does not move', () => {
   const { ai, s } = setup({ agents: [] })
   const { tabId } = ai.ask({ text: 'hello there' })
   assert.equal(S.bucketOf(S.findTab(s, tabId)), 'active')
+})
+
+test('a chat on another machine runs its own agent over ssh without Skiff tools, and moving a chat starts a fresh session there', async () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'skiff-ssh-'))
+  const remote = path.join(fs.realpathSync(scratch), 'remote')
+  fs.mkdirSync(remote)
+  const bin = path.join(scratch, 'bin')
+  fs.mkdirSync(bin)
+  const logFile = path.join(scratch, 'ssh.log')
+  fs.writeFileSync(path.join(bin, 'ssh'), `#!/bin/sh\necho "$@" >> ${quote(logFile)}\nwhile [ $# -gt 0 ]; do case "$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done\nalias=$1\nshift\ncd ${quote(remote)}\nexport HOME=${quote(remote)} SHELL=/bin/sh FAKE_HOST="$alias"\nexec /bin/sh -c "$1"\n`, { mode: 0o755 })
+  // A login shell that finds the stub ssh whatever the profile does to PATH.
+  const shell = path.join(scratch, 'shell')
+  fs.writeFileSync(shell, `#!/bin/sh\nPATH=${quote(bin)}:"$PATH" exec /bin/sh -c "$2"\n`, { mode: 0o755 })
+  const saved = process.env.SHELL
+  process.env.SHELL = shell
+  test.after(() => {
+    if (saved === undefined) delete process.env.SHELL
+    else process.env.SHELL = saved
+    fs.rmSync(scratch, { recursive: true, force: true })
+  })
+  const grants = []
+  const machines = { list: async () => [{ id: '', name: 'This Mac' }, { id: 'host_box', name: 'Box' }], normalize: (id) => id || '', find: async (id) => (id === 'host_box' ? { id, name: 'Box', alias: 'box' } : null) }
+  const { ai, s } = setup({ machines, api: () => { grants.push(1); return { port: 1, token: 'x' } } })
+
+  const far = ai.ask({ text: 'where-fixture', machine: 'host_box' })
+  await settled(ai, far.chatId)
+  const near = ai.ask({ text: 'where-fixture', machine: '' })
+  await settled(ai, near.chatId)
+  assert.match(last(ai, far.chatId).text, new RegExp(`Host: box Cwd: ${remote} Mcp: none`))
+  assert.match(last(ai, near.chatId).text, /Host: local Cwd: \S+\/ai Mcp: skiff/)
+  assert.deepEqual(grants, [1])
+  assert.deepEqual([ai.chat({ chatId: far.chatId }).machine, ai.chat({ chatId: near.chatId }).machine, S.findTab(s, far.tabId).chat.machine, S.findTab(s, near.tabId).chat.machine, s.settings.ai.machine], ['host_box', '', 'host_box', undefined, ''])
+  assert.deepEqual(fs.readFileSync(logFile, 'utf8').trim().split('\n').sort(), [
+    '-T -o BatchMode=yes -o ConnectTimeout=15 box printf %s "$HOME"',
+    `-T -o BatchMode=yes -o ServerAliveInterval=30 box exec "\${SHELL:-/bin/sh}" -lc ${quote(AGENT)}`
+  ].sort())
+
+  // The same agent runs on both machines at once: moving the remote chat here keeps the local process and the old session id is gone.
+  const before = ai.chat({ chatId: far.chatId }).sessionId
+  await assert.rejects(() => ai.configure({ chatId: far.chatId, machine: 'x'.repeat(201) }), { code: 'bad_params' })
+  const moved = await ai.configure({ chatId: far.chatId, machine: '' })
+  assert.deepEqual([moved.machine, moved.sessionId, S.findTab(s, far.tabId).chat.sessionId, s.settings.ai.machine], ['', null, null, ''])
+  assert.match(kinds(moved, 'notice').at(-1).text, /^Moved to This Mac\. The next message starts a fresh session there/)
+  ai.prompt({ chatId: far.chatId, text: 'where-fixture' })
+  await settled(ai, far.chatId)
+  assert.match(last(ai, far.chatId).text, /Host: local .*Mcp: skiff/)
+  assert.notEqual(ai.chat({ chatId: far.chatId }).sessionId, before)
+  ai.prompt({ chatId: near.chatId, text: 'slow' })
+  await assert.rejects(() => ai.configure({ chatId: near.chatId, machine: 'host_box' }), { code: 'bad_params', message: 'The agent is still working.' })
+  ai.cancel({ chatId: near.chatId })
+  await settled(ai, near.chatId)
+
+  // A machine bb does not list is an error in the chat, not a hang.
+  const gone = ai.ask({ text: 'hi', machine: 'host_gone' })
+  await until(() => ai.chat({ chatId: gone.chatId }).status === 'error')
+  assert.match(ai.chat({ chatId: gone.chatId }).error, /Machine host_gone is not in bb's machine list/)
 })
