@@ -48,9 +48,9 @@ const ICON = {
   figma: svg('#1e1e1e', '<circle cx="9.5" cy="8" r="2" fill="#1abcfe"/><path d="M4.5 4a2 2 0 0 1 2-2H8v4H6.5a2 2 0 0 1-2-2z" fill="#f24e1e"/><path d="M8 2h1.5a2 2 0 1 1 0 4H8z" fill="#ff7262"/><path d="M4.5 8a2 2 0 0 1 2-2H8v4H6.5a2 2 0 0 1-2-2z" fill="#a259ff"/><path d="M4.5 12a2 2 0 0 1 2-2H8v2a2 2 0 1 1-3.5 0z" fill="#0acf83"/>')
 }
 
-// PREVIEW_AGENTS=1 hands six tabs to agents: working, idle, done and unseen, done and seen; and in Personal one working and one asking for its tab.
-const AGENT_PREVIEW = [['working', 'omp'], ['idle', 'Claude'], ['done', 'omp', true], ['done', 'Codex'], ['idle', 'Claude', false, true], ['working', 'omp']]
-const AGENT_TABS = ['electron', 'youtube', 'hn', 'figma', 'airbnb', 'maps']
+// PREVIEW_AGENTS=1 hands six tabs to agents: working, idle, done and unseen, done and seen; and in Personal one working and one asking for its tab. It also adds a working agent tab on the host of the Calendar favorite, which is not open, so that favorite carries it.
+const AGENT_PREVIEW = [['working', 'omp'], ['idle', 'Claude'], ['done', 'omp', true], ['done', 'Codex'], ['idle', 'Claude', false, true], ['working', 'omp'], ['working', 'omp']]
+const AGENT_TABS = ['electron', 'youtube', 'hn', 'figma', 'airbnb', 'maps', 'calendar-agent']
 const withAgents = (list) => (!process.env.PREVIEW_AGENTS ? list : list.map((t) => {
   const [agentState, agent, unseen, asking] = AGENT_PREVIEW[AGENT_TABS.indexOf(t.id)] || []
   return agent ? { ...t, agent, agentState, ...(unseen && { agentUnseen: true }), ...(asking && { agentRequest: { agent } }) } : t
@@ -66,6 +66,7 @@ const DESK_TABS = [
   ['hn', 'work', 'https://news.ycombinator.com/', 'Hacker News', letter('Y', '#ff6600')],
   ['notion', 'work', 'https://notion.so/reading-list', 'Reading list', letter('N', '#ffffff', '#111')],
   ['gmail', 'work', 'https://mail.google.com/mail/u/0/#inbox', 'Inbox (12)', ICON.mail],
+  ...(process.env.PREVIEW_AGENTS ? [['calendar-agent', 'work', 'https://calendar.google.com/calendar/r/month', 'Month of Nov', ICON.calendar]] : []),
   ['youtube', 'work', 'https://youtube.com/watch?v=calm', 'Designing calm software', letter('Y', '#e62117')],
   ['nytimes', 'personal', 'https://cooking.nytimes.com/weeknight-soups', 'Cooking: Weeknight soups', letter('T', '#111'), 'recipe'],
   ['maps', 'personal', 'https://maps.apple.com/?q=Toronto+Island+ferry', 'Ferry times to Toronto Island', letter('M', '#34a853'), 'map'],
