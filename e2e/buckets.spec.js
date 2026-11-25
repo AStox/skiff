@@ -38,7 +38,7 @@ async function openCard(buoy) {
 const centre = (locator) => locator.evaluate((el) => { const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })
 // A real pointer drag onto a chip: the chip takes the outline, there is no preview row, and the release sets the status.
 async function dragToChip(buoy, source, target) {
-  await buoy.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished)))
+  await buoy.evaluate(() => Promise.all(document.getAnimations().filter((a) => a.effect.getComputedTiming().endTime !== Infinity).map((a) => a.finished)))
   const from = await centre(source)
   await buoy.mouse.move(from.x, from.y)
   await buoy.mouse.down()
