@@ -89,6 +89,8 @@ let deskId = null
 const parked = new Map()
 // Sign-in popups a page opened with window.open; plain windows in the page's session.
 const popupWindows = new Set()
+// Set when the quit cleanup starts, whether by before-quit or an update install; Electron then destroys every page itself, which must not close their tabs.
+let quitting = false
 let attached = null
 let shown = []
 let pageBounds = null
@@ -591,7 +593,7 @@ function createView(tab) {
   })
   // A page that closes itself (window.close()) takes its webContents with it; the tab closes as it does when the user closes it.
   wc.once('destroyed', () => {
-    if (views.get(id) !== view) return
+    if (quitting || views.get(id) !== view) return
     if (S.findTab(state, id)) closeTabNow({ id })
     destroyView(id)
     changed()
@@ -2557,6 +2559,7 @@ async function start() {
 const quitFlow = createQuit({
   quit: () => app.quit(),
   cleanup: async () => {
+    quitting = true
     const results = await Promise.allSettled([
       async () => { try { await ai?.stop() } finally { transcripts?.stop() } },
       () => browserData?.stop(),

@@ -48,3 +48,31 @@ test('a page that closes itself closes its tab without errors', async ({ skiff }
   await skiff.rpc('tabs.activate', { id: third.id })
   expect(await skiff.app.evaluate(() => global.__pageWindowErrors)).toEqual([])
 })
+
+const openTabs = async (skiff) => {
+  const ids = []
+  for (const name of ['one', 'two', 'three']) ids.push((await skiff.rpc('tabs.create', { url: `${skiff.origin}/${name}` })).id)
+  for (const name of ['one', 'two', 'three']) await skiff.page(`/${name}`)
+  return ids
+}
+const stillOpen = async (skiff, ids) => {
+  await expect.poll(async () => (await skiff.state()).tabs.filter((t) => ids.includes(t.id)).length).toBe(ids.length)
+  const state = await skiff.state()
+  expect(state.archive.filter((entry) => ids.includes(entry.id))).toEqual([])
+}
+
+test('quitting keeps every open tab open, not archived', async ({ skiff }) => {
+  const ids = await openTabs(skiff)
+  await skiff.restart()
+  await stillOpen(skiff, ids)
+})
+
+test('closing the main window keeps every open tab open, not archived', async ({ skiff }) => {
+  const ids = await openTabs(skiff)
+  const child = skiff.app.process()
+  const exited = new Promise((resolve) => child.once('exit', resolve))
+  await skiff.app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('/index.html'))?.close() }).catch(() => {})
+  await exited
+  await skiff.restart()
+  await stillOpen(skiff, ids)
+})
