@@ -1137,11 +1137,12 @@ test.describe('layer panel and Buoy', () => {
     // Each view of the panel.
     await emit('toggle-settings')
     await opened()
-    await expect(head()).toHaveText('Settings')
+    await expect(buoy.locator('#chips .chip[aria-pressed="true"]')).toHaveText('This space')
+    await expect(buoy.locator('#space-head')).toBeHidden()
     await expect(buoy.locator('#panel')).toBeVisible()
     // A second one toggles the view off, not the card.
     await emit('toggle-settings')
-    await expect(head()).not.toHaveText('Settings')
+    await expect(buoy.locator('#panel')).toBeHidden()
     expect(await isOpen(buoy)).toBe(true)
     await reset()
     await emit('toggle-archive')
@@ -1170,7 +1171,7 @@ test.describe('layer panel and Buoy', () => {
     // While the bar is in a mode, a view of the panel clears it, since it shows only with the bar empty.
     await emit('toggle-settings')
     await expect(buoy.locator('#palette-ask')).toBeHidden()
-    await expect(head()).toHaveText('Settings')
+    await expect(buoy.locator('#chips .chip[aria-pressed="true"]')).toHaveText('This space')
     await reset()
     await emit('new-tab')
     await opened()

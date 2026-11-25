@@ -325,6 +325,7 @@ async function snapshot(locator, name, options = {}) {
 async function openImport(skiff) {
   const card = await skiff.card()
   await card.locator('#settings-toggle').click()
+  await card.locator('#settings-page-skiff').click()
   await card.locator('#import-arc').click()
   await expect(card.locator('#arc-import')).toBeVisible()
   return card
