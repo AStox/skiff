@@ -14,6 +14,15 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { chromium } = require('playwright')
 const S = require('../src/state')
+const settingsCatalog = require('../src/settings-catalog')
+
+const EXTENSIONS = [{ id: 'cjpalhdlnbpafiamejdnhcphjbkeiagm', name: 'uBlock Origin', version: '1.62.0', description: '', path: '', popup: 'popup.html', options: 'options.html', builtin: true, state: 'ready', error: '' }]
+// What the host reports for each quick action; PREVIEW_UPDATE=1 has an update waiting.
+const SETTINGS_ACTIONS = {
+  defaultBrowser: { status: () => ({ text: '', available: true }) },
+  update: { status: () => (process.env.PREVIEW_UPDATE ? { text: 'Skiff 0.1.0-alpha.33 is ready.', available: true } : { text: '', available: false }) },
+  revealLogs: { status: () => ({ text: '~/Library/Logs/Skiff', available: true }) }
+}
 
 const raw = process.argv.slice(2)
 const args = [...raw]
@@ -99,7 +108,9 @@ function deskState([W, H]) {
     spaces: [{ id: 'work', name: 'Work', color: '#4f6bed' }, { id: 'personal', name: 'Personal', color: '#2f6b4f' }],
     activeSpaceId: 'work', tabs: withAgents([...tabs, ...DESK_THREADS], ['electron', 'youtube', 'hn', 'figma']).map((t) => ({ ...t, bucket: S.bucketOf(t) })), activeTabBySpace: { work: 'github', personal: 'nytimes' }, collapsed: {}, agentTabs: [], peek: null,
     archive: [gone('a1', 'https://linear.app/skiff/issue/SKF-80', 'SKF-80 Buoy notices', 300), gone('a2', 'https://github.com/skiff/skiff/pull/38', 'skiff#38 Buoy pill', 2900)],
-    settings: { autoArchiveHours: 12, searchUrl: 'https://www.google.com/search?q=%s', shortcuts: {}, ai: { agents: [], agent: '', model: '', effort: '' } },
+    settings: { autoArchiveHours: 12, searchUrl: 'https://www.google.com/search?q=%s', shortcuts: {}, ai: { agents: [{ name: 'omp', command: 'omp acp' }, { name: 'Claude', command: 'npx -y @agentclientprotocol/claude-agent-acp' }], agent: 'omp', model: '', effort: '' } },
+    // PREVIEW_UPDATE=1 has an update waiting.
+    ...(process.env.PREVIEW_UPDATE && { update: { status: 'ready', version: '0.1.0-alpha.33' } }),
     window: { width: 1280, height: 800 },
     deskSize: { width: W, height: H }
   }
@@ -342,11 +353,30 @@ async function previewDesk(dir) {
     if (![p.x, p.y, p.width, p.height].every(Number.isFinite) || p.width < 240 || p.height < 160) fail('x, y, width, height must be finite; width at least 240, height at least 160')
     return only(p)
   }
+  // The first agent has started and listed its models and efforts; the others have not started.
+  const agentEntries = () => st.settings.ai.agents.map((a, i) => ({
+    name: a.name, command: a.command, status: i ? 'idle' : 'ready', error: '', info: null, loadSession: true, skill: { status: i ? 'missing' : 'installed', path: '~/.omp/agent/skills/skiff/SKILL.md' },
+    models: i ? null : [{ value: 'sonnet-5-5', name: 'Sonnet 5.5' }, { value: 'opus-5', name: 'Opus 5' }], model: i ? null : 'sonnet-5-5',
+    efforts: i ? null : [{ value: 'low', name: 'low' }, { value: 'medium', name: 'medium' }, { value: 'high', name: 'high' }], effort: i ? null : 'medium'
+  }))
   const commands = {
     'state.get': () => st,
     'commands.list': () => [],
-    'extensions.list': () => [],
-    'ai.agents': () => [],
+    'extensions.list': () => EXTENSIONS,
+    'ai.agents': () => agentEntries(),
+    'ai.warm': (p) => agentEntries().find((a) => a.name === p.agent) || null,
+    'ai.skillStatus': () => ({ status: 'missing', path: '~/.omp/agent/skills/skiff/SKILL.md' }),
+    'ai.installSkill': () => null,
+    'settings.catalog': (p) => settingsCatalog.searchEntries(settingsCatalog.present(settingsCatalog.list(), { values: st.settings, actions: SETTINGS_ACTIONS }), p.query || '', p),
+    'settings.run': (p) => settingsCatalog.present([settingsCatalog.get(p.id)], { actions: SETTINGS_ACTIONS })[0],
+    'settings.set': async (p) => {
+      const { ai, ...rest } = p
+      Object.assign(st.settings, rest)
+      if (ai) Object.assign(st.settings.ai, ai)
+      await push()
+      return st.settings
+    },
+    'spaces.update': async (p) => { Object.assign(st.spaces.find((x) => x.id === p.id) || fail(`No space ${p.id}`), ...[p.name && { name: p.name }, p.color && { color: p.color }].filter(Boolean)); await push(); return null },
     'ui.shellPath': () => ({ path: '/preview' }),
     'ui.focusPage': () => null,
     'ui.inFront': () => ({ front: false }),

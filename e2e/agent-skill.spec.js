@@ -28,7 +28,8 @@ async function openAgents(skiff) {
   await skiff.shortcut('CmdOrCtrl+T')
   const panel = await barReady(skiff)
   await expect(async () => {
-    if (!(await panel.locator('#agents-section').count())) await panel.locator('#settings-toggle').click()
+    if (!(await panel.locator('#settings-page-agents').count())) await panel.locator('#settings-toggle').click()
+    await panel.locator('#settings-page-agents').click({ timeout: 1000 })
     await expect(panel.locator('#agents-section')).toBeVisible({ timeout: 1000 })
   }).toPass()
   return panel
@@ -42,7 +43,13 @@ async function typeInto(page, selector, text) {
 
 const row = (page, name) => page.locator(`#agents-list li[data-agent="${name}"]`)
 
+async function open(page, name) {
+  const main = row(page, name).locator('.set-main')
+  if ((await main.getAttribute('aria-expanded')) !== 'true') await main.click()
+}
+
 async function fill(page, name, command) {
+  if (!(await page.locator('#agent-name').isVisible())) await page.locator('#agent-add-toggle').click()
   await typeInto(page, '#agent-name', name)
   await typeInto(page, '#agent-command', command)
 }
@@ -62,6 +69,7 @@ test('a ticked box installs the skill when the agent is added, and an unsupporte
   expect(fs.existsSync(skillFile(skiff, '.omp', 'agent', 'skills'))).toBe(false)
   await page.locator('#agent-add').click()
   await expect(row(page, 'Wrapped')).toBeVisible()
+  await open(page, 'Wrapped')
   await expect(row(page, 'Wrapped').locator('.agent-skill')).toHaveText('Skiff skill installed')
   const file = skillFile(skiff, '.omp', 'agent', 'skills')
   expect(fs.readFileSync(file, 'utf8')).toBe(bundled)
@@ -73,6 +81,7 @@ test('a ticked box installs the skill when the agent is added, and an unsupporte
   await expect(page.locator('#agent-teach-row')).toBeHidden()
   await page.locator('#agent-add').click()
   await expect(row(page, 'Remote')).toBeVisible()
+  await open(page, 'Remote')
   await expect(row(page, 'Remote').locator('.agent-skill')).toHaveCount(0)
   expect((await skiff.rpc('ai.agents')).find((a) => a.name === 'Remote').skill).toEqual({ harness: null, status: 'unsupported', path: null })
   for (const other of ['.claude', '.gemini', '.agents', '.hermes']) expect(fs.existsSync(path.join(skiff.home, other)), other).toBe(false)
@@ -86,6 +95,7 @@ test("an unticked box installs nothing until the row's button is pressed, and an
   await page.locator('#agent-add').click()
   const gem = row(page, 'Gem')
   await expect(gem).toBeVisible()
+  await open(page, 'Gem')
   const file = skillFile(skiff, '.gemini', 'skills')
   await expect(gem.getByRole('button', { name: 'Install Skiff skill' })).toBeVisible()
   expect(fs.existsSync(path.join(skiff.home, '.gemini'))).toBe(false)
@@ -128,6 +138,7 @@ test.describe('with a newer copy of the skill shipped', () => {
     await skiff.rpc('settings.set', { ai: { agents: [{ name: 'Claude', command: launcher(skiff, 'claude-agent-acp') }] } })
     const page = await openAgents(skiff)
     const claude = row(page, 'Claude')
+    await open(page, 'Claude')
     await expect(claude.getByRole('button', { name: 'Update Skiff skill' })).toBeVisible()
     await claude.getByRole('button', { name: 'Update Skiff skill' }).click()
     await expect(claude.locator('.agent-skill')).toHaveText('Skiff skill installed')

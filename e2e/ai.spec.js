@@ -47,6 +47,7 @@ async function send(chat, text) {
 
 // Settings > Agents, as a user fills it in: the default preset's name and command typed over.
 async function addAgent(settings, skiff, name = 'Fake') {
+  if (!(await settings.locator('#agent-preset').isVisible())) await settings.locator('#agent-add-toggle').click()
   await settings.locator('#agent-name').click()
   await settings.keyboard.press('Control+a')
   await settings.keyboard.type(name)
@@ -93,7 +94,7 @@ test('with no agent the Ask row and a waiting chat tab open the card at Agents, 
   await addAgent(panel, skiff)
   expect((await skiff.state()).settings.ai).toMatchObject({ agents: [{ name: 'Fake', command: command(skiff) }], agent: 'Fake' })
   await expect(panel.locator('#agents-list li[data-agent="Fake"] .agent-default')).toHaveText('Default')
-  await expect(panel.locator('#agent-name')).toHaveValue('omp')
+  await expect(panel.locator('#agent-preset')).toHaveCount(0)
   await expect(chat.locator('#chat-connect-card')).toBeHidden()
   await expect(last(chat, '.ai-user')).toHaveText('what is a layer')
   await expect(last(chat, '.ai-assistant')).toContainText('You said: what is a layer')
@@ -101,6 +102,7 @@ test('with no agent the Ask row and a waiting chat tab open the card at Agents, 
   await expect(chat.locator('.ai-user')).toHaveCount(1)
   await expect(chat.locator('#chat-name')).toHaveText('Fake')
   expect((await chatState(skiff, chatId)).turns.at(-1).text).toMatch(FOOT('fake-small', 'low'))
+  await panel.locator('#agents-list li[data-agent="Fake"] .set-main').click()
   await expect(panel.locator('#agent-model')).toHaveValue('fake-small')
   await expect(panel.locator('#agent-effort')).toHaveValue('low')
   await expect(panel.locator('#agents-list li[data-agent="Fake"] .agent-dot')).toHaveAttribute('data-status', 'ready')
@@ -122,10 +124,13 @@ test('Settings makes another agent the default with its own model and effort, wh
   await expect(fake.locator('.agent-dot')).toHaveAttribute('data-status', 'ready')
   await expect(other.locator('.agent-dot')).toHaveAttribute('data-status', 'idle')
 
+  await other.hover()
   await other.getByRole('button', { name: 'Make default' }).click()
   await expect(other.locator('.agent-default')).toHaveText('Default')
+  await fake.hover()
   await expect(fake.getByRole('button', { name: 'Make default' })).toBeVisible()
-  await expect(shell.locator('label[for="agent-model"]')).toContainText('Default model for Other')
+  await other.locator('.set-main').click()
+  await expect(shell.locator('label[for="agent-model"]')).toHaveText('Model')
   const model = shell.locator('#agent-model')
   const effort = shell.locator('#agent-effort')
   await expect(model).toBeEnabled()
@@ -160,6 +165,7 @@ test('Settings makes another agent the default with its own model and effort, wh
 
   await chat.locator('#chat-agents').click()
   await expect(other).toBeVisible()
+  await other.locator('.set-main').click()
   await other.getByRole('button', { name: 'Remove Other' }).click()
   await expect(other).toHaveCount(0)
   await expect(fake.locator('.agent-default')).toHaveText('Default')

@@ -3,7 +3,7 @@
 const SWATCHES = ['#4f6bed', '#7c5ce0', '#d6336c', '#c2700e', '#2f9e5b', '#5f6b7a']
 const relative = new Intl.RelativeTimeFormat(undefined, { style: 'narrow' })
 
-const ui = { archive: false, settings: false, renaming: false, filter: 'all', imported: '', filling: false, quick: [], quickKey: '', quickRequest: 0, extensions: [], agents: [], agentForm: null, agentError: '', warmed: '' }
+const ui = { archive: false, settings: false, page: 'space', expanded: '', renaming: false, filter: 'all', imported: '', filling: false, quick: [], quickKey: '', quickRequest: 0, extensions: [], agents: [], agentForm: null, agentError: '', warmed: '' }
 const drawn = {}
 const importDialog = $('arc-import')
 let importer = null
@@ -454,7 +454,7 @@ async function importArc() {
     $('arc-title').focus()
   } catch {
     importer = null
-    ui.settings = true
+    Object.assign(ui, { settings: true, page: 'skiff', expanded: '' })
     ui.archive = false
     ui.imported = 'The import window could not open. Try Import from Arc again.'
     renderPanel()
@@ -548,21 +548,63 @@ async function runQuick(entry) {
   await refreshQuick()
 }
 
+// A quick entry lands on the page its section names; a section not listed lands on Skiff, so a new quickPanel entry needs no change here.
+const SETTINGS_PAGES = [['space', 'This space'], ['browsing', 'Browsing'], ['agents', 'Agents'], ['skiff', 'Skiff']]
+const QUICK_PAGE = { tabs: 'browsing' }
+const quickOn = (page) => ui.quick.filter((entry) => (QUICK_PAGE[entry.section] || 'skiff') === page)
+// Only an update that is ready waits for the user, so only its button is filled.
+const WAITING = new Set(['update'])
+
+const optionText = (value) => {
+  const text = String(value).replace(/-/g, ' ')
+  return text[0].toUpperCase() + text.slice(1)
+}
+const unitOf = (entry, value) => {
+  const unit = /(Hours|Days|Minutes|Seconds)$/.exec(entry.id)?.[1].toLowerCase()
+  return unit && (Number(value) === 1 ? unit.slice(0, -1) : unit)
+}
+const menu = (select) => h('span', { class: 'set-val' }, select, icon('updown'))
+function chevron(open) {
+  const svg = icon('forward')
+  svg.classList.add('chev')
+  svg.classList.toggle('open', open)
+  return svg
+}
+
+// A click on the blank part of a row works its control.
+function poke(event) {
+  const field = event.currentTarget.querySelector('select, input')
+  if (!field || event.target.closest('select, input, button') || (event.target.closest('label') && field.type === 'checkbox')) return
+  if (field.type === 'checkbox') field.click()
+  else if (field.tagName === 'SELECT') try { field.showPicker() } catch { field.focus() }
+  else field.focus()
+}
+
+// One line: the title on the left, a control or value on the right. The description is the row's tooltip and a hidden element for screen readers, never printed.
+function setRow(id, title, control, description) {
+  return h('div', { class: 'set', title: description, onclick: poke },
+    h('label', { class: 'set-name', for: id }, title),
+    control,
+    description && h('span', { class: 'sr-only', id: `${id}-help` }, description))
+}
+
 function quickControl(entry, id, describedby) {
   const write = (value, revert) => Promise.resolve(call('settings.set', { [entry.id]: value })).then((done) => { if (!done) revert() })
   const attrs = { id, 'aria-describedby': describedby }
   if (entry.enum) {
-    const select = h('select', { ...attrs, class: 'setting-input' }, entry.enum.map((value) => h('option', { value: String(value), selected: value === entry.value }, String(value))))
+    const select = h('select', { ...attrs, class: 'set-select' }, entry.enum.map((value) => h('option', { value: String(value), selected: value === entry.value }, optionText(value))))
     select.addEventListener('change', () => write(entry.enum.find((value) => String(value) === select.value), () => { select.value = String(entry.value) }))
-    return select
+    return menu(select)
   }
   if (entry.type === 'boolean') {
-    const box = h('input', { ...attrs, type: 'checkbox', checked: entry.value === true })
+    const box = h('input', { ...attrs, class: 'switch', type: 'checkbox', checked: entry.value === true })
     box.addEventListener('change', () => write(box.checked, () => { box.checked = entry.value === true }))
     return box
   }
   const numeric = entry.type === 'number' || entry.type === 'integer'
-  const input = h('input', { ...attrs, class: 'setting-input', type: numeric ? 'number' : 'text', min: entry.minimum, max: entry.maximum, step: numeric ? (entry.type === 'integer' ? '1' : 'any') : null, maxlength: entry.maxLength, value: String(entry.value ?? '') })
+  const input = h('input', { ...attrs, class: numeric ? 'set-num' : 'set-text', type: numeric ? 'number' : 'text', min: entry.minimum, max: entry.maximum, step: numeric ? (entry.type === 'integer' ? '1' : 'any') : null, maxlength: entry.maxLength, value: String(entry.value ?? '') })
+  const unit = numeric && unitOf(entry, entry.value) && h('span', { class: 'set-unit' }, unitOf(entry, entry.value))
+  input.addEventListener('input', () => { if (unit) unit.textContent = unitOf(entry, input.value) })
   input.addEventListener('change', () => {
     if (numeric && (!input.value || !input.validity.valid)) {
       showError(`Enter a valid number for ${entry.title}.`)
@@ -571,21 +613,19 @@ function quickControl(entry, id, describedby) {
     }
     write(numeric ? Number(input.value) : input.value, () => { input.value = String(entry.value ?? '') })
   })
-  return input
+  return unit ? h('span', { class: 'set-val' }, input, unit) : input
 }
 
 function quickRow(entry) {
   const id = `setting-${entry.id}`
-  const help = entry.description && h('p', { class: 'hint', id: `${id}-help` }, entry.description)
-  if (entry.type === 'action') return [
-    h('div', { class: 'field-label', id: `${id}-label` }, entry.title),
-    help,
-    entry.status && h('p', { class: 'hint', id: `${id}-status`, role: 'status' }, entry.status),
-    entry.available !== false && h('button', { id, class: 'text-btn', onclick: () => runQuick(entry) }, entry.actionLabel || entry.title)
-  ]
-  const check = entry.type === 'boolean' && !entry.enum
-  const control = quickControl(entry, id, help ? `${id}-help` : null)
-  return [h('label', { class: check ? 'field check' : 'field', for: id }, check ? [control, entry.title] : [entry.title, control]), help]
+  const help = entry.description && `${id}-help`
+  if (entry.type !== 'action') return setRow(id, entry.title, quickControl(entry, id, help), entry.description)
+  return h('div', { class: 'set', title: entry.description || null },
+    h('span', { class: 'set-title' },
+      h('span', { class: 'set-name', id: `${id}-label` }, entry.title),
+      entry.status && h('small', { id: `${id}-status`, role: 'status' }, entry.status)),
+    entry.available !== false && h('button', { id, class: `set-btn${WAITING.has(entry.id) ? ' primary' : ''}`, type: 'button', 'aria-describedby': help || null, onclick: () => runQuick(entry) }, entry.actionLabel || entry.title),
+    entry.description && h('span', { class: 'sr-only', id: help }, entry.description))
 }
 
 addEventListener('focus', () => { if (ui.settings) refreshQuick() })
@@ -610,8 +650,8 @@ async function fillSavedPassword() {
   $('fill-password')?.focus()
 }
 
-function panel(space) {
-  const name = h('input', { id: 'space-name', type: 'text', maxlength: '60', value: space.name })
+function spacePage(space) {
+  const name = h('input', { id: 'space-name', class: 'set-text', type: 'text', maxlength: '60', value: space.name })
   const saveName = () => {
     const value = name.value.trim()
     if (!value) {
@@ -624,41 +664,57 @@ function panel(space) {
     if (event.key === 'Enter') { event.preventDefault(); name.blur() }
     if (event.key === 'Escape') { name.value = space.name; name.blur() }
   })
-  const preset = SEARCH_ENGINES.find((engine) => engine.url === state.settings.searchUrl)
-  const search = h('select', { id: 'search-engine', onchange: () => call('settings.set', { searchUrl: search.value }) },
-    !preset && h('option', { value: state.settings.searchUrl, selected: true, disabled: true }, 'Custom'),
-    SEARCH_ENGINES.map((engine) => h('option', { value: engine.url, selected: engine === preset }, engine.name)))
   const last = state.spaces.filter((s) => !s.incognito).length < 2
   return [
-    !space.incognito && [
-      h('label', { class: 'field', for: 'space-name' }, 'Space name', name),
-      h('div', { class: 'field-label', id: 'color-label' }, 'Space color'),
+    setRow('space-name', 'Name', name),
+    h('div', { class: 'set' },
+      h('span', { class: 'set-name', id: 'color-label' }, 'Color'),
       h('div', { class: 'swatches', role: 'group', 'aria-labelledby': 'color-label' },
         SWATCHES.map((color, index) => {
           const label = ['Blue', 'Violet', 'Rose', 'Amber', 'Green', 'Slate'][index]
-          const swatch = h('button', { class: 'swatch', title: label, 'aria-label': label, 'aria-pressed': String(color === space.color), onclick: () => call('spaces.update', { id: space.id, color }) })
+          const swatch = h('button', { class: 'swatch', type: 'button', title: label, 'aria-label': label, 'aria-pressed': String(color === space.color), onclick: () => call('spaces.update', { id: space.id, color }) })
           swatch.style.setProperty('--dot', color)
           return swatch
-        }))
-    ],
-    h('label', { class: 'field', for: 'search-engine' }, 'Search engine', search),
-    ui.quick.map(quickRow),
-    agentRows(),
-    ui.extensions.length > 0 && [
-      h('div', { class: 'field-label', id: 'extensions-label' }, 'Extensions'),
-      h('ul', { id: 'extensions', 'aria-labelledby': 'extensions-label' }, ui.extensions.map(extensionRow)),
-      h('p', { class: 'hint' }, `Built-in ones update themselves. None run in incognito. ${document.documentElement.classList.contains('mac') ? 'Cmd' : 'Ctrl'}+Shift+U opens the panel of the first one.`)
-    ],
-    h('div', { class: 'settings-actions' },
-      h('button', { id: 'import-arc', class: 'text-btn', onclick: importArc }, 'Import from Arc'),
-      h('button', { id: 'fill-password', class: 'text-btn', disabled: ui.filling || !activeTab(), onclick: fillSavedPassword }, ui.filling ? 'Waiting for confirmation…' : 'Fill saved password'),
-      h('p', { class: 'hint', role: 'status' }, ui.imported)),
-    !space.incognito && [
-      h('button', { id: 'delete-space', class: 'text-btn danger', disabled: last, onclick: () => confirmAction(`Delete “${space.name}”?`, 'Its tabs will move to the archive. Other spaces stay unchanged. The space itself cannot be restored.', 'Delete space', 'spaces.remove', { id: space.id }) }, 'Delete this space'),
-      last && h('p', { class: 'hint' }, 'Keep at least one space.')
-    ]
+        }))),
+    h('div', { class: 'set-sep', role: 'separator' }),
+    h('button', { id: 'delete-space', class: 'set danger', type: 'button', disabled: last, onclick: () => confirmAction(`Delete “${space.name}”?`, 'Its tabs will move to the archive. Other spaces stay unchanged. The space itself cannot be restored.', 'Delete space', 'spaces.remove', { id: space.id }) }, 'Delete this space'),
+    last && h('p', { class: 'hint' }, 'Keep at least one space.')
   ]
 }
+
+function browsingPage() {
+  const preset = SEARCH_ENGINES.find((engine) => engine.url === state.settings.searchUrl)
+  const search = h('select', { id: 'search-engine', class: 'set-select', onchange: () => call('settings.set', { searchUrl: search.value }) },
+    !preset && h('option', { value: state.settings.searchUrl, selected: true, disabled: true }, 'Custom'),
+    SEARCH_ENGINES.map((engine) => h('option', { value: engine.url, selected: engine === preset }, engine.name)))
+  return [setRow('search-engine', 'Search engine', menu(search)), quickOn('browsing').map(quickRow)]
+}
+
+function skiffPage() {
+  const mac = document.documentElement.classList.contains('mac')
+  return [
+    ui.extensions.length > 0 && [
+      h('p', { class: 'sr-only', id: 'extensions-help' }, `Built-in ones update themselves. None run in incognito. ${mac ? 'Cmd' : 'Ctrl'}+Shift+U opens the panel of the first one.`),
+      h('ul', { id: 'extensions', 'aria-label': 'Extensions', 'aria-describedby': 'extensions-help' }, ui.extensions.map(extensionRow))
+    ],
+    quickOn('skiff').map(quickRow),
+    h('div', { class: 'set' },
+      h('span', { class: 'set-name' }, 'Import from Arc'),
+      h('button', { id: 'import-arc', class: 'set-btn', type: 'button', onclick: importArc }, 'Import…')),
+    h('div', { class: 'set' },
+      h('span', { class: 'set-name' }, 'Fill saved password'),
+      h('button', { id: 'fill-password', class: 'set-btn', type: 'button', disabled: ui.filling || !activeTab(), onclick: fillSavedPassword }, ui.filling ? 'Waiting for confirmation…' : 'Fill')),
+    h('p', { class: 'hint', role: 'status' }, ui.imported)
+  ]
+}
+
+const SETTINGS_PAGE = { space: spacePage, browsing: browsingPage, agents: agentsPage, skiff: skiffPage }
+const settingsPage = (space) => (SETTINGS_PAGE[ui.page] || spacePage)(space)
+
+const settingsChips = (incognito) => SETTINGS_PAGES.filter(([key]) => !(incognito && key === 'space')).map(([key, label]) => h('button', {
+  class: 'chip', type: 'button', id: `settings-page-${key}`, 'data-page': key, 'aria-pressed': String(ui.page === key),
+  onclick: () => { Object.assign(ui, { page: key, expanded: '' }); renderPanel() }
+}, label))
 
 // Extension popups open beside the card.
 function openPopup(id) {
@@ -670,14 +726,21 @@ function openPopup(id) {
 
 const STATE_WORDS = { installing: 'Installing…', updating: 'Updating…', restarting: 'Restarting…', failed: 'Failed' }
 
-function extensionRow(entry) {
+function extensionRow(entry, index) {
+  const key = `extension:${entry.name}`
+  const open = ui.expanded === key
   const failure = entry.builtin && entry.state === 'failed' && `Could not ${entry.version ? 'update' : 'install'}: ${entry.error}`
-  return h('li', { class: 'row extension', 'data-extension-id': entry.id },
-    h('span', { class: 'row-main' }, h('span', { class: 'label', title: entry.name }, entry.name), h('span', { class: 'when' }, (entry.state === 'restarting' ? '' : entry.version) || STATE_WORDS[entry.state] || '')),
-    h('button', { class: 'text-btn', disabled: !entry.popup, onclick: () => openPopup(entry.id) }, 'Panel'),
-    h('button', { class: 'text-btn', disabled: !entry.options, onclick: () => call('extensions.open', { id: entry.id }) }, 'Settings'),
-    !entry.builtin && h('button', { class: 'text-btn danger', onclick: () => confirmAction(`Remove ${entry.name}?`, 'It stops running everywhere and its files are deleted.', 'Remove', 'extensions.remove', { id: entry.id }) }, 'Remove'),
-    failure && h('p', { class: 'hint' }, failure))
+  return h('li', { class: 'extension', 'data-extension-id': entry.id },
+    h('button', { class: 'set', id: `extension-main-${index}`, type: 'button', 'aria-expanded': String(open), 'aria-controls': `extension-detail-${index}`, onclick: () => expand(key) },
+      h('span', { class: 'set-name', title: entry.name }, entry.name),
+      h('span', { class: 'set-val' }, (entry.state === 'restarting' ? '' : entry.version) || STATE_WORDS[entry.state] || ''),
+      chevron(open)),
+    open && h('div', { class: 'set-detail extension-detail', id: `extension-detail-${index}` },
+      h('div', { class: 'set-actions' },
+        h('button', { class: 'set-btn', type: 'button', disabled: !entry.popup, onclick: () => openPopup(entry.id) }, 'Panel'),
+        h('button', { class: 'set-btn', type: 'button', disabled: !entry.options, onclick: () => call('extensions.open', { id: entry.id }) }, 'Settings'),
+        !entry.builtin && h('button', { class: 'set-btn danger', type: 'button', onclick: () => confirmAction(`Remove ${entry.name}?`, 'It stops running everywhere and its files are deleted.', 'Remove', 'extensions.remove', { id: entry.id }) }, 'Remove')),
+      failure && h('p', { class: 'hint' }, failure)))
 }
 
 function refreshExtensions() {
@@ -738,7 +801,7 @@ async function addAgent() {
   await probeSkill(form)
   const teach = form.teach && form.skill?.command === command && form.skill.status !== 'unsupported'
   saveAgents({ agents: [...state.settings.ai.agents, { name, command }], agent: defaultAgent() || name }, () => {
-    ui.agentForm = null
+    Object.assign(ui, { agentForm: null, expanded: '' })
     if (teach) installSkill(name)
   })
 }
@@ -777,7 +840,7 @@ function skillLine(a, live) {
   if (!skill || skill.status === 'unsupported') return null
   const error = ui.skillErrors?.[a.name]
   const busy = ui.skillBusy === a.name
-  const act = (label) => h('button', { class: 'text-btn', disabled: busy, title: skill.path, onclick: () => installSkill(a.name) }, busy ? 'Installing...' : label)
+  const act = (label) => h('button', { class: 'set-btn', type: 'button', disabled: busy, title: skill.path, onclick: () => installSkill(a.name) }, busy ? 'Installing...' : label)
   return h('div', { class: 'agent-skill', 'data-skill': skill.status },
     skill.status === 'missing' && act('Install Skiff skill'),
     skill.status === 'outdated' && act('Update Skiff skill'),
@@ -793,13 +856,22 @@ function removeAgent(name) {
   saveAgents(chosen === name ? { agents: rest, agent: rest[0]?.name || '', model: '', effort: '' } : { agents: rest, agent: chosen })
 }
 
-function agentRows() {
-  const form = ui.agentForm ||= { preset: AGENT_PRESETS[0][1], name: uniqueAgentName(AGENT_PRESETS[0][0]), command: AGENT_PRESETS[0][1], auto: true, teach: true }
-  const chosen = defaultAgent()
-  const entry = ui.agents.find((a) => a.name === chosen)
-  const name = h('input', { id: 'agent-name', type: 'text', maxlength: '40', spellcheck: 'false', autocomplete: 'off', value: form.name })
-  const command = h('input', { id: 'agent-command', type: 'text', maxlength: '500', spellcheck: 'false', autocomplete: 'off', placeholder: 'omp acp', value: form.command })
-  const preset = h('select', { id: 'agent-preset' },
+// A row's expanded part: the agent or extension it belongs to, one at a time.
+function expand(key) {
+  ui.expanded = ui.expanded === key ? '' : key
+  renderPanel()
+  if (ui.expanded === 'add-agent') {
+    $('agent-preset').focus({ preventScroll: true })
+    $('agent-preset').scrollIntoView({ block: 'nearest' })
+  }
+}
+
+const modelName = (list, current) => list?.find((o) => o.value === current)?.name || current || ''
+
+function addAgentForm(form) {
+  const name = h('input', { id: 'agent-name', class: 'set-text', type: 'text', maxlength: '40', spellcheck: 'false', autocomplete: 'off', value: form.name })
+  const command = h('input', { id: 'agent-command', class: 'set-text mono', type: 'text', maxlength: '500', spellcheck: 'false', autocomplete: 'off', placeholder: 'omp acp', value: form.command })
+  const preset = h('select', { id: 'agent-preset', class: 'set-select' },
     AGENT_PRESETS.map(([, value]) => h('option', { value, selected: form.preset === value }, value)),
     h('option', { value: '', selected: !form.preset }, 'Custom'))
   preset.addEventListener('change', () => {
@@ -817,55 +889,85 @@ function agentRows() {
     probeSkill(form)
   })
   for (const field of [name, command]) field.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); addAgent() } })
-  const teach = h('input', { id: 'agent-teach', type: 'checkbox', checked: form.teach })
+  const teach = h('input', { id: 'agent-teach', class: 'switch', type: 'checkbox', checked: form.teach })
   teach.addEventListener('change', () => { form.teach = teach.checked })
   probeSkill(form)
-  const picker = (key, list) => {
-    const current = state.settings.ai[key] || entry?.[key]
-    const select = h('select', { id: `agent-${key}`, disabled: !list },
-      list ? list.map((o) => h('option', { value: o.value, selected: o.value === current }, o.name || o.value)) : h('option', {}, entry?.status === 'error' ? 'Unavailable' : 'Loading...'))
-    select.addEventListener('change', () => saveAgents({ model: state.settings.ai.model, effort: state.settings.ai.effort, [key]: select.value }))
-    return select
-  }
-  return h('section', { id: 'agents-section', 'aria-labelledby': 'agents-label' },
-    h('div', { class: 'field-label', id: 'agents-label' }, 'Agents'),
-    h('ul', { id: 'agents-list', 'aria-labelledby': 'agents-label' }, state.settings.ai.agents.map((a) => {
-      const live = ui.agents.find((x) => x.name === a.name)
-      const status = live?.status || 'idle'
-      return h('li', { class: 'row agent', 'data-agent': a.name },
-        h('span', { class: 'row-main' },
-          h('span', { class: 'agent-dot', 'data-status': status, role: 'img', 'aria-label': AGENT_STATUS[status] || status, title: AGENT_STATUS[status] || status }),
-          h('span', { class: 'agent-text' }, h('span', { class: 'label' }, a.name), h('code', { title: a.command }, a.command))),
-        a.name === chosen ? h('span', { class: 'agent-default' }, 'Default') : h('button', { class: 'text-btn', onclick: () => saveAgents({ agent: a.name, model: '', effort: '' }) }, 'Make default'),
-        h('button', { class: 'text-btn danger', 'aria-label': `Remove ${a.name}`, onclick: () => removeAgent(a.name) }, 'Remove'),
-        status === 'error' && live.error && h('p', { class: 'hint' }, live.error),
-        skillLine(a, live))
-    })),
-    entry && h('div', { class: 'agent-defaults' },
-      h('label', { class: 'field', for: 'agent-model' }, `Default model for ${entry.name}`, picker('model', entry.models)),
-      h('label', { class: 'field', for: 'agent-effort' }, 'Default effort', picker('effort', entry.efforts))),
-    h('label', { class: 'field', for: 'agent-preset' }, 'Add an agent', preset),
-    h('label', { class: 'field', for: 'agent-name' }, 'Name', name),
-    h('label', { class: 'field', for: 'agent-command' }, 'Command', command),
-    h('label', { class: 'field check', id: 'agent-teach-row', hidden: form.skill?.command !== form.command.trim() || form.skill.status === 'unsupported', title: form.skill?.path || null }, teach, 'Teach it to use Skiff'),
+  return [
+    setRow('agent-preset', 'Preset', menu(preset)),
+    setRow('agent-name', 'Name', name),
+    setRow('agent-command', 'Command', command),
+    h('div', { class: 'set', id: 'agent-teach-row', hidden: form.skill?.command !== form.command.trim() || form.skill.status === 'unsupported', title: form.skill?.path || null, onclick: poke },
+      h('label', { class: 'set-name', for: 'agent-teach' }, 'Teach it to use Skiff'), teach),
     h('p', { class: 'hint' }, "Runs in your login shell. Any agent that speaks the Agent Client Protocol works, locally or over ssh. Over ssh the agent can chat but cannot reach this browser's tools."),
-    h('button', { id: 'agent-add', class: 'text-btn', onclick: addAgent }, 'Add agent'),
+    h('div', { class: 'set-actions' }, h('button', { id: 'agent-add', class: 'set-btn', type: 'button', onclick: addAgent }, 'Add agent'))
+  ]
+}
+
+function settingsAgentRow(a, index, chosen, entry) {
+  const live = ui.agents.find((x) => x.name === a.name)
+  const status = live?.status || 'idle'
+  const isDefault = a.name === chosen
+  const key = `agent:${a.name}`
+  const open = ui.expanded === key
+  const detail = `agent-detail-${index}`
+  const picker = (kind, list) => {
+    const current = state.settings.ai[kind] || entry?.[kind]
+    const select = h('select', { id: `agent-${kind}`, class: 'set-select', disabled: !list },
+      list ? list.map((o) => h('option', { value: o.value, selected: o.value === current }, o.name || o.value)) : h('option', {}, entry?.status === 'error' ? 'Unavailable' : 'Loading...'))
+    select.addEventListener('change', () => saveAgents({ model: state.settings.ai.model, effort: state.settings.ai.effort, [kind]: select.value }))
+    return menu(select)
+  }
+  const summary = entry?.status === 'error' ? 'Unavailable' : [modelName(entry?.models, state.settings.ai.model || entry?.model), modelName(entry?.efforts, state.settings.ai.effort || entry?.effort)].filter(Boolean).join(' · ') || 'Loading...'
+  return h('li', { class: 'agent', 'data-agent': a.name },
+    h('div', { class: 'set', onclick: (event) => { if (!event.target.closest('button')) expand(key) } },
+      h('button', { class: 'set-main', id: `agent-main-${index}`, type: 'button', 'aria-expanded': String(open), 'aria-controls': detail, onclick: () => expand(key) },
+        h('span', { class: 'agent-dot', 'data-status': status, role: 'img', 'aria-label': AGENT_STATUS[status] || status, title: AGENT_STATUS[status] || status }),
+        h('span', { class: 'set-name' }, a.name),
+        isDefault && h('span', { class: 'agent-default' }, 'Default')),
+      !isDefault && h('button', { class: 'set-btn make-default', type: 'button', onclick: () => saveAgents({ agent: a.name, model: '', effort: '' }) }, 'Make default'),
+      isDefault ? h('span', { class: 'set-val' }, summary, icon('updown')) : chevron(open)),
+    open && h('div', { class: 'set-detail', id: detail },
+      h('code', { title: a.command }, a.command),
+      status === 'error' && live.error && h('p', { class: 'hint' }, live.error),
+      skillLine(a, live),
+      isDefault && entry && [setRow('agent-model', 'Model', picker('model', entry.models)), setRow('agent-effort', 'Effort', picker('effort', entry.efforts))],
+      h('div', { class: 'set-actions' }, h('button', { class: 'set-btn danger', type: 'button', 'aria-label': `Remove ${a.name}`, onclick: () => removeAgent(a.name) }, 'Remove'))))
+}
+
+function agentsPage() {
+  const form = ui.agentForm ||= { preset: AGENT_PRESETS[0][1], name: uniqueAgentName(AGENT_PRESETS[0][0]), command: AGENT_PRESETS[0][1], auto: true, teach: true }
+  const chosen = defaultAgent()
+  const entry = ui.agents.find((a) => a.name === chosen)
+  const adding = ui.expanded === 'add-agent'
+  return h('div', { id: 'agents-section' },
+    h('ul', { id: 'agents-list', 'aria-label': 'Agents' },
+      state.settings.ai.agents.map((a, index) => settingsAgentRow(a, index, chosen, entry)),
+      h('li', { class: 'agent-add' },
+        h('button', { class: 'set plus', id: 'agent-add-toggle', type: 'button', 'aria-expanded': String(adding), 'aria-controls': 'agent-form', onclick: () => expand('add-agent') }, icon('plus'), h('span', { class: 'set-name' }, 'Add agent')),
+        adding && h('div', { class: 'set-detail', id: 'agent-form' }, addAgentForm(form)))),
     h('p', { class: 'hint error', role: 'alert' }, ui.agentError))
 }
 
+// Opens Settings' Agents page; with no agent yet the Add agent form is open.
 function showAgents() {
-  const group = $('agents-section')
-  if (!group) return
-  group.scrollIntoView({ block: 'start', behavior: still.matches ? 'auto' : 'smooth' })
-  group.querySelector('button:not(.danger), select, input')?.focus({ preventScroll: true })
+  Object.assign(ui, { page: 'agents', expanded: state.settings.ai.agents.length ? '' : 'add-agent' })
+  renderPanel()
+  focusAgents()
+}
+
+function focusAgents() {
+  if (ui.page !== 'agents') return
+  const target = $('agent-preset') || $('settings-page-agents')
+  target?.focus({ preventScroll: true })
+  target?.scrollIntoView({ block: 'nearest' })
 }
 
 function spaceHead(space, count, windows) {
-  const plain = !ui.settings && !ui.archive
+  const plain = !ui.archive
   const dot = !ui.archive && h('span', { class: 'space-dot', 'aria-hidden': 'true' })
   if (!ui.renaming) return [
     dot,
-    h('h1', { title: space.name }, ui.settings ? 'Settings' : ui.archive ? 'Archive' : space.name),
+    h('h1', { title: space.name }, ui.archive ? 'Archive' : space.name),
     plain && space.incognito && h('button', { id: 'close-incognito', class: 'icon-btn', title: 'Close Incognito', 'aria-label': 'Close Incognito', onclick: () => call('spaces.remove', { id: space.id }) }, icon('x')),
     plain && h('span', { id: 'space-count', class: 'count' }, `${windowCount(windows)}, ${tabCount(count)}`),
     plain && space.incognito && h('p', { id: 'incognito-hint', class: 'hint' }, 'Nothing here is saved.')
@@ -1281,6 +1383,7 @@ function renderPanel() {
   $('back').disabled = !tab?.canGoBack
   $('forward').disabled = !tab?.canGoForward
   $('reload').disabled = !tab
+  if (space.incognito && ui.page === 'space') ui.page = 'browsing'
   $('archive-toggle').setAttribute('aria-pressed', String(ui.archive))
   $('archive-count').textContent = state.archive.length ? String(state.archive.length) : ''
   $('settings-toggle').setAttribute('aria-pressed', String(ui.settings))
@@ -1292,13 +1395,14 @@ function renderPanel() {
 
   if (!holds) section('favorites', [favorites, tab?.id], () => favorites.map((t) => favoriteTile(t, t.id === tab?.id)))
   const plain = state.tabs.filter((t) => !t.favorite && !t.pinned && t.spaceId === space.id).length
-  // The title row is for Settings, Archive, a rename and Incognito's close button; an ordinary space's name is on the Buoy.
-  $('space-head').hidden = !(ui.settings || ui.archive || ui.renaming || space.incognito)
-  section('space-head', [space.id, space.name, plain, windows, ui.renaming, ui.settings, ui.archive], () => spaceHead(space, plain, windows))
+  // The title row is for Archive, a rename and Incognito's close button; an ordinary space's name is on the Buoy, and the settings chips say where Settings is.
+  $('space-head').hidden = ui.settings || !(ui.archive || ui.renaming || space.incognito)
+  section('space-head', [space.id, space.name, plain, windows, ui.renaming, ui.archive], () => spaceHead(space, plain, windows))
   const counts = { all: tabs.length, ...Object.fromEntries(CHIPS.map(([key]) => [key, tabs.filter((t) => t.bucket === key).length])) }
-  $('chips').hidden = ui.settings || ui.archive
-  if (!holds) section('chips', counts, () => chipRow(counts))
-  for (const chip of $('chips').children) chip.setAttribute('aria-pressed', String(chip.dataset.filter === ui.filter))
+  $('chips').hidden = ui.archive
+  $('chips').setAttribute('aria-label', ui.settings ? 'Settings pages' : 'Filter tabs')
+  if (!holds) section('chips', ui.settings ? ['settings', ui.page, space.incognito] : counts, () => (ui.settings ? settingsChips(space.incognito) : chipRow(counts)))
+  if (!ui.settings) for (const chip of $('chips').children) chip.setAttribute('aria-pressed', String(chip.dataset.filter === ui.filter))
   section('dots', state.spaces.map((s) => [s.id, s.name, s.color, s.incognito]), () => state.spaces.map((s) => spaceDot(s, s.id === space.id)))
   if (drawn.activeSpaceId !== space.id) {
     const from = state.spaces.findIndex((s) => s.id === drawn.activeSpaceId)
@@ -1313,7 +1417,7 @@ function renderPanel() {
     const travel = `translateX(${state.spaces.indexOf(space) > from ? 24 : -24}px)`
     if (from >= 0 && !still.matches) for (const id of ['favorites', 'chips', 'space-head', 'list']) $(id).animate([{ transform: travel, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 130, easing: 'ease-out' })
   }
-  section('panel', ui.settings && [space, state.spaces.length, ui.quick, state.settings.searchUrl, state.settings.ai, ui.imported, ui.filling, Boolean(tab), ui.extensions, ui.agents, ui.agentError], () => (ui.settings ? panel(space) : []))
+  section('panel', ui.settings && [space, state.spaces.length, ui.quick, state.settings.searchUrl, state.settings.ai, ui.imported, ui.filling, Boolean(tab), ui.extensions, ui.agents, ui.agentError, ui.page, ui.expanded], () => (ui.settings ? settingsPage(space) : []))
   if (ui.settings && ui.quickKey !== JSON.stringify([state.settings, state.update?.status])) refreshQuick()
   if (ui.settings) warmDefault()
   if (!holds) {
@@ -1364,13 +1468,15 @@ function toggleArchive() {
 function toggleSettings(data) {
   if (importer || confirmation) return
   const agents = data?.section === 'agents'
+  const opening = !ui.settings
   ui.settings = agents || !ui.settings
   ui.archive = false
   ui.renaming = false
-  renderPanel()
+  if (ui.settings && opening) Object.assign(ui, { page: activeSpace().incognito ? 'browsing' : 'space', expanded: '' })
+  if (ui.settings && agents) showAgents()
+  else renderPanel()
   if (!ui.settings) return
-  if (agents) showAgents()
-  Promise.all([refreshExtensions(), refreshAgents(), refreshQuick()]).then(() => { if (agents) showAgents() })
+  Promise.all([refreshExtensions(), refreshAgents(), refreshQuick()]).then(() => { if (agents && ui.settings) focusAgents() })
 }
 
 $('archive-toggle').addEventListener('click', toggleArchive)
@@ -1385,6 +1491,14 @@ $('add-space').addEventListener('click', async () => {
 })
 
 $('settings-toggle').addEventListener('click', toggleSettings)
+$('chips').addEventListener('keydown', (event) => {
+  if (!ui.settings || (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')) return
+  const chips = [...$('chips').children]
+  const next = chips[chips.indexOf(document.activeElement) + (event.key === 'ArrowRight' ? 1 : -1)]
+  if (!next) return
+  event.preventDefault()
+  next.focus()
+})
 $('shell-error-dismiss').addEventListener('click', () => { $('shell-error').hidden = true })
 $('confirm-cancel').addEventListener('click', closeConfirmation)
 $('confirm-accept').addEventListener('click', async () => {

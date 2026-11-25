@@ -115,6 +115,7 @@ for (const theme of ['light', 'dark']) {
       await again.getByRole('button', { name: 'Green', exact: true }).click()
       await expect(again.locator('html')).not.toHaveClass(/imported-background/)
       expect((await paint(again)()).image).toBe('')
+      await again.locator('#settings-page-skiff').click()
       await again.locator('#import-arc').click()
       await next(skiff)
       await next(skiff)
