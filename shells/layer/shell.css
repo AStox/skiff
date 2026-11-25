@@ -209,7 +209,7 @@ html.dragging #buoy, html.dragging #buoy * { cursor: grabbing !important; }
 #buoy-row .update-pill:hover { background: color-mix(in srgb, var(--accent) 85%, #000); }
 #buoy-favs { display: flex; align-items: center; gap: 2px; padding: 0 4px 0 2px; }
 #buoy-favs[hidden] { display: none; }
-#buoy-row .buoy-fav { display: inline-flex; flex: none; align-items: center; justify-content: center; min-width: 22px; height: 22px; border-radius: 6px; }
+#buoy-row .buoy-fav { position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center; min-width: 22px; height: 22px; border-radius: 6px; }
 #buoy-row .buoy-fav:hover { background: color-mix(in srgb, var(--buoy-ink) 8%, transparent); }
 #buoy-row .buoy-fav.current { box-shadow: inset 0 0 0 1.5px var(--accent); }
 .buoy-fav .favicon { width: 16px; height: 16px; border-radius: 4px; }
@@ -368,6 +368,12 @@ input.setting-input[type='number'] { width: 80px; font-family: var(--data); font
 #agents-list:empty { display: none; }
 .agent { flex-wrap: wrap; align-items: center; min-height: 0; padding: 4px 8px 6px 0; }
 .agent .row-main { flex-basis: 100%; min-height: 34px; }
+.speaker { flex: none; display: inline-grid; place-items: center; color: var(--accent); }
+.speaker .icon { width: 14px; height: 14px; }
+.tile .speaker, .buoy-fav .speaker { position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); color: #fff; }
+.tile .speaker { left: 5px; bottom: 5px; box-shadow: 0 0 0 1.5px var(--hover); }
+.buoy-fav .speaker { right: -2px; bottom: -2px; box-shadow: 0 0 0 1.5px var(--buoy-bg); }
+.tile .speaker .icon, .buoy-fav .speaker .icon { width: 8px; height: 8px; stroke-width: 3; }
 .agent-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: color-mix(in srgb, var(--soft) 45%, transparent); }
 .agent-dot[data-status='ready'] { background: #2f9e5b; }
 .agent-dot[data-status='starting'] { background: var(--accent); }
@@ -539,3 +545,7 @@ input.setting-input[type='number'] { width: 80px; font-family: var(--data); font
   .import-footer > .import-note { max-height: 48px; overflow-y: auto; }
   #arc-content { padding-top: 12px; padding-bottom: 12px; }
 }
+.list-head.space { margin-top: 6px; padding-top: 8px; font-size: 12px; font-weight: 500; }
+.list-head.space .label { color: var(--ink); }
+.list-head.open-head .label { color: var(--ink); font-size: 12px; font-weight: 600; }
+.row[data-static] .row-main { padding-left: calc(10px + var(--depth, 0) * 18px); }

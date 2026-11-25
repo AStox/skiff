@@ -146,7 +146,7 @@ function createPageFeatures({ state, views, runtime, changed = () => {}, emit = 
     })
     on('media-started-playing', () => { rec.playing = true; publishProtection(rec) })
     on('media-paused', () => { rec.playing = false; publishProtection(rec) })
-    on('audio-state-changed', (_event, data) => { rec.protections.audible = Boolean(data?.audible); publishProtection(rec) })
+    on('audio-state-changed', (event) => { rec.protections.audible = Boolean(event?.audible); publishProtection(rec) })
     on('render-process-gone', (_event, details) => {
       cancelOperations(rec, 'page_crashed', 'The page renderer stopped')
       nextGeneration(rec)

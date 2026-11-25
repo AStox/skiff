@@ -87,7 +87,7 @@ test('empty sections offer drop areas, Escape cancels a drag and a release in th
   await dragOver(card, zone('later'))
   await expect(ghosts()).toHaveCount(1)
   await expect(zone('later')).toBeHidden()
-  await expect(card.locator('#space-status')).toHaveText('Drop to move to Later, position 1.')
+  await expect(card.locator('#space-status')).toHaveText('Drop to move to Pinned, position 1.')
   await card.mouse.up()
   await expect.poll(() => bucketOf(s.w1)).toBe('later')
   await expect(card.locator('.drop-zone')).toHaveCount(0)

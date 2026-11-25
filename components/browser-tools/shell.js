@@ -34,10 +34,10 @@
       target.append(button('Access', () => open('grants', frameId)), button('Transcripts', () => open('transcripts', frameId)))
     }
   }
-  // Preserve shell-specific plain-tab treatment (timeline dates, index labels, Layer windows).
-  if (typeof tabRows === 'function' && typeof folderRow === 'function') {
-    const original = tabRows
-    tabRows = function(space, tabs, rowOrId, now) {
+  // The Pinned section: folders (empty ones too) and loose pins, which the shell draws below Open Tabs.
+  if (typeof pinnedRows === 'function' && typeof folderRow === 'function' && typeof sectionHead === 'function') {
+    const original = pinnedRows
+    pinnedRows = function(space, tabs, rowOrId, now) {
       tabs = tabs.filter((tab) => !tab.userPeek)
       const model = typeof state === 'object' && state ? state : snapshot
       const folders = (model?.folders || []).filter((f) => f.spaceId === space.id)
@@ -73,7 +73,7 @@
         for(const folder of folders)if((folder.parentId || null)===parentId)rows.push(...folderRows(folder,depth))
         return rows
       }
-      return [tree(null,0), pinned.length || folders.length ? make('li', { class: 'divider', 'aria-hidden': true }) : [], original(space, tabs.filter((t) => !t.pinned), rowOrId, now)]
+      return [sectionHead('later', pinned.length), tree(null,0)]
     }
   }
   if (typeof section === 'function') {

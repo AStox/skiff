@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Tone fixture</title></head>
+<body><h1>Tone fixture</h1>
+<script>
+  let context
+  let oscillator
+  window.tone = {
+    start() {
+      context ||= new AudioContext()
+      oscillator = context.createOscillator()
+      oscillator.frequency.value = 440
+      oscillator.connect(context.destination)
+      oscillator.start()
+      return context.resume().then(() => context.state)
+    },
+    stop() { oscillator?.stop(); oscillator = null }
+  }
+</script></body></html>

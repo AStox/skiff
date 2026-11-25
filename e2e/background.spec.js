@@ -78,7 +78,7 @@ for (const theme of ['light', 'dark']) {
         await expect(card.locator('html')).toHaveClass(/imported-background/)
         const space = (await skiff.state()).spaces.find((item) => item.name === name)
         expect(space).toMatchObject({ color: source.color, background: { light: source.light, dark: source.dark } })
-        await expect(card.locator('#list .row .label', { hasText: 'Fixture reading' })).toHaveCount(1)
+        await expect(card.locator('#list .row:not([data-static]) .label', { hasText: 'Fixture reading' })).toHaveCount(1)
         await expect.poll(async () => (await skiff.state()).tabs.some((tab) => tab.loading)).toBe(false)
         seen[name] = await measure(skiff, testInfo, `imported-background-${name}-${theme}`)
         expect(seen[name].labels.length).toBeGreaterThan(2)

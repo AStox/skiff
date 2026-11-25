@@ -1,6 +1,6 @@
 'use strict'
 
-// Every open tab of every space, under its space's heading, opened from the count in the Buoy. A favorite or pinned tab is open once its page is loaded. It floats above other apps and opening it never brings Skiff forward.
+// Every open tab of every space, under its space's heading, opened from the count in the Buoy, with a speaker on those playing sound. A favorite or pinned tab is open once its page is loaded. It floats above other apps and opening it never brings Skiff forward.
 const $ = (id) => document.getElementById(id)
 const card = $('tablist')
 const rows = $('tablist-rows')
@@ -20,7 +20,7 @@ function row(tab, current) {
   const children = state.tabs.some((t) => t.parentId === tab.id)
   const item = h('li', { class: `row${current ? ' current' : ''}${isShown(state, tab) ? '' : ' hidden-win'}`, 'data-tab-id': tab.id },
     h('button', { class: 'row-main', type: 'button', title: tab.url, 'aria-current': current ? 'true' : null, onclick: () => pick(tab) },
-      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), agentBadge(tab), agentDot(tab)),
+      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), speaker(tab), agentBadge(tab), agentDot(tab)),
     children && h('button', { id: `trail-toggle-${tab.id}`, class: 'skiff-trail', type: 'button', 'aria-expanded': String(!tab.trailCollapsed), 'aria-label': `${tab.trailCollapsed ? 'Expand' : 'Collapse'} trail for ${tab.title || tab.url}`, onclick: () => skiff.call('tabs.setTrailCollapsed', { id: tab.id, collapsed: !tab.trailCollapsed }).catch((error) => rows.prepend(h('li', { role: 'alert', class: 'empty' }, error.message))) }))
   const seen = new Set()
   for (let parent = state.tabs.find((t) => t.id === tab.parentId); parent && !seen.has(parent.id); parent = state.tabs.find((t) => t.id === parent.parentId)) seen.add(parent.id)
@@ -35,7 +35,7 @@ function render() {
   // List collapse never changes the desk's independent live windows.
   const listed = (tab) => {
     if (tab.userPeek) return false
-    if (!isPlain(tab)) return Boolean(tab.lifecycle) && tab.lifecycle !== 'sleeping'
+    if (!isPlain(tab)) return isOpen(tab)
     const seen = new Set()
     for (let parent = state.tabs.find((t) => t.id === tab.parentId); parent && !seen.has(parent.id); parent = state.tabs.find((t) => t.id === parent.parentId)) {
       if (parent.trailCollapsed) return false
@@ -47,7 +47,7 @@ function render() {
   // Headings by space where there are two or more, and by desktop within a space where there are two or more desktops.
   const named = state.spaces.length > 1
   const desktops = state.desktops?.list.length > 1 ? state.desktops : null
-  const key = JSON.stringify([spaces.map(({ space, tabs }) => [space.id, space.name, tabs.map((t) => [t.id, t.title, t.url, t.favicon, t.parentId, t.trailCollapsed, t.favorite, t.pinned, t.lifecycle, t.agent, t.agentState, isShown(state, t), desktops && t.desktopId])]), state.activeSpaceId, active, desktops])
+  const key = JSON.stringify([spaces.map(({ space, tabs }) => [space.id, space.name, tabs.map((t) => [t.id, t.title, t.url, t.favicon, t.parentId, t.trailCollapsed, t.favorite, t.pinned, t.lifecycle, Boolean(t.protections?.audible), t.agent, t.agentState, isShown(state, t), desktops && t.desktopId])]), state.activeSpaceId, active, desktops])
   if (key !== drawn) {
     drawn = key
     const focusId = rows.contains(document.activeElement) ? document.activeElement.id : ''

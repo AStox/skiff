@@ -114,6 +114,10 @@ function agentDot(tab) {
   const text = `${name}, ${AGENT_STATES[state] || state}`
   return h('span', { class: 'agent-dot', 'data-state': state, role: 'img', 'aria-label': text, title: text })
 }
+// A tab whose page is loaded; a favorite or pinned tab that was never opened, or is asleep, has none.
+const isOpen = (tab) => Boolean(tab.lifecycle) && tab.lifecycle !== 'sleeping'
+// Marks a tab that is producing sound right now.
+const speaker = (tab) => (tab.protections?.audible ? h('span', { class: 'speaker', role: 'img', 'aria-label': 'Playing audio', title: 'Playing audio' }, icon('volume')) : null)
 const agentBadge = (tab) => (agentNameOf(tab) ? h('span', { class: 'agent-badge' }, tab.agentRequest ? `${agentNameOf(tab)} asks` : tab.agent) : null)
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))

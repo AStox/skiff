@@ -340,6 +340,15 @@ test('drafts, media, calls, downloads, agents, permissions, and unknown frames a
   }
 })
 
+test('a tab playing sound is audible in its runtime state until it stops, as Electron reports it on the event', (t) => {
+  const h = setup(t)
+  const a = h.add()
+  a.wc.emit('audio-state-changed', { audible: true })
+  assert.equal(h.runtime.get(a.tab.id).protections.audible, true)
+  a.wc.emit('audio-state-changed', { audible: false })
+  assert.equal(h.runtime.get(a.tab.id).protections.audible, false)
+})
+
 function preloadFixture(url = 'https://frame.test/') {
   const listeners = new Map(), ipc = new EventEmitter(), sent = []
   ipc.send = (channel, payload) => sent.push({ channel, payload })

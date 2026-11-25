@@ -78,7 +78,7 @@ test('the Layer card lists tabs and threads in six sections that follow their bu
   await expect(row(page.id)).toHaveAttribute('data-section', 'active')
   expect(await sections()).toEqual(['active'])
 
-  // A drag to an empty section drops on its dashed area; Later and Done need no row of their own first.
+  // A drag to an empty section drops on its dashed area; Pinned and Done need no row of their own first.
   await dragRow(buoy, row(page.id), buoy.locator('#list [data-zone="later"]'))
   await expect.poll(() => bucketOf(skiff, page.id)).toBe('later')
   await expect(row(page.id)).toHaveAttribute('data-section', 'later')
@@ -115,8 +115,8 @@ test('the Layer card lists tabs and threads in six sections that follow their bu
   await expect(unread).toHaveText('2')
   expect(await buoy.locator('#list li.row[data-section="unread"]').evaluateAll((rows) => rows.map((r) => r.dataset.tabId).sort())).toEqual([later.id, tabId].sort())
 
-  // The keyboard steps a row into the next section, never into In Progress.
+  // The keyboard steps a row into the next section in the card's order, never into In Progress.
   await row(home.id).locator('.row-main').focus()
   await buoy.keyboard.press('Alt+Shift+ArrowDown')
-  await expect.poll(() => bucketOf(skiff, home.id)).toBe('later')
+  await expect.poll(() => bucketOf(skiff, home.id)).toBe('done')
 })

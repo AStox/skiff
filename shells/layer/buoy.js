@@ -147,14 +147,14 @@ function renderFavorites() {
   const favorites = state.tabs.filter((t) => t.favorite && t.spaceId === state.activeSpaceId)
   const active = state.activeTabBySpace[state.activeSpaceId]
   const limit = Math.floor(deskSize(state).width * FAVORITES_SHARE)
-  const key = JSON.stringify([favorites.map((t) => [t.id, t.title, t.url, t.favicon]), active, limit, $('buoy-agents').textContent])
+  const key = JSON.stringify([favorites.map((t) => [t.id, t.title, t.url, t.favicon, Boolean(t.protections?.audible)]), active, limit, $('buoy-agents').textContent])
   if (key === favoritesKey) return
   favoritesKey = key
   const box = $('buoy-favs')
   const button = (tab) => h('button', {
     class: `buoy-fav${tab.id === active ? ' current' : ''}`, type: 'button', 'data-tab-id': tab.id, title: tab.title || tab.url, 'aria-label': tab.title || tab.url, 'aria-current': tab.id === active ? 'true' : null,
     onclick: () => { if (!press?.moved) buoyAction('favorite', { id: tab.id }) }
-  }, favicon(tab))
+  }, favicon(tab), speaker(tab))
   const more = (n) => h('button', { id: 'buoy-more', class: 'buoy-fav', type: 'button', title: `${n} more in the command bar`, 'aria-label': `${n} more favorites. Open the command bar`, onclick: () => { if (!press?.moved) openCard('new') } }, `+${n}`)
   const draw = (shown) => box.replaceChildren(...favorites.slice(0, shown).map(button), shown < favorites.length ? more(favorites.length - shown) : '')
   box.hidden = !favorites.length
