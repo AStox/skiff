@@ -46,7 +46,11 @@
       <span id="palette-site" hidden></span>
       <span id="palette-ask" hidden></span>
       <input id="palette-input" type="text" role="combobox" aria-label="Search or enter address" placeholder="Search or enter address" spellcheck="false" autocomplete="off" autocapitalize="off" aria-autocomplete="both" aria-expanded="false" aria-controls="palette-results">
-      <span class="palette-hint mono" aria-hidden="true">esc</span>
+      <span class="palette-nav">
+        <button id="back" class="icon-btn" aria-label="Back" title="Back"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg></button>
+        <button id="forward" class="icon-btn" aria-label="Forward" title="Forward"><svg class="icon" aria-hidden="true"><use href="#i-forward"/></svg></button>
+        <button id="reload" class="icon-btn" aria-label="Reload" title="Reload"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg></button>
+      </span>
     </div>
     <div id="palette-tools" hidden>
       <label class="palette-pill"><select id="palette-agent" aria-label="Agent"></select><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg></label>
@@ -58,12 +62,6 @@
     <div id="palette-hair" aria-hidden="true"></div>
     <ul id="palette-results" role="listbox" aria-label="Results" hidden></ul>
     <div id="sidebar">
-      <div id="top">
-        <button id="back" class="icon-btn" aria-label="Back" title="Back"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg></button>
-        <button id="forward" class="icon-btn" aria-label="Forward" title="Forward"><svg class="icon" aria-hidden="true"><use href="#i-forward"/></svg></button>
-        <button id="reload" class="icon-btn" aria-label="Reload" title="Reload"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg></button>
-      </div>
-
       <div id="favorites" aria-label="Favorites"></div>
       <div id="space-head"></div>
       <ul id="list" aria-label="Tabs"></ul>

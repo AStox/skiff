@@ -7,7 +7,7 @@ const shellPage = async (skiff, suffix) => {
 }
 const floatOpen = (skiff, file) => skiff.app.context().pages().some((page) => page.url().endsWith(file) && !page.isClosed())
 
-test('the card lists Favorites, then Open Tabs by space with the status sections, then Pinned; another space\'s rows switch to it and close', async ({ skiff }) => {
+test('the card lists Favorites, then this space\'s status sections and Pinned, then each other space flat under its head; another space\'s rows switch to it and close', async ({ skiff }) => {
   const home = (await skiff.state()).activeSpaceId
   const fav = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/one?fav` })).id
   await skiff.rpc('tabs.setFavorite', { id: fav, favorite: true })
@@ -29,12 +29,12 @@ test('the card lists Favorites, then Open Tabs by space with the status sections
 
   const card = await skiff.card()
   await expect(card.locator('#favorites .tile')).toHaveCount(1)
-  // Favorites sit above the list, whose rows run: Open Tabs, this space's status sections, each other space with its loaded favorites and pinned tabs, then Pinned.
+  // Favorites sit above the list, whose rows run: this space's status sections, its Pinned, the New tab row, then each other space with its loaded favorites and pinned tabs and its ordinary tabs, flat under one head.
   const heads = (id) => `#list > [data-tab-id="${id}"]`
   await expect(card.locator('#list > li[data-tab-id]')).toHaveCount(6)
   const order = () => card.locator('#list > li').evaluateAll((lis) => lis.map((li) => li.dataset.tabId || li.querySelector('.label')?.textContent))
   // Status sections follow their own order, not the order the tabs were made in.
-  expect(await order()).toEqual(['Open Tabs', 'Home · this space', 'Active', active, 'Done', done, 'Dev', devFav, devPin, 'Unread', devPlain, 'Pinned', pin, 'New tab'])
+  expect(await order()).toEqual(['Active', active, 'Done', done, 'Pinned', pin, 'New tab', 'Dev', devFav, devPin, devPlain])
   // The open space's rows move; another space's do not.
   await expect(card.locator(heads(active))).toHaveAttribute('draggable', 'true')
   await expect(card.locator(heads(devPlain))).not.toHaveAttribute('draggable', 'true')

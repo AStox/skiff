@@ -95,10 +95,10 @@ const MOVE_KEYS = 'Alt+Shift+ArrowUp Alt+Shift+ArrowDown Alt+Shift+ArrowLeft Alt
 // Every ordinary tab is a window: its eye hides it from the desk or shows it again.
 function eye(tab, shown) {
   const title = shown ? 'Hide window' : 'Show window'
-  return h('button', { class: `icon-btn eye${shown ? ' reveal' : ''}`, title, 'aria-label': title, 'aria-pressed': String(!shown), onclick: () => call(shown ? 'desk.hide' : 'desk.show', { id: tab.id }) }, icon(shown ? 'eye' : 'eye-off'))
+  return h('button', { class: 'icon-btn eye reveal', title, 'aria-label': title, 'aria-pressed': String(!shown), onclick: () => call(shown ? 'desk.hide' : 'desk.show', { id: tab.id }) }, icon(shown ? 'eye' : 'eye-off'))
 }
 
-// The card's order: the status sections under Open Tabs, then Pinned.
+// The open space's order: its status sections, then Pinned.
 const SECTIONS = [['unread', 'Unread'], ['active', 'Active'], ['progress', 'In Progress'], ['done', 'Done'], ['later', 'Pinned']]
 const BUCKET_NAMES = Object.fromEntries([['favorites', 'Favorites'], ...SECTIONS])
 const BUCKETS = Object.keys(BUCKET_NAMES)
@@ -119,11 +119,18 @@ function when(tab) {
 
 const closeButton = (tab) => h('button', { class: 'icon-btn reveal', title: 'Close tab', 'aria-label': 'Close tab', onclick: () => call('tabs.close', { id: tab.id }) }, icon('x'))
 
+// The end of a row: a speaker while it plays, one indicator (the agent's dot, else the spinner of In Progress), then one muted text (the agent's name, else the time).
+function rowEnd(tab) {
+  const agent = agentNameOf(tab)
+  const text = agent ? (tab.agentRequest ? `${agent} asks` : tab.agent) : when(tab)
+  return [speaker(tab), agentDot(tab) || (tab.bucket === 'progress' && h('span', { class: 'spinner', 'aria-hidden': 'true' })), text && h('span', { class: 'when' }, text)]
+}
+
 // A row of another space: a click goes there, and it can be closed. Moves belong to the open space's rows, so it has no drag, keys or eye.
 function otherRow(tab, depth) {
   const row = h('li', { class: `row${tab.loading ? ' loading' : ''}`, 'data-tab-id': tab.id, 'data-static': true },
     h('button', { class: 'row-main', title: tab.url, onclick: () => show(tab) },
-      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), speaker(tab), agentBadge(tab), agentDot(tab)),
+      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), rowEnd(tab)),
     closeButton(tab))
   if (depth) row.style.setProperty('--depth', String(Math.min(depth, 6)))
   return row
@@ -139,7 +146,7 @@ function tabRow(tab, current, depth) {
     onkeydown: (event) => moveTabWithKeyboard(event, tab)
   },
     h('button', { class: 'row-main', title: `${tab.url}\n${MOVE_HINT}`, 'aria-keyshortcuts': MOVE_KEYS, 'aria-current': current ? 'true' : null, onclick: () => show(tab) },
-      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), tab.bucket === 'unread' && h('span', { class: 'sr-only' }, ', unread'), tab.bucket === 'progress' && h('span', { class: 'spinner', 'aria-hidden': 'true' }), speaker(tab), agentBadge(tab), agentDot(tab), when(tab) && h('span', { class: 'when' }, when(tab))),
+      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), tab.bucket === 'unread' && h('span', { class: 'sr-only' }, ', unread'), rowEnd(tab)),
     !tab.pinned && eye(tab, shown),
     closeButton(tab))
   if (depth != null) row.style.setProperty('--depth', String(Math.min(depth, 6)))
@@ -166,9 +173,8 @@ function folderRow(space, folder, open, count, toggle = () => call('folders.setC
       icon('folder'), h('span', { class: 'label' }, folder), !open && h('span', { class: 'when' }, String(count)), h('span', { class: 'chevron' }, icon('chevron-down'))))
 }
 
-// Another space's heads are not drop slots, so they carry no bucket.
-function sectionHead(bucket, count, passive) {
-  return h('li', { class: 'list-head section', 'data-bucket': passive ? null : bucket, 'data-static': passive || null }, h('span', { class: 'label' }, BUCKET_NAMES[bucket]), h('span', { class: 'count' }, String(count)))
+function sectionHead(bucket, count) {
+  return h('li', { class: 'list-head section', 'data-bucket': bucket }, h('span', { class: 'label' }, BUCKET_NAMES[bucket]), h('span', { class: 'count' }, String(count)))
 }
 
 // Later: folders first, then loose tabs, as the mock lays them out.
@@ -187,11 +193,11 @@ function laterRows(space, pinned, row) {
   ]
 }
 
-// One space's ordinary tabs by status; Pinned is drawn apart, below Open Tabs.
-function statusRows(tabs, row, passive) {
+// One space's ordinary tabs by status.
+function statusRows(tabs, row) {
   return SECTIONS.filter(([bucket]) => bucket !== 'later').map(([bucket]) => {
     const inside = tabs.filter((t) => t.bucket === bucket)
-    return inside.length ? [sectionHead(bucket, inside.length, passive), trail(inside).map(([t, depth]) => row(t, depth))] : []
+    return inside.length ? [sectionHead(bucket, inside.length), trail(inside).map(([t, depth]) => row(t, depth))] : []
   })
 }
 
@@ -199,9 +205,13 @@ function pinnedRows(space, pinned, row) {
   return pinned.length ? [sectionHead('later', pinned.length), laterRows(space, pinned, row)] : []
 }
 
-const groupHead = (space, current) => h('li', { class: 'list-head space', 'data-static': true, 'data-space-head': space.id, 'data-current': current || null }, h('span', { class: 'label' }, `${space.name}${current ? ' · this space' : ''}`))
+function groupHead(space, count) {
+  const dot = h('span', { class: 'space-dot', 'aria-hidden': 'true' })
+  dot.style.setProperty('background', space.color)
+  return h('li', { class: 'list-head space', 'data-static': true, 'data-space-head': space.id }, dot, h('span', { class: 'label' }, space.name), h('span', { class: 'count' }, String(count)))
+}
 
-// Every other space's open tabs: its loaded favorites and pinned tabs first, then its ordinary tabs by status.
+// Every other space's open tabs, flat under its head: its loaded favorites and pinned tabs first, then its ordinary tabs in status order.
 function otherGroups(space) {
   return state.spaces.filter((s) => s.id !== space.id).map((s) => {
     const mine = state.tabs.filter((t) => t.spaceId === s.id && !t.userPeek)
@@ -1023,9 +1033,8 @@ function showDropZones() {
   const head = (name) => $('list').querySelector(`[data-bucket="${name}"]`)
   SECTIONS.forEach(([bucket], i) => {
     if (bucket === 'progress' || head(bucket)) return
-    // An empty status section goes before the next one, else before the other spaces' groups, which lie between the status sections and Pinned.
-    const next = SECTIONS.slice(i + 1).map(([name]) => name)
-    const later = (bucket === 'later' ? null : next.filter((name) => name !== 'later').map(head).find(Boolean) || $('list').querySelector('[data-space-head]:not([data-current])') || head('later')) || $('list').querySelector('[data-new-tab]')
+    // An empty status section goes before the next present status head, else before Pinned, else before the New tab row; an empty Pinned goes before the New tab row.
+    const later = SECTIONS.slice(i + 1).map(([name]) => head(name)).find(Boolean) || $('list').querySelector('[data-new-tab]')
     later.before(h('li', { class: 'drop-zone', 'data-zone': bucket }, BUCKET_NAMES[bucket]))
     drag.shifted = true
   })
@@ -1313,17 +1322,15 @@ function renderPanel() {
   if (!holds) {
     let was
     const others = ui.archive ? [] : otherGroups(space)
-    const rebuilt = section('list', ui.archive ? [state.archive] : [tabs, others, state.spaces.map((s) => s.name), tab?.id, state.collapsed, state.deskSize], () => {
+    const rebuilt = section('list', ui.archive ? [state.archive] : [tabs, others, state.spaces.map((s) => [s.name, s.color]), tab?.id, state.collapsed, state.deskSize], () => {
       was = tops()
       const row = (t, depth) => tabRow(t, t.id === tab?.id, depth)
-      const open = tabs.filter((t) => !t.pinned)
+      const flat = (g) => [g.top.map((t) => otherRow(t)), SECTIONS.filter(([bucket]) => bucket !== 'later').map(([bucket]) => trail(g.plain.filter((t) => t.bucket === bucket)).map(([t, depth]) => otherRow(t, depth)))]
       return ui.archive ? archiveRows() : [
-        open.length || others.length ? h('li', { class: 'list-head section open-head', 'data-static': true }, h('span', { class: 'label' }, 'Open Tabs')) : null,
-        others.length ? groupHead(space, true) : null,
-        statusRows(open, row),
-        others.map((g) => [groupHead(g.space), g.top.map((t) => otherRow(t)), statusRows(g.plain, otherRow, true)]),
+        statusRows(tabs.filter((t) => !t.pinned), row),
         pinnedRows(space, tabs.filter((t) => t.pinned), row),
-        h('li', { class: 'row quiet', 'data-new-tab': true }, h('button', { id: 'new-tab', class: 'row-main', onclick: () => bar.focus() }, icon('plus'), h('span', { class: 'label' }, 'New tab')))
+        h('li', { class: 'row quiet', 'data-new-tab': true }, h('button', { id: 'new-tab', class: 'row-main', onclick: () => bar.focus() }, icon('plus'), h('span', { class: 'label' }, 'New tab'))),
+        others.map((g) => [groupHead(g.space, g.top.length + g.plain.length), flat(g)])
       ]
     })
     if (rebuilt && !still.matches) glide(was)

@@ -1404,7 +1404,7 @@ test.describe('layer panel and Buoy', () => {
     const back = () => skiff.rpc('spaces.activate', { id: first })
 
     // Over the list, the header and the footer: one switch per stream.
-    for (const selector of ['#list .row-main', '#top', '#space-head', 'footer']) {
+    for (const selector of ['#list .row-main', '#space-head', 'footer']) {
       const at = await centre(panel, selector)
       expect(await switches(skiff, () => wheel(skiff, panel.url(), at, trackpad(1))), selector).toEqual([['spaces.cycle', 1]])
       await back()
