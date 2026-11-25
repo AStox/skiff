@@ -1447,7 +1447,7 @@ test.describe('layer panel and Buoy', () => {
       const open = () => skiff.app.context().pages().filter((p) => p.url().endsWith('/tablist.html') && !p.isClosed())
       await expect.poll(() => open().length).toBe(1)
       const page = open()[0]
-      await expect(page.locator('#tablist .row')).toHaveCount(3)
+      await expect(page.locator('#tablist .row')).toHaveCount(4)
       return page
     }
     const listClosed = () => expect.poll(async () => Boolean(await listFloat())).toBe(false)
@@ -1488,11 +1488,11 @@ test.describe('layer panel and Buoy', () => {
     expect(await children(skiff)).toEqual(layout)
     expect(JSON.stringify((await skiff.state()).tabs.map((t) => [t.id, t.desk]))).toBe(tabsBefore)
     expect(await isFocused(skiff, deskId)).toBe(true)
-    // Rows as the card's: favicon and title, the active one marked, the hidden one dimmed.
-    expect(await list.locator('#tablist .row').evaluateAll((rows) => rows.map((r) => r.dataset.tabId))).toEqual([one, two, three])
-    await expect(list.locator('#tablist .row .favicon')).toHaveCount(3)
+    // Rows as the card's, the loaded favorite first: favicon and title, the active one marked, the hidden ones dimmed.
+    expect(await list.locator('#tablist .row').evaluateAll((rows) => rows.map((r) => r.dataset.tabId))).toEqual([fav, one, two, three])
+    await expect(list.locator('#tablist .row .favicon')).toHaveCount(4)
     await expect(list.locator('#tablist .row.current')).toHaveAttribute('data-tab-id', one)
-    await expect(list.locator('#tablist .row.hidden-win')).toHaveAttribute('data-tab-id', three)
+    expect(await list.locator('#tablist .row.hidden-win').evaluateAll((rows) => rows.map((r) => r.dataset.tabId))).toEqual([fav, three])
     // Above the Buoy in the lower half of the desk, and only its card takes clicks.
     await list.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished)))
     const card = await list.evaluate(() => { const r = document.getElementById('tablist').getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height } })

@@ -120,3 +120,54 @@ test('the open card never scrolls its favorites; the tab list takes what is left
   expect(m.ls).toBeGreaterThan(m.lc)
   expect(m.lb).toBeLessThanOrEqual(m.cb)
 })
+
+test('the tab list shows every space\'s open tabs, loaded favorites included, and a pick from another space switches to it', async ({ skiff }) => {
+  const first = (await skiff.state()).activeSpaceId
+  const plain = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/one` })).id
+  const second = (await skiff.rpc('spaces.create', { name: 'Dev' })).id
+  const fav = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/two`, spaceId: second })).id
+  await skiff.rpc('tabs.setFavorite', { id: fav, favorite: true })
+  await skiff.rpc('tabs.activate', { id: fav })
+  const later = (await skiff.rpc('spaces.create', { name: 'Later' })).id
+  const open = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/three`, spaceId: later })).id
+  const cold = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/four`, spaceId: later, activate: false })).id
+  await skiff.rpc('tabs.setFavorite', { id: cold, favorite: true })
+  await skiff.rpc('desk.hide', { id: cold })
+  await skiff.rpc('spaces.activate', { id: first })
+  // After a restart a favorite hidden from the desk has no page until it is used.
+  await skiff.restart()
+  const lifecycle = async (id) => (await skiff.state()).tabs.find((t) => t.id === id).lifecycle
+  expect(await lifecycle(cold)).toBeUndefined()
+  await skiff.rpc('tabs.activate', { id: fav })
+  await expect.poll(() => lifecycle(fav)).toBe('live')
+  await skiff.rpc('spaces.activate', { id: first })
+  expect(await lifecycle(cold)).toBeUndefined()
+
+  const buoy = await shellPage(skiff, '/buoy.html')
+  await expect(async () => {
+    if (!floatOpen(skiff, '/tablist.html')) await buoy.locator('#buoy-tabs').click()
+    const list = await shellPage(skiff, '/tablist.html')
+    await expect(list.locator('#tablist-rows > li')).toHaveCount(6, { timeout: 1500 })
+  }).toPass()
+  const list = await shellPage(skiff, '/tablist.html')
+  const items = () => list.locator('#tablist-rows > li').evaluateAll((lis) => lis.map((li) => li.dataset.tabId || li.textContent))
+  const firstName = (await skiff.state()).spaces.find((s) => s.id === first).name
+  expect(await items()).toEqual([`${firstName} · this space`, plain, 'Dev', fav, 'Later', open])
+  await expect(list.locator('#tablist .row.current')).toHaveAttribute('data-tab-id', plain)
+
+  await list.locator(`[data-tab-id="${fav}"] .row-main`).click()
+  await expect.poll(async () => { const s = await skiff.state(); return [s.activeSpaceId, s.activeTabBySpace[second]] }).toEqual([second, fav])
+  // With another app in front only that tab's window comes over it.
+  await skiff.rpc('spaces.activate', { id: first })
+  await skiff.app.evaluate(({ BrowserWindow }) => {
+    global.__away = new BrowserWindow({ x: 1200, y: 600, width: 200, height: 200 })
+    global.__away.focus()
+  })
+  await expect.poll(async () => (await skiff.rpc('ui.inFront')).front).toBe(false)
+  await buoy.locator('#buoy-tabs').click()
+  const again = await shellPage(skiff, '/tablist.html')
+  await again.locator(`[data-tab-id="${fav}"] .row-main`).click()
+  await expect.poll(async () => { const s = await skiff.state(); return [s.activeSpaceId, s.activeTabBySpace[second], s.deskOnly] }).toEqual([second, fav, [fav]])
+  await expect.poll(async () => (await skiff.rpc('ui.inFront')).front).toBe(true)
+  await skiff.app.evaluate(() => { global.__away?.destroy(); global.__away = null })
+})

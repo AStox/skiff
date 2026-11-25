@@ -1,6 +1,6 @@
 'use strict'
 
-// The space's active tabs, opened from the count in the Buoy. It floats above other apps and opening it never brings Skiff forward.
+// Every open tab of every space, under its space's heading, opened from the count in the Buoy. A favorite or pinned tab is open once its page is loaded. It floats above other apps and opening it never brings Skiff forward.
 const $ = (id) => document.getElementById(id)
 const card = $('tablist')
 const rows = $('tablist-rows')
@@ -33,24 +33,29 @@ function render() {
   paintSpace(state)
   const active = state.activeTabBySpace[state.activeSpaceId]
   // List collapse never changes the desk's independent live windows.
-  const tabs = visibleTabs(state, state.activeSpaceId).filter((tab) => {
-    if (!isPlain(tab) || tab.userPeek) return false
+  const listed = (tab) => {
+    if (tab.userPeek) return false
+    if (!isPlain(tab)) return Boolean(tab.lifecycle) && tab.lifecycle !== 'sleeping'
     const seen = new Set()
     for (let parent = state.tabs.find((t) => t.id === tab.parentId); parent && !seen.has(parent.id); parent = state.tabs.find((t) => t.id === parent.parentId)) {
       if (parent.trailCollapsed) return false
       seen.add(parent.id)
     }
     return true
-  })
-  // Every desktop's tabs, grouped under its heading in desktop order, where there are two or more desktops.
+  }
+  const spaces = state.spaces.map((space) => ({ space, tabs: visibleTabs(state, space.id).filter(listed) })).filter((s) => s.tabs.length)
+  // Headings by space where there are two or more, and by desktop within a space where there are two or more desktops.
+  const named = state.spaces.length > 1
   const desktops = state.desktops?.list.length > 1 ? state.desktops : null
-  const key = JSON.stringify([tabs.map((t) => [t.id, t.title, t.url, t.favicon, t.parentId, t.trailCollapsed, t.agent, t.agentState, isShown(state, t), desktops && t.desktopId]), active, desktops])
+  const key = JSON.stringify([spaces.map(({ space, tabs }) => [space.id, space.name, tabs.map((t) => [t.id, t.title, t.url, t.favicon, t.parentId, t.trailCollapsed, t.favorite, t.pinned, t.lifecycle, t.agent, t.agentState, isShown(state, t), desktops && t.desktopId])]), state.activeSpaceId, active, desktops])
   if (key !== drawn) {
     drawn = key
     const focusId = rows.contains(document.activeElement) ? document.activeElement.id : ''
-    const group = (d) => [h('li', { class: 'desk-head', 'data-desktop': String(d.number) }, `Desktop ${d.number}${d.id === desktops.current ? ' · this desktop' : ''}`), ...tabs.filter((t) => t.desktopId === d.id).map((t) => row(t, t.id === active))]
-    const items = desktops ? desktops.list.filter((d) => tabs.some((t) => t.desktopId === d.id)).flatMap(group) : tabs.map((t) => row(t, t.id === active))
-    rows.replaceChildren(...(tabs.length ? items : [h('li', { class: 'empty' }, 'No tabs in this space')]))
+    const line = (space, t) => row(t, space.id === state.activeSpaceId && t.id === active)
+    const group = (space, tabs, d) => [h('li', { class: 'desk-head', 'data-desktop': String(d.number) }, `Desktop ${d.number}${d.id === desktops.current ? ' · this desktop' : ''}`), ...tabs.filter((t) => t.desktopId === d.id).map((t) => line(space, t))]
+    const body = (space, tabs) => (desktops ? desktops.list.filter((d) => tabs.some((t) => t.desktopId === d.id)).flatMap((d) => group(space, tabs, d)) : tabs.map((t) => line(space, t)))
+    const items = spaces.flatMap(({ space, tabs }) => [...(named ? [h('li', { class: 'desk-head', 'data-space': space.id }, `${space.name}${space.id === state.activeSpaceId ? ' · this space' : ''}`)] : []), ...body(space, tabs)])
+    rows.replaceChildren(...(items.length ? items : [h('li', { class: 'empty' }, 'No open tabs')]))
     if (focusId) document.getElementById(focusId)?.focus({ preventScroll: true })
   }
   fit()
