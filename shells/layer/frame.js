@@ -42,6 +42,7 @@ function render() {
   if (!tab) return
   paintSpace(state)
   document.documentElement.classList.toggle('active', Boolean(w?.active))
+  document.documentElement.classList.toggle('tiled', !['free', 'full', 'cascade'].includes(state.settings.tabLayout))
   const title = earTitle(tab)
   const key = JSON.stringify([title, tab.favicon, tab.url, tab.agent, tab.agentState])
   if (key !== painted) {

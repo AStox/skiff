@@ -63,10 +63,10 @@ test('the Tab layout setting arranges the shown windows without touching their o
   await expect.poll(async () => JSON.stringify((await tabs(skiff)).map(rectOf))).toBe(JSON.stringify(created.map((t) => own[t.id])))
   await grab(skiff, 'free-restored')
 
-  // Opening, hiding and closing a window re-arranges at once: n touching columns fill the desk width inside its margins.
+  // Opening, hiding and closing a window re-arranges at once: n columns 1px apart (the seam) fill the desk width inside its margins.
   const columns = (n) => async () => {
     const list = (await views(skiff)).sort((a, b) => a.x - b.x)
-    return list.length === n && list.every((v, i) => !i || v.x === list[i - 1].x + list[i - 1].width) && Math.abs(list.reduce((sum, v) => sum + v.width, 0) + 2 * 8 - width) <= n
+    return list.length === n && list.every((v, i) => !i || v.x === list[i - 1].x + list[i - 1].width + 1) && list.reduce((sum, v) => sum + v.width, 0) + (n - 1) + 2 * 8 === width
   }
   await skiff.rpc('settings.set', { tabLayout: 'split' })
   await expect.poll(columns(4)).toBe(true)

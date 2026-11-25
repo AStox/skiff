@@ -1155,12 +1155,14 @@ function tileDesk(s, p) {
   return placeDesk(s, { id: p.id, ...layouts[p.layout] })
 }
 
+// Arranged windows sit 1px apart: their frames paint that pixel as a solid seam (html.tiled in shell.css).
+const SEAM = 1
 const gridOf = (a, n, byColumn = true) => Array.from({ length: n }, (_, i) => {
-  const size = (byColumn ? a.w : a.h) / n
-  return byColumn ? { ...a, x: a.x + i * size, w: size } : { ...a, y: a.y + i * size, h: size }
+  const size = ((byColumn ? a.w : a.h) - (n - 1) * SEAM) / n
+  return byColumn ? { ...a, x: a.x + i * (size + SEAM), w: size } : { ...a, y: a.y + i * (size + SEAM), h: size }
 })
 
-// One cell per window, edge to edge in the desk area inside its margin; a window's frame inset is taken from the top of its cell afterwards.
+// One cell per window in the desk area inside its margin; a window's frame inset is taken from the top of its cell afterwards.
 const ARRANGEMENTS = {
   full: (n, a) => Array(n).fill(a),
   sections: (n, a) => {
@@ -1175,16 +1177,16 @@ const ARRANGEMENTS = {
   },
   'main-stack': (n, a) => {
     if (n === 1) return [a]
-    const w = a.w * 0.6
-    return [{ ...a, w }, ...gridOf({ ...a, x: a.x + w, w: a.w - w }, n - 1, false)]
+    const w = (a.w - SEAM) * 0.6
+    return [{ ...a, w }, ...gridOf({ ...a, x: a.x + w + SEAM, w: a.w - w - SEAM }, n - 1, false)]
   },
   spiral: (n, a) => {
     const cells = []
     for (let i = 0; i < n - 1; i++) {
       const across = i % 2 === 0
-      const size = (across ? a.w : a.h) / 2
+      const size = ((across ? a.w : a.h) - SEAM) / 2
       cells.push(across ? { ...a, w: size } : { ...a, h: size })
-      a = across ? { ...a, x: a.x + size, w: size } : { ...a, y: a.y + size, h: size }
+      a = across ? { ...a, x: a.x + size + SEAM, w: size } : { ...a, y: a.y + size + SEAM, h: size }
     }
     return [...cells, a]
   },
