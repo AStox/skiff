@@ -384,12 +384,21 @@ function readFrame(shellJson) {
 }
 
 // A conversation tab shows the bundled chat page with the shell's bridge; the core owns its title and icon.
+// A click in a tab's page means the user is using it, so the guess behind its reroute offer was right.
+function clickedPage(id, view) {
+  const tab = S.findTab(state, id)
+  if (!tab?.intent || views.get(id) !== view) return
+  delete tab.intent
+  changedSoon()
+}
+
 function createChatView(tab) {
   const view = new WebContentsView({ webPreferences: shellWebPreferences })
   const wc = view.webContents
   guardShell(wc)
   wc.on('before-mouse-event', (_e, mouse) => {
     if (mouse.type === 'mouseDown') pressOutside()
+    if (mouse.type === 'mouseDown') clickedPage(tab.id, view)
     if (deskMode && mouse.type === 'mouseDown' && views.get(tab.id) === view && S.activeTab(state)?.id !== tab.id) call('tabs.activate', { id: tab.id }).catch(console.error)
   })
   loadSurface(wc, roleFile('chat', path.join(chatDir, 'chat.html'), tab.spaceId), { query: { id: tab.url.slice('skiff://chat/'.length) } })
@@ -475,6 +484,7 @@ function createView(tab) {
     // DevTools input (an agent's click) is reported here too; it is not the user pressing.
     if (agentBrowser.sent(id, mouse)) return
     if (mouse.type === 'mouseDown') pressOutside()
+    if (mouse.type === 'mouseDown') clickedPage(id, view)
     if (mouse.type === 'mouseDown' && views.get(id) === view && S.activeTab(state)?.id !== id) call('tabs.activate', { id }).catch(console.error)
   })
   // The user's keys never reach a page an agent is working in. DevTools key events are reported here as well, so the agent's own are told apart by what it is sending.

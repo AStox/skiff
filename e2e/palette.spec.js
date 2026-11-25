@@ -300,6 +300,50 @@ test('the pill waits while hovered, fades out by itself, and its x dismisses it'
   expect((await skiff.state()).tabs.find((tab) => tab.id === third.id).intent).toBeUndefined()
 })
 
+// Real input on the tab's own page: a wheel or hover is the page being read, a press is the page being used.
+const onPage = (skiff, match, events) => skiff.app.evaluate(({ webContents }, { match, events }) => {
+  const wc = webContents.getAllWebContents().find((w) => w.getURL().includes(match))
+  for (const event of events) wc.sendInputEvent({ x: 60, y: 120, button: 'left', clickCount: 1, ...event })
+}, { match, events })
+const scroll = [{ type: 'mouseMove' }, { type: 'mouseWheel', deltaX: 0, deltaY: -240, canScroll: true }, { type: 'mouseWheel', deltaX: -60, deltaY: 0, canScroll: true }]
+const press = [{ type: 'mouseDown', button: 'right' }, { type: 'mouseUp', button: 'right' }, { type: 'mouseDown' }, { type: 'mouseUp' }]
+
+test('a click in a search tab\'s page hides the pill, a scroll or hover does not', async ({ skiff }) => {
+  await connect(skiff)
+  await skiff.rpc('settings.set', { searchUrl: `${skiff.origin}/search?q=%s` })
+  const tab = await skiff.rpc('tabs.create', { url: 'two words', intent: true })
+  const frame = await frameOf(skiff, tab.id)
+  await expect(frame.locator('#offer')).toBeVisible()
+  const match = '/search?q=two%20words'
+  await expect.poll(() => skiff.app.evaluate(({ webContents }, match) => webContents.getAllWebContents().some((w) => w.getURL().includes(match) && !w.isLoading()), match)).toBe(true)
+  await onPage(skiff, match, scroll)
+  await frame.waitForTimeout(600)
+  expect((await skiff.state()).tabs.find((item) => item.id === tab.id).intent, 'Scrolling and hovering keep the guess open').toBeDefined()
+  await expect(frame.locator('#offer')).toBeVisible()
+  await onPage(skiff, match, press)
+  await expect(frame.locator('#offer')).toBeHidden({ timeout: 2500 })
+  expect((await skiff.state()).tabs.find((item) => item.id === tab.id).intent).toBeUndefined()
+})
+
+test('a click in a chat tab\'s page hides the pill, a scroll or hover does not', async ({ skiff }) => {
+  await connect(skiff)
+  const known = new Set((await skiff.state()).tabs.map((item) => item.id))
+  const bar = await open(skiff)
+  await typeAndEnter(skiff, bar, 'why is my build failing')
+  const tab = await newTab(skiff, known)
+  const frame = await frameOf(skiff, tab.id)
+  await expect(frame.locator('#offer')).toBeVisible()
+  const match = `chat.html?id=${tab.url.slice('skiff://chat/'.length)}`
+  await expect.poll(() => skiff.app.evaluate(({ webContents }, match) => webContents.getAllWebContents().some((w) => w.getURL().includes(match) && !w.isLoading()), match)).toBe(true)
+  await onPage(skiff, match, scroll)
+  await frame.waitForTimeout(600)
+  expect((await skiff.state()).tabs.find((item) => item.id === tab.id).intent, 'Scrolling and hovering keep the guess open').toBeDefined()
+  await expect(frame.locator('#offer')).toBeVisible()
+  await onPage(skiff, match, press)
+  await expect(frame.locator('#offer')).toBeHidden({ timeout: 2500 })
+  expect((await skiff.state()).tabs.find((item) => item.id === tab.id).intent).toBeUndefined()
+})
+
 test('rerouting refuses a tab the bar did not open and never saves the intent', async ({ skiff }) => {
   const plain = await skiff.rpc('tabs.create', { url: `${skiff.origin}/first` })
   await expect(skiff.rpc('tabs.reroute', { id: plain.id })).rejects.toThrow(/not opened from the command bar/)
