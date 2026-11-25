@@ -91,6 +91,8 @@ const parked = new Map()
 const popupWindows = new Set()
 // Set when the quit cleanup starts, whether by before-quit or an update install; Electron then destroys every page itself, which must not close their tabs.
 let quitting = false
+// Desk windows between their close and closed events; their pages may be destroyed with them, which must not close their tabs.
+const closingWindows = new Set()
 let attached = null
 let shown = []
 let pageBounds = null
@@ -593,7 +595,7 @@ function createView(tab) {
   })
   // A page that closes itself (window.close()) takes its webContents with it; the tab closes as it does when the user closes it.
   wc.once('destroyed', () => {
-    if (quitting || views.get(id) !== view) return
+    if (quitting || closingWindows.size || views.get(id) !== view) return
     if (S.findTab(state, id)) closeTabNow({ id })
     destroyView(id)
     changed()
@@ -1331,6 +1333,7 @@ function createWindow(near = state.window, { quiet = false } = {}) {
   })
   for (const name of ['show', 'restore']) win.on(name, watchPointer)
   win.on('close', () => {
+    closingWindows.add(w)
     if (win !== w) return
     // Agent tabs outlive the window, so a peeked one goes back to the hidden window before this one is destroyed.
     for (const view of shown) if (agentViews.has(view)) w.contentView.removeChildView(view)
@@ -1340,6 +1343,7 @@ function createWindow(near = state.window, { quiet = false } = {}) {
     save()
   })
   win.on('closed', () => {
+    closingWindows.delete(w)
     if (win !== w) {
       for (const [key, rec] of parked) if (rec.win === w) parked.delete(key)
       return
