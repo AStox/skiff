@@ -10,7 +10,7 @@ const tabLog = log.scope('tab')
 const rendererLog = log.scope('renderer')
 
 // High-frequency commands (pointer, bounds, per-frame, polling) go to trace, which is off at the default debug level.
-const NOISY = new Set(['ui.setPageBounds', 'ui.setDesk', 'ui.setPageVisible', 'ui.setWindowButtons', 'desk.place', 'split.resize', 'tabs.thumbnails', 'state.get', 'commands.list', 'logs.tail', 'logs.path', 'settings.catalog', 'extensions.list'])
+const NOISY = new Set(['ui.setPageBounds', 'ui.setDesk', 'ui.setFrame', 'ui.setPageVisible', 'ui.setWindowButtons', 'desk.place', 'split.resize', 'tabs.thumbnails', 'state.get', 'commands.list', 'logs.tail', 'logs.path', 'settings.catalog', 'extensions.list'])
 // Commands whose arguments or results carry credentials or user content; log the call, never the data.
 const SENSITIVE = /^(?:passwords|sync|grants|import\.arc$|ai\.(?:ask|prompt))/
 const SLOW_MS = 150

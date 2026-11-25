@@ -22,9 +22,8 @@ let painted = ''
 let moving = null
 // This window's ear, relative to its page: {dx, width, room} or null when nothing of its top edge shows.
 let ear = null
-// Every window's ear on the desk, and the windows behind this one, for a press that lands on an ear seen through this frame.
-let slots = {}
-let behind = []
+// Where this frame takes clicks, as last told to the core; the rest of it is clear and passes them to whatever is below.
+let sentHit = ''
 // Wide enough for the hide and close buttons beside the favicon.
 const EAR_BUTTONS = 74
 
@@ -75,8 +74,7 @@ function placeEar() {
     if (!own && live && 'ear' in live) entry.slot = live.ear && { x: rect.x + live.ear.dx, width: live.ear.width, room: live.ear.room }
     return entry
   })
-  slots = earLayout(wins, [buoyRect(state)], deskSize(state).width)
-  behind = wins.slice(0, me).reverse()
+  const slots = earLayout(wins, [buoyRect(state)], deskSize(state).width)
   const r = wins[me].rect
   const s = slots[id]
   ear = s && { dx: s.x - r.x, width: s.width, room: s.room }
@@ -90,17 +88,21 @@ function placeEar() {
   // The first place is taken at once; later ones glide.
   if (!root.classList.contains('settled')) requestAnimationFrame(() => root.classList.add('settled'))
   placeOffer()
+  reportHit()
 }
 
-// The window whose ear lies under a press on this frame's clear parts, frontmost first.
-function earUnder(e) {
-  const r = gesture?.rect || pinch?.rect || mine()?.rect
-  if (!r) return null
-  const x = r.x - IN.left + e.clientX
-  const y = r.y - IN.top + e.clientY
-  const w = behind.find((b) => slots[b.id] && x >= slots[b.id].x && x < slots[b.id].x + slots[b.id].width && y >= b.rect.y - EAR_HEIGHT && y < b.rect.y)
-  return w?.id || null
+function reportHit() {
+  const hit = [...document.querySelectorAll('#ear, #offer, .rz')].map((el) => el.getBoundingClientRect()).filter((r) => r.width && r.height).map(({ x, y, width, height }) => ({ x, y, width, height }))
+  const key = JSON.stringify(hit)
+  if (key === sentHit) return
+  sentHit = key
+  call('ui.setFrame', { id, hit })
 }
+const hitWatch = new ResizeObserver(reportHit)
+hitWatch.observe($('ear'))
+hitWatch.observe($('offer'))
+addEventListener('resize', reportHit)
+document.addEventListener('transitionend', reportHit)
 
 /* ---------- the offer: do the other thing with what the bar was given, for a few seconds beside the ear ---------- */
 
@@ -275,7 +277,7 @@ function within(r) {
   return { x: clamp(Math.round(r.x), 0, Math.max(0, s.w - width)), y: clamp(Math.round(r.y), EAR, Math.max(EAR, s.h - height)), width, height }
 }
 
-/* ---------- gestures: move by the ear or the page's background, resize by the insets, pinch the ear ---------- */
+/* ---------- gestures: move by the ear, resize by the insets, pinch the ear ---------- */
 
 // The view moves under the pointer while it drags, so positions come from screen deltas, never from this view's own coordinates.
 // at: the pointer on the desk.
@@ -487,7 +489,6 @@ const grab = (el, kind) => {
   el.addEventListener('pointercancel', finish)
 }
 grab($('ear'), 'move')
-grab($('bar'), 'move')
 for (const rz of document.querySelectorAll('.rz')) {
   grab(rz, rz.dataset.edge)
   rz.addEventListener('pointerenter', relight)
@@ -507,15 +508,9 @@ document.addEventListener('wheel', earSwipe, { passive: false })
 $('ear').addEventListener('dblclick', (e) => { if (!e.target.closest('button')) toggleFill() })
 $('ear-hide').addEventListener('click', () => call('desk.hide', { id }))
 $('ear-close').addEventListener('click', () => call('tabs.close', { id }))
-// Any press on the frame brings its window forward, as a press on its page does; a press on another window's ear, seen through this frame's clear margin, brings that one.
+// Any press on the frame brings its window forward, as a press on its page does.
 document.addEventListener('pointerdown', (e) => {
-  if (!state) return
-  const other = !e.target.closest('#ear, #offer') && !gesture && earUnder(e)
-  if (other) {
-    e.preventDefault()
-    e.stopPropagation()
-    call('tabs.activate', { id: other })
-  } else if (!mine()?.active && !e.target.closest('button')) call('tabs.activate', { id })
+  if (state && !mine()?.active && !e.target.closest('button')) call('tabs.activate', { id })
 }, true)
 appearance.addEventListener('change', () => { painted = ''; render() })
 // Titles measured in the fallback font are wrong once the shell's font arrives.

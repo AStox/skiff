@@ -1813,4 +1813,40 @@ test.describe('layer frame sizing', () => {
     await drag(0, H - 600)
     await expect.poll(rectOfTab).toEqual({ x: 300, y: H - 400, width: 700, height: 400 })
   })
+
+  test('a press on the clear top edge beside the ear goes to the window behind, or to the apps when nothing is', async ({ skiff }) => {
+    const { one, frame, inset, place } = await frameSetup(skiff)
+    const two = (await skiff.rpc('tabs.create', { url: skiff.origin + '/two' })).id
+    const page = await skiff.page('/two')
+    await skiff.rpc('desk.place', { id: two, x: 300, y: 100, width: 700, height: 500 })
+    const rect = { x: 250, y: 300, width: 900, height: 400 }
+    await place(rect)
+    await skiff.rpc('tabs.activate', { id: one })
+    await expect.poll(() => frame.evaluate(() => JSON.parse(sentHit).length)).toBeGreaterThan(8)
+    await page.evaluate(() => {
+      window.got = []
+      for (const type of ['mousedown', 'mousemove', 'mouseup']) addEventListener(type, (e) => window.got.push([type, e.clientX, e.clientY, e.buttons]))
+    })
+    const active = async () => { const st = await skiff.state(); return st.activeTabBySpace[st.activeSpaceId] }
+    const band = rect.y - inset.top + 8
+    const ear = await frame.locator('#ear').boundingBox()
+    // Beside the ear, over the page behind, that page gets the press and the drag that follows, and comes forward.
+    await atDesk(skiff, frame.url(), [['mouseDown', 650, band], ['mouseMove', 700, band], ['mouseMove', 750, band], ['mouseUp', 750, band]])
+    await expect.poll(active).toBe(two)
+    const y = band - 100
+    expect(await page.evaluate(() => window.got)).toEqual([['mousedown', 350, y, 1], ['mousemove', 400, y, 1], ['mousemove', 450, y, 1], ['mouseup', 450, y, 0]])
+    // Beside it over the empty desk, clicks pass to the apps below; on the ear and the resize edge they stay.
+    await skiff.rpc('tabs.activate', { id: one })
+    const { id: deskId, content } = await windowInfo(skiff)
+    const over = async (x, y) => {
+      await cursor(skiff, { x: content.x + x, y: content.y + y })
+      await expect.poll(() => ignoring(skiff, deskId)).toEqual(expect.objectContaining({ ignore: true }))
+    }
+    await over(1100, band)
+    await cursor(skiff, { x: content.x + rect.x - inset.left + ear.x + 10, y: content.y + band })
+    await expect.poll(() => ignoring(skiff, deskId)).toEqual(expect.objectContaining({ ignore: false }))
+    await over(1100, band)
+    await cursor(skiff, { x: content.x + 1100, y: content.y + rect.y - 6 })
+    await expect.poll(() => ignoring(skiff, deskId)).toEqual(expect.objectContaining({ ignore: false }))
+  })
 })

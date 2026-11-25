@@ -393,6 +393,7 @@ async function previewDesk(dir) {
       } else if ('preview' in p) await drawViews()
       return null
     },
+    'ui.setFrame': () => null,
     'desk.place': async (p) => {
       const t = p.id ? find(p.id) : active() || fail('No active tab')
       t.desk = { ...placeRect(p), z: 0 }

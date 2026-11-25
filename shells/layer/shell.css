@@ -115,7 +115,6 @@ html.frame.tiled:not(.active) { --frame-ring: color-mix(in srgb, #1c1a16 32%, #f
 #ring, .ring { border-radius: 11px; box-shadow: 0 0 0 1px var(--frame-ring), 0 2px 6px rgba(0, 0, 0, .16); }
 html.frame.active #ring, .win.active .ring { box-shadow: 0 0 0 1px var(--frame-ring), 0 2px 6px rgba(0, 0, 0, .26); }
 html.frame.tiled #ring { inset: 30px 12px 12px; border-radius: 10px; box-shadow: 0 0 0 1px var(--frame-ring); }
-#bar { position: fixed; top: 0; right: 0; left: 0; height: 18px; }
 /* The edge a press would resize, 3px of the space colour just outside the page; all four while a pinch resizes. */
 #lit { position: fixed; inset: 27px 9px 9px; border: 3px solid transparent; border-radius: 14px; pointer-events: none; }
 @media (prefers-reduced-motion: no-preference) { #lit { transition: border-color .12s ease; } }
@@ -130,7 +129,7 @@ html[data-lit*='w'] #lit { border-left-color: var(--accent); }
 #ear, .ear { display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 10px 0 9px; border-radius: 8px 8px 0 0; background: var(--ear); color: var(--ear-ink); box-shadow: inset 0 0 0 .5px color-mix(in srgb, var(--accent) 40%, transparent); }
 #ear:hover, #ear:focus-within { width: auto !important; max-width: var(--ear-room); }
 #ear.narrow #ear-title, .ear.narrow .ear-title, #ear.cramped .ear-btn { display: none !important; }
-html.earless #ear, html.earless #bar { display: none; }
+html.earless #ear { display: none; }
 @media (prefers-reduced-motion: no-preference) { html.settled:not([data-gesture]) #ear { transition: left .18s ease, width .18s ease; } }
 html.frame.active #ear, .win.active .ear { background: var(--accent); color: #fff; box-shadow: none; }
 #ear-fav, .ear-fav { position: relative; flex: none; display: inline-flex; width: 14px; height: 14px; }

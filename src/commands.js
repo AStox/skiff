@@ -284,6 +284,7 @@ const schemas = {
   'ui.setPageVisible': shape({ visible: boolean }, ['visible']),
   'ui.setPageBounds': shape({ ...rect, radius: { type: 'number', minimum: 0 } }, Object.keys(rect)),
   'ui.setDesk': shape({ hit: array(rectSchema), capture: boolean, animate: boolean, preview: nullable(shape({ id, ...rect }, ['id', ...Object.keys(rect)])), only: nullable(array(id, { minItems: 1 })), avoid: nullable(rectSchema) }),
+  'ui.setFrame': shape({ id, hit: array(rectSchema) }, ['id', 'hit']),
   'ui.showOverlay': shape({ file: id, bounds: rectSchema, name: id, focus: boolean, float: boolean, hit: array(rectSchema), under: id }, ['file']),
   'ui.setWindowButtons': shape({ visible: boolean }, ['visible']),
   'ui.hideOverlay': shape({ name: id }),

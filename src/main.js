@@ -314,11 +314,52 @@ function floatWindow() {
   return host
 }
 
+// A frame takes clicks only where it said (ui.setFrame); a press on the rest of it goes, with the moves and release that follow, to whatever is below.
+const frameHits = new WeakMap()
+const heldThrough = new WeakMap()
+const inRect = (r, x, y) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+
+function solidAt(view, x, y) {
+  const b = view.getBounds()
+  if (!inRect(b, x, y)) return false
+  const hit = frameHits.get(view)
+  return !hit || hit.some((r) => inRect(r, x - b.x, y - b.y))
+}
+
+// x, y in the desk window; the view below the frame there, or the shell under every view.
+function below(view, x, y) {
+  const under = shown.slice(0, shown.indexOf(view)).findLast((v) => solidAt(v, x, y))
+  return under ? { wc: under.webContents, x: under.getBounds().x, y: under.getBounds().y } : { wc: win.webContents, x: 0, y: 0 }
+}
+
+function throughFrame(view, mouse) {
+  if (!['mouseDown', 'mouseUp', 'mouseMove'].includes(mouse.type) || !win) return null
+  const b = view.getBounds()
+  const x = b.x + mouse.x
+  const y = b.y + mouse.y
+  // Hover stays with the frame, so its own parts light and unlight; a release outside it may never arrive, so a move with no button down ends a held press.
+  if (mouse.type === 'mouseMove' && !['left', 'middle', 'right'].includes(mouse.button)) heldThrough.delete(view)
+  if (mouse.type === 'mouseDown') heldThrough.set(view, desk.capture || solidAt(view, x, y) ? null : below(view, x, y))
+  const to = heldThrough.get(view)
+  if (mouse.type === 'mouseUp') heldThrough.delete(view)
+  if (!to || to.wc.isDestroyed()) return null
+  const held = mouse.type === 'mouseMove' ? [`${mouse.button}ButtonDown`] : []
+  return () => to.wc.sendInputEvent({ ...mouse, x: x - to.x, y: y - to.y, modifiers: [...(mouse.modifiers || []), ...held] })
+}
+
 function createFrame(id) {
   const view = shellView()
   loadSurface(view.webContents, roleFile('frame', path.join(shellRoot(), frameSpec.file), S.findTab(state, id)?.spaceId), { query: { tab: id } })
   frames.set(id, view)
-  view.webContents.on('before-mouse-event', (_e, mouse) => { if (mouse.type === 'mouseDown') pressOutside() })
+  view.webContents.on('did-navigate', () => frameHits.delete(view))
+  view.webContents.on('before-mouse-event', (event, mouse) => {
+    const pass = throughFrame(view, mouse)
+    if (pass) {
+      event.preventDefault()
+      return pass()
+    }
+    if (mouse.type === 'mouseDown') pressOutside()
+  })
   // It asks for the state itself once loaded.
   seen.set(view, pushed)
   return view
@@ -1344,7 +1385,7 @@ function overDesk(point) {
   const overlay = [...overlays.values()].some((o) => o.shown && !o.float && inside(o.host.getBounds()))
   if (desk.hit.some((r) => inside(toDip(r))) || overlay) return true
   const popup = extensions.popupView()
-  return shown.some((view) => inside(view.getBounds())) || Boolean(popup && inside(popup.getBounds()))
+  return shown.some((view) => solidAt(view, x, y)) || Boolean(popup && inside(popup.getBounds()))
 }
 
 function targetContents({ target, id }) {
@@ -1650,6 +1691,14 @@ def('ui.setDesk', '{hit?, capture?, preview?, animate?, only?, avoid?}', "Desk s
   Object.assign(desk, next)
   syncView()
   if ('only' in next) pushState()
+  if (win) pollPointer()
+  return null
+})
+def('ui.setFrame', '{id, hit}', "Desk frames only, not saved: hit lists the frame's own clickable rectangles {x, y, width, height} in its CSS pixels; a click elsewhere in it goes to whatever is below, another window, the shell or the apps under the desk. A frame that never sets it takes every click", (p) => {
+  const view = frames.get(S.getTab(state, p.id).id)
+  if (!view) throw S.err('not_found', 'That tab has no frame')
+  if (!Array.isArray(p.hit)) throw S.err('bad_params', 'hit must be a list of {x, y, width, height}')
+  frameHits.set(view, p.hit.map(cssBounds))
   if (win) pollPointer()
   return null
 })
