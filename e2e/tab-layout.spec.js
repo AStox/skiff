@@ -63,13 +63,16 @@ test('the Tab layout setting arranges the shown windows without touching their o
   await expect.poll(async () => JSON.stringify((await tabs(skiff)).map(rectOf))).toBe(JSON.stringify(created.map((t) => own[t.id])))
   await grab(skiff, 'free-restored')
 
-  // Opening, hiding and closing a window re-arranges at once: n columns fill the desk width.
+  // Opening, hiding and closing a window re-arranges at once: n touching columns fill the desk width inside its margins.
   const columns = (n) => async () => {
-    const list = await views(skiff)
-    return list.length === n && Math.abs(list.reduce((sum, v) => sum + v.width, 0) + (n + 1) * 8 - width) <= n
+    const list = (await views(skiff)).sort((a, b) => a.x - b.x)
+    return list.length === n && list.every((v, i) => !i || v.x === list[i - 1].x + list[i - 1].width) && Math.abs(list.reduce((sum, v) => sum + v.width, 0) + 2 * 8 - width) <= n
   }
   await skiff.rpc('settings.set', { tabLayout: 'split' })
   await expect.poll(columns(4)).toBe(true)
+  // Touching windows keep every frame under every page, so no frame margin covers a neighbour's page edge.
+  const kinds = await skiff.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('/index.html')).contentView.children.map((view) => view.webContents?.getURL() ?? '').map((url) => url.startsWith('http') ? 'page' : url.includes('frame.html') ? 'frame' : 'other').filter((kind) => kind !== 'other'))
+  expect(kinds).toEqual([...Array(4).fill('frame'), ...Array(4).fill('page')])
   const fifth = await skiff.rpc('tabs.create', { url: `${skiff.origin}/agent/five` })
   await expect.poll(columns(5)).toBe(true)
   await skiff.rpc('desk.hide', { id: fifth.id })

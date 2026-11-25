@@ -1156,11 +1156,11 @@ function tileDesk(s, p) {
 }
 
 const gridOf = (a, n, byColumn = true) => Array.from({ length: n }, (_, i) => {
-  const size = ((byColumn ? a.w : a.h) - (n - 1) * MARGIN) / n
-  return byColumn ? { ...a, x: a.x + i * (size + MARGIN), w: size } : { ...a, y: a.y + i * (size + MARGIN), h: size }
+  const size = (byColumn ? a.w : a.h) / n
+  return byColumn ? { ...a, x: a.x + i * size, w: size } : { ...a, y: a.y + i * size, h: size }
 })
 
-// One cell per window, in the desk area inside its margin; a window's frame inset is taken from the top of its cell afterwards.
+// One cell per window, edge to edge in the desk area inside its margin; a window's frame inset is taken from the top of its cell afterwards.
 const ARRANGEMENTS = {
   full: (n, a) => Array(n).fill(a),
   sections: (n, a) => {
@@ -1175,16 +1175,16 @@ const ARRANGEMENTS = {
   },
   'main-stack': (n, a) => {
     if (n === 1) return [a]
-    const w = (a.w - MARGIN) * 0.6
-    return [{ ...a, w }, ...gridOf({ ...a, x: a.x + w + MARGIN, w: a.w - w - MARGIN }, n - 1, false)]
+    const w = a.w * 0.6
+    return [{ ...a, w }, ...gridOf({ ...a, x: a.x + w, w: a.w - w }, n - 1, false)]
   },
   spiral: (n, a) => {
     const cells = []
     for (let i = 0; i < n - 1; i++) {
       const across = i % 2 === 0
-      const size = ((across ? a.w : a.h) - MARGIN) / 2
+      const size = (across ? a.w : a.h) / 2
       cells.push(across ? { ...a, w: size } : { ...a, h: size })
-      a = across ? { ...a, x: a.x + size + MARGIN, w: size } : { ...a, y: a.y + size + MARGIN, h: size }
+      a = across ? { ...a, x: a.x + size, w: size } : { ...a, y: a.y + size, h: size }
     }
     return [...cells, a]
   },

@@ -20,33 +20,33 @@ const FILL = [8, 38, 984, 754]
 const EXPECTED = {
   full: { 1: [FILL], 2: [FILL, FILL], 3: [FILL, FILL, FILL] },
   sections: {
-    1: [[8, 38, 240, 358]],
-    2: [[8, 38, 240, 358], [256, 38, 240, 358]],
-    3: [[8, 38, 240, 358], [256, 38, 240, 358], [504, 38, 240, 358]],
-    9: [[8, 38, 240, 358], [256, 38, 240, 358], [504, 38, 240, 358], [752, 38, 240, 358], [8, 434, 240, 358], [256, 434, 240, 358], [504, 434, 240, 358], [752, 434, 240, 358], [8, 38, 240, 358]]
+    1: [[8, 38, 246, 362]],
+    2: [[8, 38, 246, 362], [254, 38, 246, 362]],
+    3: [[8, 38, 246, 362], [254, 38, 246, 362], [500, 38, 246, 362]],
+    9: [[8, 38, 246, 362], [254, 38, 246, 362], [500, 38, 246, 362], [746, 38, 246, 362], [8, 430, 246, 362], [254, 430, 246, 362], [500, 430, 246, 362], [746, 430, 246, 362], [8, 38, 246, 362]]
   },
   split: {
     1: [FILL],
-    2: [[8, 38, 488, 754], [504, 38, 488, 754]],
-    3: [[8, 38, 323, 754], [339, 38, 322, 754], [669, 38, 323, 754]],
-    9: [[8, 38, 102, 754], [118, 38, 102, 754], [228, 38, 103, 754], [339, 38, 102, 754], [449, 38, 102, 754], [559, 38, 102, 754], [669, 38, 103, 754], [780, 38, 102, 754], [890, 38, 102, 754]]
+    2: [[8, 38, 492, 754], [500, 38, 492, 754]],
+    3: [[8, 38, 328, 754], [336, 38, 328, 754], [664, 38, 328, 754]],
+    9: [[8, 38, 109, 754], [117, 38, 110, 754], [227, 38, 109, 754], [336, 38, 109, 754], [445, 38, 110, 754], [555, 38, 109, 754], [664, 38, 109, 754], [773, 38, 110, 754], [883, 38, 109, 754]]
   },
   grid: {
     1: [FILL],
-    2: [[8, 38, 488, 754], [504, 38, 488, 754]],
-    3: [[8, 38, 488, 358], [504, 38, 488, 358], [8, 434, 984, 358]],
-    9: [[8, 38, 323, 226], [339, 38, 322, 226], [669, 38, 323, 226], [8, 302, 323, 226], [339, 302, 322, 226], [669, 302, 323, 226], [8, 566, 323, 226], [339, 566, 322, 226], [669, 566, 323, 226]]
+    2: [[8, 38, 492, 754], [500, 38, 492, 754]],
+    3: [[8, 38, 492, 362], [500, 38, 492, 362], [8, 430, 984, 362]],
+    9: [[8, 38, 328, 231], [336, 38, 328, 231], [664, 38, 328, 231], [8, 299, 328, 232], [336, 299, 328, 232], [664, 299, 328, 232], [8, 561, 328, 231], [336, 561, 328, 231], [664, 561, 328, 231]]
   },
   // The last tab is the active one and takes the main place.
   'main-stack': {
     1: [FILL],
-    2: [[602, 38, 390, 754], [8, 38, 586, 754]],
-    3: [[602, 38, 390, 358], [602, 434, 390, 358], [8, 38, 586, 754]]
+    2: [[598, 38, 394, 754], [8, 38, 590, 754]],
+    3: [[598, 38, 394, 362], [598, 430, 394, 362], [8, 38, 590, 754]]
   },
   spiral: {
     1: [FILL],
-    2: [[8, 38, 488, 754], [504, 38, 488, 754]],
-    3: [[8, 38, 488, 754], [504, 38, 488, 358], [504, 434, 488, 358]]
+    2: [[8, 38, 492, 754], [500, 38, 492, 754]],
+    3: [[8, 38, 492, 754], [500, 38, 492, 362], [500, 430, 492, 362]]
   },
   cascade: {
     1: [[8, 38, 689, 519]],
@@ -93,13 +93,14 @@ test('sections starts over after 8 windows and split makes n equal columns', () 
   const columns = rects(five.s, five.tabs, 'split')
   assert.equal(columns.length, 5)
   assert.ok(Math.max(...columns.map((c) => c[2])) - Math.min(...columns.map((c) => c[2])) <= 1)
-  assert.equal(columns.reduce((sum, c) => sum + c[2], 0) + 4 * 8, 984)
+  assert.equal(columns.reduce((sum, c) => sum + c[2], 0), 984)
 })
 
-test('each window leaves its frame top free beneath the window above it', () => {
+test('windows touch: each starts where its neighbour ends, and one below leaves only its frame top', () => {
   const { s, tabs } = desk(4)
-  const [a, , c] = rects(s, tabs, 'grid')
-  assert.equal(c[1] - (a[1] + a[3]), 30 + 8)
+  const [a, b, c] = rects(s, tabs, 'grid')
+  assert.equal(b[0], a[0] + a[2])
+  assert.equal(c[1] - (a[1] + a[3]), 30)
 })
 
 test('free returns each shown window own rect and leaves hidden windows out', () => {
@@ -110,7 +111,7 @@ test('free returns each shown window own rect and leaves hidden windows out', ()
   assert.deepEqual(r[tabs[0].id], { x: tabs[0].desk.x, y: tabs[0].desk.y, width: tabs[0].desk.width, height: tabs[0].desk.height })
   const split = S.arrange(s, 'split')
   assert.deepEqual(Object.keys(split).sort(), [tabs[0].id, tabs[2].id].sort())
-  assert.equal(split[tabs[0].id].width, 488)
+  assert.equal(split[tabs[0].id].width, 492)
 })
 
 test('only the active space and desktop are arranged, and arranging never writes tab.desk', () => {
@@ -129,9 +130,9 @@ test('main-stack gives the active window the main place', () => {
   const { s, tabs } = desk(3)
   S.activateTab(s, { id: tabs[0].id }, 2)
   const [first, second, third] = rects(s, tabs, 'main-stack')
-  assert.deepEqual(first, [8, 38, 586, 754])
-  assert.deepEqual(second, [602, 38, 390, 358])
-  assert.deepEqual(third, [602, 434, 390, 358])
+  assert.deepEqual(first, [8, 38, 590, 754])
+  assert.deepEqual(second, [598, 38, 394, 362])
+  assert.deepEqual(third, [598, 430, 394, 362])
 })
 
 test('windows keep their tab order, not their stacking, when one is raised', () => {
