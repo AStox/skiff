@@ -47,8 +47,9 @@ function option(list, category) {
 // dir: the agents' working folder; state(): the live browser state, whose settings.ai lists the agents; changed(): tabs or settings were changed here;
 // favicon: the icon of chat tabs; api({agent,sessionId,chatId,tabId}): scoped {port,token,revoke} or null; pageText(tabId): explicit page context;
 // push(name, data): 'ai-agents' with the agents list, or 'chat' with one chat object (at most once per 30 ms per chat);
-// watching(tabId): whether the user is looking at that tab right now, which decides if a finished turn leaves it unread.
-function createAi({ dir, version, state, changed, favicon, api = () => null, revokeAccess = () => {}, pageText, pageGeneration = () => null, push, transcripts, watching = () => false }) {
+// watching(tabId): whether the user is looking at that tab right now, which decides if a finished turn leaves it unread;
+// skills: {status(command), install(command)} of the Skiff skill in the agent's harness (see agent-skill.js), shown as `skill` in each agent's entry.
+function createAi({ dir, version, state, changed, favicon, api = () => null, revokeAccess = () => {}, pageText, pageGeneration = () => null, push, transcripts, watching = () => false, skills = { status: () => null, install: () => null } }) {
   const agents = new Map()
   const chats = new Map()
   let halted = false
@@ -70,7 +71,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
     return agents.get(name)
   }
   const currentAgent = (agent) => Boolean(agent && agents.get(agent.name) === agent && configured().some((entry) => entry.name === agent.name && entry.command === agent.command))
-  const entry = (a) => ({ name: a.name, command: a.command, status: a.status, error: a.error, info: a.info, models: a.models, model: a.model, efforts: a.efforts, effort: a.effort, loadSession: a.loadSession })
+  const entry = (a) => ({ name: a.name, command: a.command, status: a.status, error: a.error, info: a.info, models: a.models, model: a.model, efforts: a.efforts, effort: a.effort, loadSession: a.loadSession, skill: skills.status(a.command) })
   const list = () => configured().map((a) => entry(agentOf(a.name)))
   const pushAgents = () => push('ai-agents', list())
 
@@ -565,6 +566,18 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
     return shape(c)
   }
 
+  // Teaches the agent's own harness to use Skiff by writing the bundled skill to its user skills folder; a file the user changed is left alone.
+  function installSkill(p) {
+    const conf = configured().find((a) => a.name === p.agent)
+    if (!conf) throw bad(`No agent named ${p.agent}`)
+    const result = skills.install(conf.command)
+    pushAgents()
+    return { agent: conf.name, ...result }
+  }
+
+  // The Skiff skill's state for any agent command, so a form can tell whether the harness is supported before the agent exists.
+  const skillStatus = (p) => skills.status(p.command)
+
   // Starts the agent and opens a session for its next ask, so the bar can list its models and efforts.
   function warm(p) {
     const agent = agentOf(p.agent)
@@ -646,7 +659,7 @@ function createAi({ dir, version, state, changed, favicon, api = () => null, rev
   }
 
   for (const configuredAgent of configured()) agentOf(configuredAgent.name)
-  return { agents: list, warm, ask, chat, prompt, configure, cancel, permit, settingsChanged, stop }
+  return { agents: list, warm, installSkill, skillStatus, ask, chat, prompt, configure, cancel, permit, settingsChanged, stop }
 }
 
 // Tool discovery and execution share the owned command registry with the UI and CLI.

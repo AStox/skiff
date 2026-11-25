@@ -12,6 +12,7 @@ const { createVault } = require('./migration')
 const { watchShellFiles } = require('./watch-shell')
 const { createExtensions } = require('./extensions')
 const { createAi, browserTools, handleMcp } = require('./ai')
+const { createAgentSkill } = require('./agent-skill')
 const { createAgentBrowser } = require('./agent-browser')
 const { shell } = require('electron')
 const { autoUpdater } = require('electron-updater')
@@ -1596,7 +1597,9 @@ def('settings.set', '{autoArchiveHours?, searchUrl?, shortcuts?, globalShortcuts
   return settings
 })
 
-def('ai.agents', '', 'The configured agents in settings order: name, command, status (idle, starting, ready or error), error, info {name, version}, models and efforts [{value, name}] with the current model and effort of its latest session (null until one exists), loadSession', () => ai.agents())
+def('ai.agents', '', 'The configured agents in settings order: name, command, status (idle, starting, ready or error), error, info {name, version}, models and efforts [{value, name}] with the current model and effort of its latest session (null until one exists), loadSession, and skill {harness, status, path}: the Skiff skill in the agent\'s own harness, status unsupported, missing, installed, outdated (an older Skiff copy), modified (the user edited it) or error', () => ai.agents())
+def('ai.installSkill', '{agent}', "Write the bundled Skiff skill into the user skills folder of the harness behind a configured agent (claude, omp, codex, gemini or hermes, found from its command; an ssh or unknown command is unsupported); a missing or older Skiff copy is written, one the user edited is left as it is; returns {agent, harness, status, path, written}", (p) => ai.installSkill(p))
+def('ai.skillStatus', '{command}', 'The Skiff skill of the harness an agent command starts, as {harness, status, path} (status as in ai.agents), whether or not such an agent is configured', (p) => ai.skillStatus(p))
 def('ai.warm', '{agent}', 'Start an agent and open a spare session for its next ai.ask; resolves with its ai.agents entry once its models and efforts are known or it failed', (p) => ai.warm(p))
 def('ai.ask', '{text, agent?, model?, effort?, includePage?, tabId?, intent?}', "Open a conversation tab in the space of tabId (default the active tab), nested under it when it is a plain tab, and send text to the agent (default settings.ai.agent, else the first); returns {tabId, chatId} at once; model and effort default to the last ones used, and the ones used are saved; includePage: true sends the text of that tab along when it is a loaded non-incognito web page; with agent '' or none configured the tab opens in setup holding the text; intent: true marks the tab as opened by asking from the command bar, so a shell offers tabs.reroute for a short while (kept in memory, never saved)", (p) => ai.ask(p))
 def('ai.chat', '{chatId}', 'A conversation: id, tabId, agent, status (setup, restoring, ready, running or error), error, pending, sessionId, models, model, efforts, effort, permission {id, title, options} and turns; one from an earlier run is restored with session/load when the agent supports it', (p) => ai.chat(p))
@@ -2401,7 +2404,7 @@ async function start() {
   getSession('persist:main')
   purgeIncognitoFiles()
   wipeIncognito()
-  ai = createAi({ dir: path.join(dataDir, 'ai'), version: app.getVersion(), state: () => state, changed, favicon: F.storeIcon(faviconDir, 'https://skiff.invalid/agent.svg', Buffer.from(SPARKLE)), api: agentApi, revokeAccess: (selector) => access.revoke(selector), transcripts, pageText, pageGeneration: (id) => runtime.get(id)?.generation, push: pushAi, watching: looking })
+  ai = createAi({ dir: path.join(dataDir, 'ai'), version: app.getVersion(), state: () => state, changed, favicon: F.storeIcon(faviconDir, 'https://skiff.invalid/agent.svg', Buffer.from(SPARKLE)), api: agentApi, revokeAccess: (selector) => access.revoke(selector), transcripts, pageText, pageGeneration: (id) => runtime.get(id)?.generation, push: pushAi, watching: looking, skills: createAgentSkill({ source: process.env.SKIFF_AGENT_SKILL_SOURCE || undefined }) })
   extensions.start()
   ipcMain.handle('skiff:call', async (e, method, params) => {
     const source = trustedFiles.get(e.sender)
