@@ -683,7 +683,7 @@ function syncView() {
     placed = placed.filter((p) => p.tab.id !== peek.id)
     placed.push({ tab: peek, bounds: { x: Math.round(width * .15), y: 72, width: Math.round(width * .7), height: Math.max(160, height - 144) }, radius: 12 })
   }
-  const items = placed.flatMap((p) => {
+  const placedItems = placed.flatMap((p) => {
     const mode = controlMode(p.tab)
     return [
       ...(p.frame ? [{ tab: p.tab, view: frames.get(p.tab.id) || createFrame(p.tab.id), bounds: p.frame }] : []),
@@ -691,6 +691,10 @@ function syncView() {
       ...(mode ? [{ tab: p.tab, view: controls.get(p.tab.id) || createControl(p.tab.id), bounds: mode === 'lock' ? p.bounds : { ...p.bounds, height: Math.min(p.bounds.height, STRIP) }, radius: p.radius }] : [])
     ]
   })
+  // Tiled windows touch, so their frames go under every page: a frame's margin would otherwise cover its neighbour's page edge.
+  const tiled = deskMode && !['free', 'full', 'cascade'].includes(state.settings.tabLayout)
+  const under = (item) => tiled && item.view === frames.get(item.tab.id) && item.tab.id !== desk.preview?.id
+  const items = [...placedItems.filter(under), ...placedItems.filter((item) => !under(item))]
   const next = items.map((item) => item.view)
   if (switched && pageVisible && motion()) beginSlide(items, dir)
   else if (switched || !pageVisible) endSlide()
