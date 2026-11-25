@@ -123,8 +123,9 @@ test('an agent tab starts as a hidden desk window with a badge and dot, picking 
   const hidden = await skiff.state()
   expect(hidden.tabs.find((t) => t.id === tab.id).desk.hidden).toBe(true)
   const buoy = await skiff.bar()
-  const chip = buoy.locator('#buoy-agents')
-  await expect(chip).toHaveText('omp working')
+  const icon = buoy.locator(`.buoy-tab[data-tab-id="${tab.id}"]`)
+  await expect(icon).toHaveAttribute('aria-label', 'Agent one, omp working')
+  await expect(icon.locator('.agent-dot')).toHaveAttribute('data-state', 'working')
 
   // The card's tab list shows it like any tab, marked as the agent's and as a window that is not on the desk.
   await skiff.card()
@@ -181,11 +182,11 @@ test('an agent tab starts as a hidden desk window with a badge and dot, picking 
   expect(opened.activeTabBySpace).toEqual(quiet.activeTabBySpace)
   expect(opened.tabs.find((t) => t.url.endsWith('/agent/opened'))).toMatchObject({ agent: 'omp' })
 
-  // The chip follows agent tabs as they open and close, across agents.
+  // The pill follows agent tabs as they open and close, across agents.
   const claude = await skiff.rpc('tabs.create', { url: skiff.origin + '/agent/three', agent: 'claude' })
-  await expect(chip).toHaveText('omp, claude working')
+  await expect(buoy.locator(`.buoy-tab[data-tab-id="${claude.id}"]`)).toHaveAttribute('aria-label', /, claude working$/)
   await skiff.rpc('tabs.close', { id: claude.id })
-  await expect(chip).toHaveText('omp working')
+  await expect(buoy.locator(`.buoy-tab[data-tab-id="${claude.id}"]`)).toHaveCount(0)
 
   // Closing it while it shows archives it like any tab, as a plain one to restore; closing the last agent tab takes the hidden window with it.
   await skiff.rpc('tabs.activate', { id: tab.id })
@@ -199,7 +200,7 @@ test('an agent tab starts as a hidden desk window with a badge and dot, picking 
   expect(closed.archive[0]).not.toHaveProperty('agent')
   await skiff.rpc('tabs.close', { id: rest[0].id })
   expect((await skiff.state()).archive.length).toBe(archived + 2)
-  await expect(chip).toBeHidden()
+  await expect(buoy.locator('.buoy-tab .agent-dot')).toHaveCount(0)
   await expect.poll(async () => (await deskWindow(skiff)).pages.map((p) => p.path)).toEqual(['/user'])
   await expect.poll(() => agentWindows(skiff)).toBe(0)
   expect((await skiff.state()).tabs.map((t) => t.id)).toEqual([user])

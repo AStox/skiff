@@ -232,24 +232,21 @@ test('an agent tab shows working, then done with an unseen mark that viewing cle
   expect(await stateOf()).toMatchObject({ agentState: 'working' })
 })
 
-test('the Buoy lists agent tabs at work, shows a red dot while a finished one is unseen, and viewing the tab clears it', async ({ skiff }) => {
+test('the pill marks an agent tab working, then done and unseen, and viewing the tab takes the unseen ring away', async ({ skiff }) => {
   const tab = await formTab(skiff, 'bb')
   const buoy = await skiff.bar()
-  await expect(buoy.locator('#buoy-agents')).toHaveText('bb working')
-  await expect(buoy.locator('#buoy-unseen')).toBeHidden()
-  const row = buoy.locator(`#buoy-agents-list .buoy-agent[data-tab-id="${tab.id}"]`)
-  // The list closes when the keyboard leaves, so open it until it stays.
-  await expect(async () => {
-    if ((await buoy.locator('#buoy-agents').getAttribute('aria-expanded')) !== 'true') await buoy.locator('#buoy-agents').click()
-    await expect(row).toBeVisible({ timeout: 1500 })
-  }).toPass({ timeout: 12_000 })
-  await expect(row.locator('.agent-dot')).toHaveAttribute('data-state', 'working')
+  const icon = buoy.locator(`.buoy-tab[data-tab-id="${tab.id}"]`)
+  const dot = icon.locator('.agent-dot')
+  await expect(dot).toHaveAttribute('data-state', 'working')
+  await expect(icon).toHaveAttribute('aria-label', /, bb working$/)
 
   await agent(skiff, 'agent.finish', tab.id, { summary: 'done' })
-  await expect(buoy.locator('#buoy-unseen')).toBeVisible()
-  await expect(row.locator('.agent-dot')).toHaveAttribute('data-state', 'done')
-  await row.locator('.row-main').click()
+  await expect(dot).toHaveAttribute('data-state', 'done')
+  await expect(dot).toHaveAttribute('data-unseen', '')
+  await expect(icon).toHaveAttribute('aria-label', /, bb done$/)
+  await icon.click()
   await expect.poll(async () => (await skiff.state()).activeTabBySpace[(await skiff.state()).activeSpaceId]).toBe(tab.id)
-  await expect(buoy.locator('#buoy-unseen')).toBeHidden()
+  await expect(dot).toHaveAttribute('data-state', 'done')
+  await expect(dot).not.toHaveAttribute('data-unseen', '')
   expect((await skiff.state()).tabs.find((t) => t.id === tab.id).agentUnseen).toBeUndefined()
 })

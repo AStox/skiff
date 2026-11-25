@@ -78,7 +78,9 @@ test('the tab list and exposé show the space\'s tabs of every desktop under the
 
   // The tab list: a heading per desktop in desktop order, this one marked, each tab under its own.
   const buoy = await shellPage(skiff, '/buoy.html')
-  await buoy.locator('#buoy-tabs').click()
+  // The pill shows the space's tabs of every desktop.
+  for (const id of [one, two, three]) await expect(buoy.locator(`.buoy-tab[data-tab-id="${id}"]`)).toBeVisible()
+  await skiff.rpc('ui.emit', { name: 'buoy', data: { action: 'tabs' }, focus: false })
   await expect.poll(() => skiff.app.context().pages().filter((p) => p.url().endsWith('/tablist.html') && !p.isClosed()).length).toBe(1)
   const list = await shellPage(skiff, '/tablist.html')
   await expect(list.locator('#tablist .desk-head')).toHaveText(['Desktop 1 · this desktop', 'Desktop 2'])
@@ -127,8 +129,8 @@ test('tabs on a desktop that no longer exists join the current one, and with one
   const state = await skiff.state()
   expect(state.tabs.map((t) => t.desktopId)).toEqual([1, 1])
   await expect.poll(() => pages(skiff)).toEqual(['/one', '/two'])
-  const buoy = await shellPage(skiff, '/buoy.html')
-  await buoy.locator('#buoy-tabs').click()
+  await shellPage(skiff, '/buoy.html')
+  await skiff.rpc('ui.emit', { name: 'buoy', data: { action: 'tabs' }, focus: false })
   const list = await shellPage(skiff, '/tablist.html')
   await expect(list.locator('#tablist .row')).toHaveCount(2)
   await expect(list.locator('#tablist .desk-head')).toHaveCount(0)

@@ -48,11 +48,12 @@ const ICON = {
   figma: svg('#1e1e1e', '<circle cx="9.5" cy="8" r="2" fill="#1abcfe"/><path d="M4.5 4a2 2 0 0 1 2-2H8v4H6.5a2 2 0 0 1-2-2z" fill="#f24e1e"/><path d="M8 2h1.5a2 2 0 1 1 0 4H8z" fill="#ff7262"/><path d="M4.5 8a2 2 0 0 1 2-2H8v4H6.5a2 2 0 0 1-2-2z" fill="#a259ff"/><path d="M4.5 12a2 2 0 0 1 2-2H8v2a2 2 0 1 1-3.5 0z" fill="#0acf83"/>')
 }
 
-// PREVIEW_AGENTS=1 hands four tabs to agents: working, idle, done and unseen, done and seen.
-const AGENT_PREVIEW = [['working', 'omp'], ['idle', 'Claude'], ['done', 'omp', true], ['done', 'Codex']]
-const withAgents = (list, ids) => (!process.env.PREVIEW_AGENTS ? list : list.map((t) => {
-  const [agentState, agent, unseen] = AGENT_PREVIEW[ids.indexOf(t.id)] || []
-  return agent ? { ...t, agent, agentState, ...(unseen && { agentUnseen: true }) } : t
+// PREVIEW_AGENTS=1 hands six tabs to agents: working, idle, done and unseen, done and seen; and in Personal one working and one asking for its tab.
+const AGENT_PREVIEW = [['working', 'omp'], ['idle', 'Claude'], ['done', 'omp', true], ['done', 'Codex'], ['idle', 'Claude', false, true], ['working', 'omp']]
+const AGENT_TABS = ['electron', 'youtube', 'hn', 'figma', 'airbnb', 'maps']
+const withAgents = (list) => (!process.env.PREVIEW_AGENTS ? list : list.map((t) => {
+  const [agentState, agent, unseen, asking] = AGENT_PREVIEW[AGENT_TABS.indexOf(t.id)] || []
+  return agent ? { ...t, agent, agentState, ...(unseen && { agentUnseen: true }), ...(asking && { agentRequest: { agent } }) } : t
 }))
 // The desk content: a Work and a Personal space. All fictional.
 const letter = (text, fill, ink = '#fff') => svg(fill, `<text x="8" y="11.8" text-anchor="middle" font-family="Arial,sans-serif" font-size="10" font-weight="700" fill="${ink}">${text}</text>`)
@@ -75,8 +76,10 @@ const DESK_TABS = [
 ]
 // Page rects at 1440 by 900, scaled to the window: three overlapping windows in Work, two in Personal. [x, y, width, height, z]
 const DESK_LAYOUT = { linear: [90, 100, 700, 480, 2], github: [360, 200, 780, 520, 3], electron: [800, 130, 560, 400, 1], nytimes: [60, 60, 640, 760, 2], maps: [720, 60, 680, 520, 1] }
-// The rest of each space: favorites and pinned tabs, and ordinary tabs whose windows are hidden.
-const DESK_ROLES = { calendar: { favorite: true }, gmail: { favorite: true }, figma: { pinned: true, folder: 'Design' }, notion: { pinned: true }, airbnb: { favorite: true }, linear: { status: 'unread' }, hn: { status: 'progress', loading: true }, youtube: { status: 'done', doneAt: ago(60 * 19) }, wikipedia: { status: 'done', doneAt: ago(60 * 3) } }
+// The rest of each space: favorites and pinned tabs, and ordinary tabs whose windows are hidden. Notion plays sound.
+const DESK_ROLES = { calendar: { favorite: true }, gmail: { favorite: true }, figma: { pinned: true, folder: 'Design' }, notion: { pinned: true, protections: { audible: true } }, airbnb: { favorite: true }, linear: { status: 'unread' }, hn: { status: 'progress', loading: true }, youtube: { status: 'done', doneAt: ago(60 * 19) }, wikipedia: { status: 'done', doneAt: ago(60 * 3) } }
+// Tabs whose pages are loaded; the other favorites and pinned tabs have never been opened.
+const LOADED = new Set([...Object.keys(DESK_LAYOUT), 'gmail', 'notion', 'figma'])
 // Agent threads are tabs of skiff://chat/ with the sparkle icon, in the buckets their turns put them in.
 const SPARKLE = svg('#7c5ce0', '<path d="M8 2.5c.4 3 1.8 4.7 5 6-3.2 1.3-4.6 3-5 6-.4-3-1.8-4.7-5-6 3.2-1.3 4.6-3 5-6z" fill="#fff"/>')
 const thread = (id, spaceId, agent, title, extra) => ({ id, spaceId, sessionPartition: 'persist:main', url: `skiff://chat/c0000000000${id.slice(1)}`, title, favicon: SPARKLE, chat: { agent, sessionId: null }, favorite: false, pinned: false, folder: '', loading: false, canGoBack: false, canGoForward: false, createdAt: ago(25), lastActiveAt: ago(3), ...extra })
@@ -99,14 +102,14 @@ function deskState([W, H]) {
     const plain = !role.favorite && !role.pinned
     return {
       id, spaceId, sessionPartition: 'persist:main', url, title, favicon, favorite: false, pinned: false, folder: '', loading: false,
-      canGoBack: id === 'github', canGoForward: false, createdAt: ago(40 + i * 53), lastActiveAt: ago(i * 11), ...role,
+      canGoBack: id === 'github', canGoForward: false, createdAt: ago(40 + i * 53), lastActiveAt: ago(i * 11), ...(LOADED.has(id) && { lifecycle: 'live' }), ...role,
       ...(DESK_LAYOUT[id] ? { desk: rect(DESK_LAYOUT[id]) } : plain && { desk: { ...rect([200 + i * 20, 160, 700, 500, 0]), hidden: true } })
     }
   })
   const gone = (id, url, title, minutes) => ({ id, spaceId: 'work', url, title, favicon: '', sessionPartition: 'persist:main', archivedAt: ago(minutes) })
   return {
     spaces: [{ id: 'work', name: 'Work', color: '#4f6bed' }, { id: 'personal', name: 'Personal', color: '#2f6b4f' }],
-    activeSpaceId: 'work', tabs: withAgents([...tabs, ...DESK_THREADS], ['electron', 'youtube', 'hn', 'figma']).map((t) => ({ ...t, bucket: S.bucketOf(t) })), activeTabBySpace: { work: 'github', personal: 'nytimes' }, collapsed: {}, agentTabs: [], peek: null,
+    activeSpaceId: 'work', tabs: withAgents([...tabs, ...DESK_THREADS]).map((t) => ({ ...t, bucket: S.bucketOf(t) })), activeTabBySpace: { work: 'github', personal: 'nytimes' }, collapsed: {}, agentTabs: [], peek: null,
     archive: [gone('a1', 'https://linear.app/skiff/issue/SKF-80', 'SKF-80 Buoy notices', 300), gone('a2', 'https://github.com/skiff/skiff/pull/38', 'skiff#38 Buoy pill', 2900)],
     settings: { autoArchiveHours: 12, searchUrl: 'https://www.google.com/search?q=%s', shortcuts: {}, ai: { agents: [{ name: 'omp', command: 'omp acp' }, { name: 'Claude', command: 'npx -y @agentclientprotocol/claude-agent-acp' }], agent: 'omp', model: '', effort: '' } },
     // PREVIEW_UPDATE=1 has an update waiting.

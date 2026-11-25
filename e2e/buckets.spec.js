@@ -51,7 +51,7 @@ async function dragToChip(buoy, source, target) {
   await buoy.mouse.up()
 }
 
-test('the Layer card lists tabs and threads in one list that follows their buckets, and the pill counts what is unread', async ({ skiff }) => {
+test('the Layer card lists tabs and threads in one list that follows their buckets, and the pill marks what is unread', async ({ skiff }) => {
   await skiff.rpc('settings.set', { ai: { agents: [{ name: 'Fake', command: `'${process.execPath}' '${fakeAgent}' '${skiff.root}'` }] } })
   const home = await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
   await skiff.page('/one')
@@ -59,13 +59,14 @@ test('the Layer card lists tabs and threads in one list that follows their bucke
   const row = (id) => buoy.locator(`#list li.row[data-tab-id="${id}"]`)
   const chip = (name) => buoy.locator(`#chips .chip[data-filter="${name}"]`)
   const sections = () => buoy.locator('#list li.row[data-section]').evaluateAll((rows) => rows.map((r) => r.dataset.section))
-  const unread = buoy.locator('#buoy-unread')
+  const unread = buoy.locator('.buoy-unread')
   await expect(unread).toBeHidden()
 
-  // A page that finishes in the background lands in Unread and the pill shows the count.
+  // A page that finishes in the background lands in Unread and its icon in the pill gets the dot.
   const page = await skiff.rpc('tabs.create', { url: skiff.origin + '/two', activate: false })
   await expect.poll(() => bucketOf(skiff, page.id)).toBe('unread')
-  await expect(unread).toHaveText('1')
+  await expect(buoy.locator(`.buoy-tab[data-tab-id="${page.id}"] .buoy-unread`)).toBeVisible()
+  await expect(unread).toHaveCount(1)
   await openCard(buoy)
   await expect(row(page.id)).toHaveAttribute('data-section', 'unread')
   await expect(chip('unread')).toHaveText(/Unread\s*1/)
@@ -122,7 +123,7 @@ test('the Layer card lists tabs and threads in one list that follows their bucke
   expect(await bucketOf(skiff, page.id)).toBe('done')
   await expect(row(tabId)).toHaveAttribute('data-section', 'unread', { timeout: 20_000 })
   await expect(chip('unread')).toHaveText(/Unread\s*2/)
-  await expect(unread).toHaveText('2')
+  await expect(unread).toHaveCount(2)
   expect(await buoy.locator('#list li.row[data-section="unread"]').evaluateAll((rows) => rows.map((r) => r.dataset.tabId).sort())).toEqual([later.id, tabId].sort())
 
   // The keyboard steps a row into the next section in the card's order, never into In Progress.

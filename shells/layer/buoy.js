@@ -1,6 +1,6 @@
 'use strict'
 
-// The Buoy: the space, its favorites, its tab count and a new tab, drawn in a floating window as big as the desk that it moves itself, above other apps.
+// The Buoy: the space, then the tabs themselves as icons (favorites, open tabs, agent tabs of other spaces), drawn in a floating window as big as the desk that it moves itself, above other apps.
 // Open, the pill itself grows into the command bar's card in the middle of the desk and shrinks back when it closes.
 const $ = (id) => document.getElementById(id)
 const pill = $('buoy')
@@ -9,11 +9,11 @@ const card = $('card')
 const bar = $('palette-input')
 // Within this distance of a desk edge (or the centre line) the Buoy snaps to it.
 const PULL = 24
-// The favorites fill the pill up to this share of the desk width; the rest go behind a +N.
-const FAVORITES_SHARE = 0.6
+// The icons fill the pill up to this share of the desk width; the rest go behind a +N.
+const DOCK_SHARE = 0.6
 const CARD_WIDTH = 560
-const AGENTS_WIDTH = 300
-const AGENTS_MAX = 360
+// How long the space's name shows after a switch.
+const NAME_SHOWN = 1500
 // The card keeps this far from the desk's edges.
 const CARD_MARGIN = 40
 // The pill's growth and its way back; the card's content fades in over the last part and out over the first.
@@ -24,9 +24,10 @@ let state = null
 let place = readStore('buoy')
 let list = false
 let open = false
-// The agent tabs' list, grown from its chip, and where it lies in desk pixels while it is open.
-let agentsOpen = false
-let agentsAt = null
+// The space the name was last shown for, and whether it shows now.
+let named = null
+let nameShown = false
+let nameTimer
 // Where the card lies while it is open, in desk pixels; its height follows its content.
 let at = null
 // Set from the first frame of the card's way back until the pill is home.
@@ -39,128 +40,100 @@ let hiding = false
 let noticeText = ''
 let noticeTimer
 let press = null
-let favoritesKey = ''
+let dockKey = ''
 
 function renderPill() {
   if (!state) return
   const space = paintSpace(state)
-  const n = state.tabs.filter((t) => t.spaceId === space.id && isPlain(t)).length
   const note = hiding ? 'Drop to hide' : noticeText
-  const going = state.tabs.filter((t) => t.agent && t.agentState !== 'done')
-  const listed = state.tabs.filter((t) => t.agentRequest || (t.agent && (t.agentState !== 'done' || t.agentUnseen)))
-  const chip = agentChip(going, listed)
-  const unseen = state.tabs.some((t) => t.agentUnseen || t.agentRequest)
-  if (agentsOpen && !listed.length) agentsOpen = false
-  const unread = state.tabs.filter((t) => t.bucket === 'unread').length
+  if (named !== space.id) {
+    if (named) {
+      nameShown = true
+      clearTimeout(nameTimer)
+      nameTimer = setTimeout(() => {
+        nameShown = false
+        renderPill()
+      }, NAME_SHOWN)
+    }
+    named = space.id
+  }
+  // Set while hidden too: specs wait on it as the sign that the state has loaded.
   $('buoy-name').textContent = space.name
-  $('buoy-unread').textContent = String(unread)
-  $('buoy-unread').hidden = !unread
+  $('buoy-name').hidden = !nameShown
   $('buoy-notice').textContent = note
   $('buoy-notice').hidden = !note
-  $('buoy-agents').textContent = chip
-  $('buoy-agents').hidden = !chip
-  $('buoy-agents').title = `${chip}. Show the agent tabs`
-  $('buoy-agents').setAttribute('aria-label', `${chip}. Show the agent tabs`)
-  $('buoy-agents').setAttribute('aria-expanded', String(agentsOpen))
-  $('buoy-unseen').hidden = !unseen
-  renderAgents(listed)
-  $('buoy-main').setAttribute('aria-label', `${space.name}${unread ? `, ${unread} unread` : ''}${chip && `, ${chip}`}${unseen ? ', an agent tab is ready to see' : ''}. Open the command bar`)
+  $('buoy-main').setAttribute('aria-label', `${space.name}. Open the command bar`)
   $('buoy-main').setAttribute('aria-expanded', String(open))
-  $('buoy-tabs').textContent = String(n)
-  $('buoy-tabs').setAttribute('aria-label', tabCount(n))
-  $('buoy-tabs').title = `${tabCount(n)}. Show the active tabs`
-  $('buoy-tabs').setAttribute('aria-expanded', String(list))
   const update = state.update?.status === 'ready' ? `Restart to update to Skiff ${state.update.version}` : ''
   $('update-pill').hidden = !update
   $('update-pill').title = update
   $('update-pill').setAttribute('aria-label', update)
   pill.classList.toggle('drop', hiding)
-  renderFavorites()
+  renderDock(space, `${nameShown}|${space.name}|${note}|${update}`)
+  $('buoy-more')?.setAttribute('aria-expanded', String(list))
   fit()
 }
 
-// Names of the agents at work when they fit the pill, else their count; with none at work, those waiting, then those asking for a tab, then those whose finished tabs wait to be seen.
-function agentChip(going, listed) {
-  const working = going.filter((t) => t.agentState === 'working')
-  const asking = listed.filter((t) => t.agentRequest)
-  const [tabs, verb] = working.length ? [working, 'working'] : going.length ? [going, 'idle'] : asking.length ? [asking, 'asking'] : [listed, 'done']
-  const names = [...new Set(tabs.map((t) => t.agentRequest?.agent || t.agent))]
-  const text = names.join(', ')
-  return !names.length ? '' : `${text.length <= 16 ? text : `${names.length} ${names.length === 1 ? 'agent' : 'agents'}`} ${verb}`
+const AGENT_WORDS = { working: 'working', idle: 'idle', done: 'done', asking: 'asks for this tab' }
+const agentStateOf = (tab) => (tab.agentRequest ? 'asking' : tab.agentState || 'idle')
+
+// The one mark an icon carries: the agent's state, else the speaker, else the unread dot.
+function dockMark(tab) {
+  if (agentNameOf(tab)) {
+    const phase = agentStateOf(tab)
+    return h('span', { class: 'agent-dot', 'data-state': phase, 'data-unseen': phase === 'done' && tab.agentUnseen, 'aria-hidden': 'true' })
+  }
+  return speaker(tab) || (tab.bucket === 'unread' ? h('span', { class: 'buoy-unread', 'aria-hidden': 'true' }) : null)
 }
 
-function agentRow(tab) {
-  const asking = tab.agentRequest
-  return h('li', { class: 'row buoy-agent', 'data-tab-id': tab.id },
-    h('button', { class: 'row-main', type: 'button', title: tab.url, onclick: () => pickAgent(tab) },
-      agentDot(tab), h('span', { class: 'label' }, tab.title || tab.url), h('span', { class: 'when' }, asking ? `${asking.agent} asks` : tab.agent)))
+function dockLabel(tab) {
+  const name = agentNameOf(tab)
+  return `${tab.title || tab.url}${name ? `, ${name} ${AGENT_WORDS[agentStateOf(tab)]}` : ''}`
 }
 
-// The base page activates it, as for the tab list, since it knows whether another app is in front.
-function pickAgent(tab) {
-  closeAgents()
-  buoyAction('pick', { id: tab.id })
-}
-
-let agentsKey = ''
-function renderAgents(listed) {
-  const box = $('buoy-agents-list')
-  box.hidden = !agentsOpen
-  if (!agentsOpen) return
-  const key = JSON.stringify(listed.map((t) => [t.id, t.title, t.url, t.agent, t.agentState, t.agentRequest?.agent]))
-  if (key === agentsKey) return
-  agentsKey = key
-  box.replaceChildren(...listed.map(agentRow))
-}
-
-// Under the chip, or above it with the pill in the lower half; only the list takes clicks beside the pill.
-function placeAgents() {
-  const box = $('buoy-agents-list')
-  if (!agentsOpen) return void (agentsAt = null)
-  const { width: W, height: H } = deskSize(state)
-  const b = buoyRect(state, place)
-  const below = b.y + b.height / 2 < H / 2
-  const room = below ? H - b.y - b.height - 2 * GAP : b.y - 2 * GAP
-  const width = Math.min(AGENTS_WIDTH, W - 2 * GAP)
-  box.style.maxHeight = `${Math.min(AGENTS_MAX, room)}px`
-  const height = box.offsetHeight
-  const chip = $('buoy-agents').getBoundingClientRect()
-  agentsAt = { x: Math.round(clamp(chip.x, GAP, W - GAP - width)), y: below ? b.y + b.height + GAP : b.y - GAP - height, width, height }
-  Object.assign(box.style, { left: `${agentsAt.x}px`, top: `${agentsAt.y}px`, width: `${width}px` })
-}
-
-function openAgents() {
-  if (open || !state || $('buoy-agents').hidden) return
-  agentsOpen = true
-  agentsKey = ''
-  buoyAction('agents')
-  renderPill()
-}
-function closeAgents() {
-  if (!agentsOpen) return
-  agentsOpen = false
-  renderPill()
-}
-
-// The space's favorites in the panel's order, the active one ringed; a click brings its window forward.
-function renderFavorites() {
-  const favorites = state.tabs.filter((t) => t.favorite && t.spaceId === state.activeSpaceId)
-  const active = state.activeTabBySpace[state.activeSpaceId]
-  const limit = Math.floor(deskSize(state).width * FAVORITES_SHARE)
-  const key = JSON.stringify([favorites.map((t) => [t.id, t.title, t.url, t.favicon, Boolean(t.protections?.audible)]), active, limit, $('buoy-agents').textContent])
-  if (key === favoritesKey) return
-  favoritesKey = key
-  const box = $('buoy-favs')
-  const button = (tab) => h('button', {
-    class: `buoy-fav${tab.id === active ? ' current' : ''}`, type: 'button', 'data-tab-id': tab.id, title: tab.title || tab.url, 'aria-label': tab.title || tab.url, 'aria-current': tab.id === active ? 'true' : null,
-    onclick: () => { if (!press?.moved) buoyAction('favorite', { id: tab.id }) }
-  }, favicon(tab), speaker(tab))
-  const more = (n) => h('button', { id: 'buoy-more', class: 'buoy-fav', type: 'button', title: `${n} more in the command bar`, 'aria-label': `${n} more favorites. Open the command bar`, onclick: () => { if (!press?.moved) openCard('new') } }, `+${n}`)
-  const draw = (shown) => box.replaceChildren(...favorites.slice(0, shown).map(button), shown < favorites.length ? more(favorites.length - shown) : '')
-  box.hidden = !favorites.length
-  let shown = favorites.length
-  draw(shown)
-  while (shown > 0 && row.offsetWidth > limit) draw(--shown)
+// The space's favorites, its other open tabs and the agent tabs of other spaces, as icons; what does not fit folds into a +N that opens the tab list.
+// Folded first: open tabs without an agent, then favorites that are not open, then the rest, each from the last backwards.
+function renderDock(space, extra) {
+  const active = state.activeTabBySpace[space.id]
+  const limit = Math.floor(deskSize(state).width * DOCK_SHARE)
+  const mine = visibleTabs(state, space.id)
+  const item = (group) => (tab) => ({ tab, group })
+  const items = [
+    ...mine.filter((t) => t.favorite).map(item(0)),
+    ...mine.filter((t) => !t.favorite && !t.userPeek && (isPlain(t) || isOpen(t))).map(item(1)),
+    ...state.spaces.filter((s) => s.id !== space.id).flatMap((s) => visibleTabs(state, s.id)).filter((t) => t.agentRequest || (t.agent && (t.agentState !== 'done' || t.agentUnseen))).map(item(2))
+  ]
+  const key = JSON.stringify([items.map(({ tab: t, group }) => [group, t.id, t.title, t.url, t.favicon, isOpen(t), Boolean(t.protections?.audible), agentNameOf(t), agentStateOf(t), t.agentUnseen, t.bucket === 'unread']), active, limit, extra])
+  if (key === dockKey) return
+  dockKey = key
+  const quiet = (it) => !agentNameOf(it.tab) && it.tab.id !== active
+  const first = items.filter((it) => it.group === 1 && quiet(it))
+  const second = items.filter((it) => it.group === 0 && !isOpen(it.tab))
+  const folding = [...first.reverse(), ...second.reverse(), ...items.filter((it) => !first.includes(it) && !second.includes(it)).reverse()]
+  const button = ({ tab, group }) => {
+    const label = dockLabel(tab)
+    return h('button', {
+      class: `buoy-tab${group === 0 ? ' buoy-fav' : ''}${group === 0 && !isOpen(tab) ? ' closed' : ''}${tab.id === active ? ' current' : ''}`, type: 'button', 'data-tab-id': tab.id, title: label, 'aria-label': label, 'aria-current': tab.id === active ? 'true' : null,
+      onclick: () => { if (!press?.moved) buoyAction(group === 0 ? 'favorite' : 'pick', { id: tab.id }) }
+    }, favicon(tab), dockMark(tab))
+  }
+  const icons = new Map(items.map((it) => [it, button(it)]))
+  const more = (n) => h('button', { id: 'buoy-more', class: 'buoy-tab', type: 'button', title: `${n} more tabs. Show the tab list`, 'aria-label': `${n} more tabs. Show the tab list`, 'aria-haspopup': 'dialog', onclick: () => { if (!press?.moved) buoyAction('tabs') } }, `+${n}`)
+  const box = $('buoy-dock')
+  const draw = (folded) => {
+    const gone = new Set(folding.slice(0, folded))
+    const parts = []
+    for (const group of [0, 1, 2]) {
+      const shown = items.filter((it) => it.group === group && !gone.has(it)).map((it) => icons.get(it))
+      if (shown.length) parts.push(...(parts.length ? [h('span', { class: 'buoy-sep', 'aria-hidden': 'true' })] : []), ...shown)
+    }
+    if (folded) parts.push(more(folded))
+    box.hidden = !parts.length
+    box.replaceChildren(...parts)
+  }
+  let folded = 0
+  draw(folded)
+  while (folded < folding.length && row.offsetWidth > limit) draw(++folded)
 }
 
 // Remembered against the nearest sides, so a smaller desk keeps the Buoy in its corner.
@@ -185,7 +158,6 @@ function fit() {
   }
   const r = buoyRect(state, place)
   if (!open && !closing) Object.assign(pill.style, { left: `${r.x}px`, top: `${r.y}px` })
-  placeAgents()
   sync(r)
 }
 
@@ -204,7 +176,6 @@ function sync(r = buoyRect(state, place)) {
   syncAvoid()
   // The import dialog is modal over the whole desk.
   const hit = [open ? (importer ? { x: 0, y: 0, width, height } : cardRect()) : r]
-  if (agentsAt && !open) hit.push(agentsAt)
   const key = JSON.stringify([width, height, hit])
   if (key !== shownAt) {
     shownAt = key
@@ -241,7 +212,6 @@ document.addEventListener('pointermove', (e) => {
   if (!press.moved) {
     if (Math.hypot(dx, dy) < 4) return
     press.moved = true
-    closeAgents()
     pill.setPointerCapture(e.pointerId)
     document.documentElement.classList.add('dragging')
     skiff.call('ui.setDesk', { capture: true }).catch(() => {})
@@ -273,10 +243,7 @@ document.addEventListener('pointerup', release)
 document.addEventListener('pointercancel', release)
 
 $('buoy-main').addEventListener('click', () => { if (!press?.moved) openCard('new') })
-$('buoy-agents').addEventListener('click', () => { if (!press?.moved) return agentsOpen ? closeAgents() : openAgents() })
-$('buoy-tabs').addEventListener('click', () => { if (!press?.moved) buoyAction('tabs') })
 $('update-pill').addEventListener('click', () => { if (!press?.moved) skiff.call('updates.install').catch((error) => notice(error.message || 'Update failed')) })
-$('buoy-new').addEventListener('click', () => { if (!press?.moved) openCard('new') })
 appearance.addEventListener('change', renderPill)
 
 const swipe = spaceSwiper(true)
@@ -327,7 +294,6 @@ async function grab() {
 
 function openCard(mode = 'new') {
   if (open) return
-  closeAgents()
   // A page that has just loaded has not heard the state yet.
   if (!state) return void skiff.call('state.get').then((first) => { state ||= first; openCard(mode) }, () => {})
   open = true
@@ -430,21 +396,17 @@ skiff.on('ask-agent', () => reveal('ask'))
 skiff.on('expose', (data) => {
   if (data?.forwarded || data?.close) return
   closeCard(false)
-  closeAgents()
 })
 // Anywhere else a press or the keyboard going elsewhere closes it; the keyboard coming back within a moment is not leaving.
 document.addEventListener('pointerdown', (e) => {
   if (open && !e.target.closest('#buoy')) closeCard()
-  if (agentsOpen && !e.target.closest('#buoy-agents, #buoy-agents-list')) closeAgents()
 })
-document.addEventListener('keydown', (e) => { if (agentsOpen && e.key === 'Escape') closeAgents() })
 addEventListener('focus', () => { focusedAt = performance.now() })
 addEventListener('blur', () => {
   const lost = performance.now()
   clearTimeout(blurred)
   blurred = setTimeout(() => {
     if (open && focusedAt < lost) closeCard(false)
-    if (agentsOpen && focusedAt < lost) closeAgents()
   }, 80)
 })
 

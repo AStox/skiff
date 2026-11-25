@@ -1020,7 +1020,7 @@ test.describe('layer panel and Buoy', () => {
       await closed()
       await expect.poll(() => hasFocus(skiff, pageTwo)).toBe(true)
     }
-    await buoy.locator('#buoy-new').click()
+    await buoy.locator('#buoy-main').click()
     await opened()
     await expect(buoy.locator('#palette-input')).toBeFocused()
     // A press on the desk outside the card closes it.
@@ -1285,7 +1285,7 @@ test.describe('layer panel and Buoy', () => {
     expect(new Set(await bounds()).size).toBe(1)
   })
 
-  test('the Buoy shows the space\'s favorites: a click brings that window forward, a drag from one moves the Buoy, and too many end in +N', async ({ skiff }) => {
+  test('the Buoy shows the space\'s favorites: a click brings that window forward, a drag from one moves the Buoy, and too many fold into a +N that opens the tab list', async ({ skiff }) => {
     const first = (await skiff.state()).activeSpaceId
     const favorite = async (path) => {
       const id = (await skiff.rpc('tabs.create', { url: skiff.origin + path })).id
@@ -1304,10 +1304,10 @@ test.describe('layer panel and Buoy', () => {
     const order = async (spaceId) => (await skiff.state()).tabs.filter((t) => t.favorite && t.spaceId === spaceId).map((t) => t.id)
     await expect.poll(shownIds).toEqual(await order(first))
     expect(await order(first)).toEqual(favs)
-    // Each a favicon (the page's icon, or its letter), titled, between the space and the buttons.
+    // Each a favicon (the page's icon, or its letter), titled, after the space.
     await expect(buoy.locator('.buoy-fav .favicon')).toHaveCount(3)
     await expect(buoy.locator('.buoy-fav').first()).toHaveAttribute('title', /\S/)
-    const xs = await buoy.evaluate(() => ['#buoy-main', '#buoy-favs', '#buoy-tabs'].map((s) => document.querySelector(s).getBoundingClientRect().x))
+    const xs = await buoy.evaluate((id) => ['#buoy-main', '.buoy-fav', `.buoy-tab[data-tab-id="${id}"]`].map((s) => document.querySelector(s).getBoundingClientRect().x), plain)
     expect(xs[0]).toBeLessThan(xs[1])
     expect(xs[1]).toBeLessThan(xs[2])
     await expect(buoy.locator('.buoy-fav.current')).toHaveCount(0)
@@ -1362,11 +1362,13 @@ test.describe('layer panel and Buoy', () => {
     expect((await skiff.state()).activeTabBySpace[first]).toBe(favs[1])
     expect(await isOpen(buoy)).toBe(false)
 
-    // Too many for 60% of the desk: as many as fit, then +N, which opens the card.
+    // Too many for 60% of the desk: the ordinary tab folds first, then as many favorites as fit, the rest behind +N, which opens the tab list.
     const more = []
     for (let i = 0; i < 37; i++) more.push(await favorite(`/many${i}`))
     await skiff.rpc('tabs.activate', { id: favs[1] })
     const all = [...favs, ...more]
+    await expect.poll(async () => (await skiff.state()).tabs.filter((t) => all.includes(t.id) && !t.lifecycle).length).toBe(0)
+    const others = (await skiff.state()).tabs.filter((t) => t.spaceId === first && !t.favorite).length
     await expect(buoy.locator('#buoy-more')).toBeVisible()
     const { deskSize } = await skiff.state()
     const counted = async () => {
@@ -1375,15 +1377,16 @@ test.describe('layer panel and Buoy', () => {
       const width = await buoy.locator('#buoy').evaluate((el) => el.getBoundingClientRect().width)
       return { ids, n, width }
     }
-    await expect.poll(async () => { const c = await counted(); return c.ids.length + c.n }).toBe(all.length)
+    await expect.poll(async () => { const c = await counted(); return c.ids.length + c.n }).toBe(all.length + others)
     const c = await counted()
     expect(c.ids).toEqual(all.slice(0, c.ids.length))
     expect(c.ids.length).toBeGreaterThan(10)
     expect(c.width).toBeLessThanOrEqual(deskSize.width * 0.6)
     await expect.poll(fits).toBe(true)
+    await expect(buoy.locator(`.buoy-tab[data-tab-id="${plain}"]`)).toHaveCount(0)
     await buoy.locator('#buoy-more').click()
-    await expect.poll(() => isOpen(buoy)).toBe(true)
-    await expect(buoy.locator('#sidebar')).toBeVisible()
+    await expect.poll(async () => (await floats(skiff)).some((f) => f.file === 'tablist.html')).toBe(true)
+    expect(await isOpen(buoy)).toBe(false)
   })
 
   test('a two finger swipe anywhere on the card or on an ear switches one space per gesture; vertical scrolling scrolls the list', async ({ skiff }) => {
@@ -1440,7 +1443,7 @@ test.describe('layer panel and Buoy', () => {
     expect(await switches(skiff, () => wheel(skiff, frame.url(), side, trackpad(1)))).toEqual([])
   })
 
-  test('the Buoy counts the space\'s tabs by the plus; the count lists them without bringing anything forward, and a pick from behind another app shows only that window', async ({ skiff }) => {
+  test('the Buoy shows the space\'s open tabs as icons; the tab list opens from its action without bringing anything forward, and a pick from behind another app shows only that window', async ({ skiff }) => {
     const first = (await skiff.state()).activeSpaceId
     const one = (await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })).id
     const two = (await skiff.rpc('tabs.create', { url: skiff.origin + '/two' })).id
@@ -1481,25 +1484,25 @@ test.describe('layer panel and Buoy', () => {
     }
     const home = () => skiff.app.evaluate(() => { global.__away?.destroy(); global.__away = null })
 
-    // The count: the space's ordinary tabs, the hidden one too, labelled, between the favorites and the plus; no eye and no window count.
-    const count = buoy.locator('#buoy-tabs')
-    await expect(count).toHaveText('3')
-    await expect(count).toHaveAttribute('aria-label', '3 tabs')
-    await expect(count).toHaveAttribute('title', /3 tabs/)
+    // The icons: the loaded favorite, then the space's ordinary tabs, the hidden one too, each labelled; no count, no plus, no eye and no window count.
+    const icons = () => buoy.locator('.buoy-tab[data-tab-id]').evaluateAll((els) => els.map((el) => el.dataset.tabId))
+    await expect.poll(icons).toEqual([fav, one, two, three])
+    await expect(buoy.locator(`.buoy-tab[data-tab-id="${two}"]`)).toHaveAttribute('aria-label', 'Fixture reading')
+    await expect(buoy.locator('#buoy-more')).toHaveCount(0)
     await expect(buoy.locator('#buoy-look')).toHaveCount(0)
     await expect(buoy.locator('#buoy-main')).not.toContainText('window')
-    const xs = await buoy.evaluate(() => ['#buoy-main', '#buoy-favs', '#buoy-tabs', '#buoy-new'].map((s) => document.querySelector(s).getBoundingClientRect().x))
+    const xs = await buoy.evaluate((ids) => ['#buoy-main', ...ids.map((id) => `.buoy-tab[data-tab-id="${id}"]`)].map((s) => document.querySelector(s).getBoundingClientRect().x), [fav, one, two, three])
     xs.forEach((x, i) => i && expect(x).toBeGreaterThan(xs[i - 1]))
+    const toggleList = () => skiff.rpc('ui.emit', { name: 'buoy', data: { action: 'tabs' }, focus: false })
 
     // A click opens the list in a floating window of its own, without ui.raise, focus or any change to the desk.
     expect(await skiff.rpc('ui.inFront')).toEqual({ front: true })
     const before = await skiff.audit()
     const layout = await children(skiff)
     const tabsBefore = JSON.stringify((await skiff.state()).tabs.map((t) => [t.id, t.desk]))
-    await count.click()
+    await toggleList()
     let list = await listPage()
     await expectFloating(skiff, (await listFloat()).id)
-    await expect(count).toHaveAttribute('aria-expanded', 'true')
     const calls = (await skiff.audit()).calls.slice(before.calls.length)
     expect(calls.filter((c) => c.method !== 'ui.showOverlay' && c.method !== 'ui.inFront')).toEqual([])
     expect(calls.filter((c) => c.method === 'ui.showOverlay').every((c) => c.params.focus === false)).toBe(true)
@@ -1523,27 +1526,26 @@ test.describe('layer panel and Buoy', () => {
     const hit = (await skiff.audit()).calls.filter((c) => c.method === 'ui.showOverlay' && c.params.name === 'tabs').at(-1).params.hit
     expect(hit).toEqual([{ x: card.x, y: card.y, width: card.width, height: card.height }])
 
-    // The count again closes it, Escape in it closes it, and so does any other press on the Buoy.
-    await count.click()
+    // The action again closes it, Escape in it closes it, and so does any other press on the Buoy.
+    await toggleList()
     await listClosed()
-    await expect(count).toHaveAttribute('aria-expanded', 'false')
-    await count.click()
+    await toggleList()
     list = await listPage()
     // The key down closes the window, so the key up finds no page.
     await list.keyboard.press('Escape').catch(() => {})
     await listClosed()
 
     // A two finger swipe over it switches spaces, as on the card.
-    await count.click()
+    await toggleList()
     list = await listPage()
     const centre = await list.locator('#tablist').evaluate((el) => { const r = el.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + 20) } })
     expect(await switches(skiff, () => wheel(skiff, list.url(), centre, trackpad(1)))).toEqual([['spaces.cycle', 1]])
     await skiff.rpc('spaces.activate', { id: first })
-    await count.click()
+    await toggleList()
     await listClosed()
 
     // With Skiff in front a pick only brings that window forward; the whole desk stays.
-    await count.click()
+    await toggleList()
     list = await listPage()
     await list.locator(`[data-tab-id="${two}"] .row-main`).click()
     await listClosed()
@@ -1554,7 +1556,7 @@ test.describe('layer panel and Buoy', () => {
     // With another app in front a pick shows only that window, hidden or not, and raises the desk with it alone.
     await away()
     const raised = (await skiff.audit()).calls.length
-    await count.click()
+    await toggleList()
     list = await listPage()
     await list.locator(`[data-tab-id="${three}"] .row-main`).click()
     await listClosed()
@@ -1570,7 +1572,7 @@ test.describe('layer panel and Buoy', () => {
     const frame = await shellPage(skiff, `/frame.html?tab=${three}`)
     await expect.poll(() => frame.evaluate(() => deskWindows(state).map((w) => w.tab.id))).toEqual([three])
     // A second pick, Skiff now in front, adds its window.
-    await count.click()
+    await toggleList()
     list = await listPage()
     await list.locator(`[data-tab-id="${one}"] .row-main`).click()
     await expect.poll(deskOnly).toEqual([three, one])
@@ -1579,7 +1581,7 @@ test.describe('layer panel and Buoy', () => {
 
     const onlyThree = async () => {
       await away()
-      await count.click()
+      await toggleList()
       list = await listPage()
       await list.locator(`[data-tab-id="${three}"] .row-main`).click()
       await expect.poll(deskOnly).toEqual([three])
@@ -1611,7 +1613,7 @@ test.describe('layer panel and Buoy', () => {
     await home()
     // a favorite in the Buoy, which also closes an open list,
     await onlyThree()
-    await count.click()
+    await toggleList()
     await listPage()
     await buoy.locator(`.buoy-fav[data-tab-id="${fav}"]`).click()
     await listClosed()
