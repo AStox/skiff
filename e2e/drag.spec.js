@@ -73,28 +73,28 @@ test('dragging previews the exact favorite slot, holds still, drops there and re
   expect(await order(favorite)).toEqual([s.t1, s.f1])
 })
 
-test('empty sections offer drop areas, Escape cancels a drag and a release in the preview moves the tab', async ({ skiff }) => {
+test('the favorites area and the status chips take drops, Escape cancels a drag and a release in the preview moves the tab', async ({ skiff }) => {
   const s = await seed(skiff, { w1: {}, w2: {}, w3: {} })
   const { card } = s
   const { row, tile, ghosts, drawn, bucketOf } = helpers(skiff, card, s.space)
   const zone = (name) => card.locator(`.drop-zone[data-zone="${name}"]`)
+  const chip = (name) => card.locator(`#chips .chip[data-filter="${name}"]`)
 
   await expect(zone('favorites')).toHaveCount(0)
   await dragStart(card, row(s.w1))
   await expect(zone('favorites')).toBeVisible()
-  await expect(zone('later')).toBeVisible()
-  await expect(zone('done')).toBeVisible()
-  await dragOver(card, zone('later'))
-  await expect(ghosts()).toHaveCount(1)
-  await expect(zone('later')).toBeHidden()
-  await expect(card.locator('#space-status')).toHaveText('Drop to move to Pinned, position 1.')
+  await expect(card.locator('#list .drop-zone')).toHaveCount(0)
+  await dragOver(card, chip('later'))
+  await expect(chip('later')).toHaveClass(/drop-target/)
+  await expect(ghosts()).toHaveCount(0)
+  await expect(card.locator('#drag-caption')).toHaveText('Move to Pinned')
+  await expect(card.locator('#space-status')).toHaveText('Drop to move to Pinned.')
   await card.mouse.up()
   await expect.poll(() => bucketOf(s.w1)).toBe('later')
   await expect(card.locator('.drop-zone')).toHaveCount(0)
 
   await dragStart(card, row(s.w2))
   await expect(zone('favorites')).toBeVisible()
-  await expect(zone('later')).toHaveCount(0)
   await dragOver(card, zone('favorites'))
   await expect.poll(drawn).toEqual(['ghost'])
   await card.mouse.up()

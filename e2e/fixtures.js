@@ -340,7 +340,7 @@ async function openInBar(skiff, url) {
   await bar.keyboard.press('Enter')
   await expect.poll(() => skiff.barOpen()).toBe(false)
 }
-async function wheel(page, dx, dy, selector = '#space-head') {
+async function wheel(page, dx, dy, selector = '#chips') {
   await page.locator(selector).hover()
   await page.mouse.wheel(dx, dy)
 }
