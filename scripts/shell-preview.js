@@ -377,6 +377,7 @@ async function previewDesk(dir) {
       return st.settings
     },
     'spaces.update': async (p) => { Object.assign(st.spaces.find((x) => x.id === p.id) || fail(`No space ${p.id}`), ...[p.name && { name: p.name }, p.color && { color: p.color }].filter(Boolean)); await push(); return null },
+    'ai.machines': () => [],
     'ui.shellPath': () => ({ path: '/preview' }),
     'ui.focusPage': () => null,
     'ui.inFront': () => ({ front: false }),

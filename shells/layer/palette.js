@@ -1,16 +1,25 @@
 'use strict'
 
 const palette = { mode: 'new', site: null, typed: '', rows: [], selected: 0 }
-const ask = { on: false, agent: '', model: '', effort: '' }
+const ask = { on: false, agent: '', machine: '', model: '', effort: '' }
 // Agent names are trimmed, so this value never collides with one.
 const ADD = ' add'
 let agents = []
+let machines = []
+// The entries of agents started on another machine, by machine id and agent name; ai.agents lists only this machine's.
+const remotes = new Map()
 
 const openUrl = (url, intent) => {
   const navigate = palette.mode === 'edit' && activeTab()
   return skiff.call(navigate ? 'tabs.navigate' : 'tabs.create', navigate || !intent ? { url } : { url, intent: true })
 }
-const askEntry = () => agents.find((a) => a.name === ask.agent) || agents[0]
+const remoteKey = (machine, name) => `${machine}\n${name}`
+function askEntry() {
+  const local = agents.find((a) => a.name === ask.agent) || agents[0]
+  if (!local || !ask.machine) return local
+  return remotes.get(remoteKey(ask.machine, local.name)) || { ...local, machine: ask.machine, status: 'starting', error: '', models: null, model: null, efforts: null, effort: null }
+}
+const machineName = (m) => (m.status && m.status !== 'connected' && m.status !== 'unknown' ? `${m.name} (${m.status})` : m.name)
 const valueIn = (list, value, fallback) => (list.some((o) => o.value === value) ? value : fallback || '')
 const nameOf = (list, value) => list?.find((o) => o.value === value)?.name
 function askChoice() {
@@ -24,7 +33,7 @@ const pageTab = () => {
 
 function askRow() {
   const { entry, model, effort } = askChoice()
-  const sub = [nameOf(entry?.models, model), nameOf(entry?.efforts, effort)].filter(Boolean).join(' · ')
+  const sub = [ask.machine && machines.find((m) => m.id === ask.machine)?.name, nameOf(entry?.models, model), nameOf(entry?.efforts, effort)].filter(Boolean).join(' · ')
   return { label: entry ? `Ask ${entry.name}` : 'Ask an agent', note: entry ? sub || 'Tab to choose model and effort' : 'Connect your agent', hint: entry ? 'New tab' : 'Settings', icon: 'sparkle', ask: true, pick: sendAsk }
 }
 
@@ -44,7 +53,7 @@ function connectAgent() {
 function sendAsk() {
   const { entry, model, effort } = askChoice()
   if (!entry) return connectAgent()
-  return skiff.call('ai.ask', { text: palette.typed.trim(), intent: true, includePage: Boolean(ask.on && pageTab()) && $('palette-include').checked, agent: entry.name, model: model || undefined, effort: effort || undefined })
+  return skiff.call('ai.ask', { text: palette.typed.trim(), intent: true, includePage: Boolean(ask.on && pageTab()) && $('palette-include').checked, agent: entry.name, machine: ask.machine, model: model || undefined, effort: effort || undefined })
 }
 
 function paletteRows() {
@@ -147,9 +156,12 @@ function fill(select, options, value) {
 function drawAsk() {
   $('palette-ask').hidden = $('palette-tools').hidden = !ask.on
   if (!ask.on) return
+  if (ask.machine && machines.length && !machines.some((m) => m.id === ask.machine)) ask.machine = ''
   const { entry, model, effort } = askChoice()
   $('palette-ask').textContent = entry ? `Ask ${entry.name}` : 'Ask an agent'
   fill($('palette-agent'), [...agents.map((a) => ({ value: a.name, name: a.name })), ...(entry ? [] : [{ value: '', name: 'No agent' }]), { value: ADD, name: 'Add an agent...' }], entry?.name || '')
+  fill($('palette-machine'), machines.some((m) => m.id === ask.machine) ? machines.map((m) => ({ value: m.id, name: machineName(m) })) : [{ value: '', name: 'This Mac' }], ask.machine)
+  $('palette-machine').parentElement.hidden = !entry || machines.length < 2
   const waiting = { value: '', name: entry?.status === 'error' ? 'Unavailable' : 'Loading...' }
   for (const [id, list, value] of [['palette-model', entry?.models, model], ['palette-effort', entry?.efforts, effort]]) {
     fill($(id), list || [waiting], list ? value : '')
@@ -168,8 +180,9 @@ function drawAsk() {
 function warm() {
   const entry = askEntry()
   if (!entry) return
-  skiff.call('ai.warm', { agent: entry.name }).then((next) => {
-    agents = agents.map((a) => (a.name === next?.name ? next : a))
+  skiff.call('ai.warm', { agent: entry.name, ...(ask.machine && { machine: ask.machine }) }).then((next) => {
+    if (next?.machine) remotes.set(remoteKey(next.machine, next.name), next)
+    else agents = agents.map((a) => (a.name === next?.name ? next : a))
     drawAsk()
   }, (error) => {
     $('palette-error').textContent = error.message || `${entry.name} could not start.`
@@ -177,7 +190,16 @@ function warm() {
   })
 }
 
+// The list is read again each time agent mode opens, so a machine that came online shows.
+function loadMachines(refresh) {
+  skiff.call('ai.machines', refresh ? { refresh: true } : {}).then((list) => {
+    machines = list || []
+    drawAsk()
+  }, () => {})
+}
+
 function enterAsk() {
+  loadMachines(true)
   ask.on = true
   ask.agent = askEntry()?.name || ''
   bar.placeholder = 'Ask anything'
@@ -198,7 +220,7 @@ function leaveAsk() {
 function openBar(mode) {
   palette.mode = mode === 'edit' ? 'edit' : 'new'
   const saved = state.settings.ai || {}
-  Object.assign(ask, { on: false, agent: saved.agent || '', model: saved.model || '', effort: saved.effort || '' })
+  Object.assign(ask, { on: false, agent: saved.agent || '', machine: saved.machine || '', model: saved.model || '', effort: saved.effort || '' })
   $('palette-include').checked = false
   $('palette-error').hidden = true
   setSite(null, mode === 'edit' ? activeTab()?.url || '' : '')
@@ -262,10 +284,17 @@ $('palette-agent').addEventListener('change', () => {
   drawAsk()
   warm()
 })
+$('palette-machine').addEventListener('change', () => {
+  Object.assign(ask, { machine: $('palette-machine').value, model: '', effort: '' })
+  $('palette-error').hidden = true
+  drawAsk()
+  warm()
+})
 $('palette-model').addEventListener('change', () => { ask.model = $('palette-model').value })
 $('palette-effort').addEventListener('change', () => { ask.effort = $('palette-effort').value })
 
 skiff.call('ai.agents').then((list) => { agents = list || [] }, () => {})
+loadMachines(false)
 skiff.on('ai-agents', (next) => {
   agents = next || []
   if (!state) return

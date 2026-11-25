@@ -45,7 +45,7 @@ const GLOBAL_SHORTCUTS = {
 const MARGIN = 8
 const OFFSET = 28
 const HOSTS = 200
-const AI = { agents: [], agent: '', model: '', effort: '' }
+const AI = { agents: [], agent: '', model: '', effort: '', machine: '' }
 const CHAT = /^skiff:\/\/chat\/c[0-9a-f]{12}$/
 // Who may drive a tab, and where that stands. Only the agent's name is saved; the rest is runtime, and a restored tab is idle.
 const AGENT_RUNTIME = ['agentState', 'agentControl', 'agentAt', 'agentUnseen', 'agentSummary', 'agentRequest']
@@ -135,7 +135,7 @@ function resolveInput(text, searchUrl) {
 const GOOGLE = 'https://www.google.com/search?q=%s'
 const navUrl = (s, text) => webUrl(resolveInput(text, s.settings.searchUrl))
 
-const chatOf = (item) => (CHAT.test(item.url) && isObject(item.chat) && typeof item.chat.agent === 'string' && (item.chat.sessionId === null || typeof item.chat.sessionId === 'string') ? { agent: item.chat.agent.slice(0, 40), sessionId: item.chat.sessionId?.slice(0, 500) ?? null } : null)
+const chatOf = (item) => (CHAT.test(item.url) && isObject(item.chat) && typeof item.chat.agent === 'string' && (item.chat.sessionId === null || typeof item.chat.sessionId === 'string') ? { agent: item.chat.agent.slice(0, 40), ...(typeof item.chat.machine === 'string' && item.chat.machine && { machine: item.chat.machine.slice(0, 200) }), sessionId: item.chat.sessionId?.slice(0, 500) ?? null } : null)
 
 const validBrowserIdentity = ([partition, mode]) => /^persist:[a-zA-Z0-9._-]+$/.test(partition) && (mode === 'native' || mode === 'compatible')
 const loadBrowserIdentity = (value) => Object.fromEntries(Object.entries(isObject(value) ? value : {}).filter(validBrowserIdentity))
@@ -803,7 +803,7 @@ function createTab(s, p, now, chat) {
   const profile = p.profileId === undefined ? s.profiles.find((x) => x.id === space.profileId) : getProfile(s, p.profileId)
   if (space.incognito && p.profileId !== undefined) throw bad('Incognito tabs cannot use persistent profiles')
   const partition = p.profileId !== undefined ? profile.partition : space.sessionPartition || profile?.partition || 'persist:main'
-  const tab = { id: newId('t'), spaceId, sessionPartition: partition, ...(profile?.partition === partition && { profileId: profile.id }), url, title: chat ? chat.title : url, favicon: chat ? chat.favicon : '', favorite: false, status: chat ? 'active' : 'progress', lastActiveAt: now, createdAt: now, ...here(s), ...(whatsappURL(url) && { browserIdentity: 'compatible' }), ...(chat && { chat: { agent: chat.agent, sessionId: null } }), ...(isObject(p.intent) && { intent: p.intent }), ...(agent && { agent, agentState: 'working', agentControl: 'agent', agentAt: now }) }
+  const tab = { id: newId('t'), spaceId, sessionPartition: partition, ...(profile?.partition === partition && { profileId: profile.id }), url, title: chat ? chat.title : url, favicon: chat ? chat.favicon : '', favorite: false, status: chat ? 'active' : 'progress', lastActiveAt: now, createdAt: now, ...here(s), ...(whatsappURL(url) && { browserIdentity: 'compatible' }), ...(chat && { chat: { agent: chat.agent, ...(chat.machine && { machine: chat.machine }), sessionId: null } }), ...(isObject(p.intent) && { intent: p.intent }), ...(agent && { agent, agentState: 'working', agentControl: 'agent', agentAt: now }) }
   if (parent && parent.spaceId === spaceId && isPlain(parent)) tab.parentId = parent.id
   s.tabs.push(tab)
   if (s.deskSize) {
@@ -1448,7 +1448,7 @@ function importSetup(s, setup, now) {
   return added
 }
 
-// Partial objects merge into current; agents [{name, command}] at most 10, names unique ignoring case; agent '' or one of the names.
+// Partial objects merge into current; agents [{name, command}] at most 10, names unique ignoring case; agent '' or one of the names; machine '' (this one) or a bb machine id.
 function aiSettings(value, current = AI) {
   if (!isObject(value)) throw bad('ai must be an object')
   const next = { ...current, ...value }
@@ -1464,8 +1464,8 @@ function aiSettings(value, current = AI) {
   // Removing the chosen agent without naming another falls back to the first.
   const agent = value.agent === undefined && !agents.some((a) => a.name === next.agent) ? agents[0]?.name || '' : next.agent
   if (agent !== '' && !agents.some((a) => a.name === agent)) throw bad(`No agent named ${agent}`)
-  for (const key of ['model', 'effort']) if (typeof next[key] !== 'string' || next[key].length > 200) throw bad(`ai.${key} must be a string of at most 200 characters`)
-  return { agents, agent, model: next.model, effort: next.effort }
+  for (const key of ['model', 'effort', 'machine']) if (typeof next[key] !== 'string' || next[key].length > 200) throw bad(`ai.${key} must be a string of at most 200 characters`)
+  return { agents, agent, model: next.model, effort: next.effort, machine: next.machine }
 }
 
 function setSettings(s, p) {

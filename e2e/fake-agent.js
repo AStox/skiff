@@ -28,7 +28,7 @@ function save(sessionId) {
 }
 
 function track(sessionId, params, stored) {
-  const session = { mcpServers: Array.isArray(params?.mcpServers) ? params.mcpServers : [], cancelled: false, model: 'fake-small', effort: 'low', turns: [], ...stored }
+  const session = { cwd: params?.cwd, mcpServers: Array.isArray(params?.mcpServers) ? params.mcpServers : [], cancelled: false, model: 'fake-small', effort: 'low', turns: [], ...stored }
   sessions.set(sessionId, session)
   return session
 }
@@ -143,6 +143,8 @@ async function prompt({ sessionId, prompt: blocks }) {
     }
   }
   let reply = `You said: ${text}`
+  // Where this agent runs: the host name a stub ssh sets, the cwd the client sent and the MCP servers it offered.
+  if (text === 'where-fixture') reply += `\nHost: ${process.env.FAKE_HOST || 'local'} Cwd: ${session.cwd} Mcp: ${session.mcpServers.map((s) => s.name).join(',') || 'none'}`
   if (context) {
     const title = context.match(/^Title: (.*)$/m)?.[1] ?? ''
     const start = context.split(/^Page text \(first \d+ characters\):\n/m)[1]?.slice(0, 40) ?? ''

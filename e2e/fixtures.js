@@ -171,6 +171,8 @@ const test = base.extend({
         const env = { ...process.env, HOME: home, USERPROFILE: home, SKIFF_DATA: data, SKIFF_VISUAL_ROOT: root,
           SKIFF_VISUAL_PORT: String(port), SKIFF_VISUAL_CONSENT: String(fixtureOptions.consent || 0), SKIFF_VISUAL_THEME: fixtureOptions.theme || 'light',
           SKIFF_VISUAL_EXTENSIONS: fixtureOptions.extensions ? '1' : '0',
+          // The real bb stays out of every run; a spec that wants machines puts a stub bb on the login shell's PATH and sets fixtureOptions.bb.
+          SKIFF_BB: fixtureOptions.bb ? 'bb' : 'skiff-no-bb',
           // Built-ins are off unless a test asks for the fixture one, so no run contacts GitHub.
           SKIFF_BUILTIN_EXTENSIONS: fixtureOptions.builtin ? JSON.stringify([{ name: 'Skiff test extension', release: `${origin}/ext/release` }]) : '[]',
           LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8', TZ: 'UTC', XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache') }
