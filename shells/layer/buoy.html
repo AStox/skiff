@@ -33,16 +33,11 @@
 
 <div id="buoy" role="group" aria-label="Skiff">
   <div id="buoy-row">
-    <button id="buoy-main" type="button" aria-haspopup="dialog" aria-expanded="false" title="Open the command bar. Drag to move"><span class="space-dot" aria-hidden="true"></span><span id="buoy-name"></span><span id="buoy-unread" hidden></span><span id="buoy-notice" hidden></span></button>
-    <button id="buoy-agents" class="count" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="buoy-agents-list" hidden></button>
-    <span id="buoy-favs" role="group" aria-label="Favorites" hidden></span>
-    <span class="buoy-sep" aria-hidden="true"></span>
-    <button id="buoy-tabs" class="buoy-ic count" type="button" aria-haspopup="dialog" aria-expanded="false"></button>
-    <button id="buoy-new" class="buoy-ic" type="button" aria-label="New tab" title="New tab"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+    <button id="buoy-main" type="button" aria-haspopup="dialog" aria-expanded="false" title="Open the command bar. Drag to move"><span class="space-dot" aria-hidden="true"></span><span id="buoy-name" hidden></span><span id="buoy-notice" hidden></span></button>
+    <span id="buoy-dock" role="group" aria-label="Tabs" hidden></span>
     <button id="update-pill" class="update-pill" type="button" hidden>Update</button>
   </div>
   <span id="buoy-dot" class="space-dot" aria-hidden="true"></span>
-  <span id="buoy-unseen" aria-hidden="true" hidden></span>
   <div id="card" role="dialog" aria-label="Command bar">
     <div class="palette-field">
       <span class="space-dot" aria-hidden="true"></span>
@@ -124,8 +119,6 @@
     </dialog>
   </div>
 </div>
-
-<ul id="buoy-agents-list" aria-label="Agent tabs" hidden></ul>
 
 <script src="common.js"></script>
 <script src="buoy.js"></script>

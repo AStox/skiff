@@ -54,7 +54,7 @@ test('the card lists Favorites, then this space\'s status sections and Pinned, t
   await expect.poll(async () => { const s = await skiff.state(); return [s.activeSpaceId, s.activeTabBySpace[dev]] }).toEqual([dev, devFav])
 })
 
-test('a tab playing sound shows a speaker in the card, its favorite tile, the Buoy list and the pill, and loses it when the sound stops', async ({ skiff }) => {
+test('a tab playing sound shows a speaker in the card, its favorite tile, the pill and the Buoy list, and loses it when the sound stops', async ({ skiff }) => {
   const fav = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/tone-fixture?fav` })).id
   await skiff.rpc('tabs.setFavorite', { id: fav, favorite: true })
   const plain = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/tone-fixture?plain` })).id
@@ -72,19 +72,23 @@ test('a tab playing sound shows a speaker in the card, its favorite tile, the Bu
   await expect(speaker('#list li.row', plain)).toHaveCount(1)
   await expect(speaker('#list li.row', quiet)).toHaveCount(0)
   await expect(speaker('#favorites .tile', fav)).toHaveCount(1)
-  await expect(speaker('#buoy-favs .buoy-fav', fav)).toHaveCount(1)
+  await expect(speaker('#buoy-dock .buoy-fav', fav)).toHaveCount(1)
+  await expect(speaker('#buoy-dock .buoy-tab', plain)).toHaveCount(1)
+  await expect(speaker('#buoy-dock .buoy-tab', quiet)).toHaveCount(0)
   await tone('plain', () => window.tone.stop())
   await expect(speaker('#list li.row', plain)).toHaveCount(0)
+  await expect(speaker('#buoy-dock .buoy-tab', plain)).toHaveCount(0)
   await expect(speaker('#favorites .tile', fav)).toHaveCount(1)
   await card.keyboard.press('Escape')
   await expect.poll(() => skiff.barOpen()).toBe(false)
 
   // The Buoy's list follows the sound live while it is open.
-  await expect(card.locator('#buoy-favs .buoy-fav .speaker')).toHaveCount(1)
+  await expect(card.locator('#buoy-dock .buoy-fav .speaker')).toHaveCount(1)
   await tone('plain', () => window.tone.start())
   await expect.poll(() => audible(plain)).toBe(true)
+  await expect(speaker('#buoy-dock .buoy-tab', plain)).toHaveCount(1)
   await expect(async () => {
-    if (!floatOpen(skiff, '/tablist.html')) await card.locator('#buoy-tabs').click()
+    if (!floatOpen(skiff, '/tablist.html')) await skiff.rpc('ui.emit', { name: 'buoy', data: { action: 'tabs' }, focus: false })
     const list = await shellPage(skiff, '/tablist.html')
     await expect(list.locator(`#tablist [data-tab-id="${plain}"] .speaker`)).toHaveCount(1, { timeout: 1500 })
   }).toPass()

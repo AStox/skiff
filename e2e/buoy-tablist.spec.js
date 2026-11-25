@@ -6,9 +6,10 @@ const shellPage = async (skiff, suffix) => {
   return skiff.app.context().pages().find((page) => page.url().endsWith(suffix) && !page.isClosed())
 }
 const floatOpen = (skiff, file) => skiff.app.context().pages().some((page) => page.url().endsWith(file) && !page.isClosed())
+const tabsAction = (skiff) => skiff.rpc('ui.emit', { name: 'buoy', data: { action: 'tabs' }, focus: false })
 const deskId = (skiff) => skiff.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('/index.html')).id)
 
-test('two tabs of one URL at the same place on the desk both show in the tab list, the card, exposé and the count', async ({ skiff }) => {
+test('two tabs of one URL at the same place on the desk both show in the tab list, the card, exposé and the pill', async ({ skiff }) => {
   const ids = []
   for (let i = 0; i < 2; i++) {
     ids.push((await skiff.rpc('tabs.create', { url: `${skiff.origin}/one` })).id)
@@ -26,13 +27,13 @@ test('two tabs of one URL at the same place on the desk both show in the tab lis
   }).toPass()
 
   const buoy = await shellPage(skiff, '/buoy.html')
-  await expect(buoy.locator('#buoy-tabs')).toHaveText('2')
+  for (const id of ids) await expect(buoy.locator(`.buoy-tab[data-tab-id="${id}"]`)).toBeVisible()
 
-  await buoy.locator('#buoy-tabs').click()
+  await tabsAction(skiff)
   const list = await shellPage(skiff, '/tablist.html')
   await expect(list.locator('#tablist .row')).toHaveCount(2)
   expect(await list.locator('#tablist .row').evaluateAll((rows) => rows.map((r) => r.dataset.tabId))).toEqual(ids)
-  await buoy.locator('#buoy-tabs').click()
+  await tabsAction(skiff)
   await expect.poll(() => floatOpen(skiff, '/tablist.html')).toBe(false)
 
   await buoy.locator('#buoy-main').click()
@@ -56,7 +57,7 @@ test('the tab list closes on a click anywhere outside it', async ({ skiff }) => 
   await skiff.rpc('tabs.activate', { id: one })
   const buoy = await shellPage(skiff, '/buoy.html')
   const open = async () => {
-    await buoy.locator('#buoy-tabs').click()
+    await tabsAction(skiff)
     await shellPage(skiff, '/tablist.html')
     await expect.poll(() => floatOpen(skiff, '/tablist.html')).toBe(true)
   }
@@ -145,7 +146,7 @@ test('the tab list shows every space\'s open tabs, loaded favorites included, an
 
   const buoy = await shellPage(skiff, '/buoy.html')
   await expect(async () => {
-    if (!floatOpen(skiff, '/tablist.html')) await buoy.locator('#buoy-tabs').click()
+    if (!floatOpen(skiff, '/tablist.html')) await tabsAction(skiff)
     const list = await shellPage(skiff, '/tablist.html')
     await expect(list.locator('#tablist-rows > li')).toHaveCount(6, { timeout: 1500 })
   }).toPass()
@@ -164,7 +165,7 @@ test('the tab list shows every space\'s open tabs, loaded favorites included, an
     global.__away.focus()
   })
   await expect.poll(async () => (await skiff.rpc('ui.inFront')).front).toBe(false)
-  await buoy.locator('#buoy-tabs').click()
+  await tabsAction(skiff)
   const again = await shellPage(skiff, '/tablist.html')
   await again.locator(`[data-tab-id="${fav}"] .row-main`).click()
   await expect.poll(async () => { const s = await skiff.state(); return [s.activeSpaceId, s.activeTabBySpace[second], s.deskOnly] }).toEqual([second, fav, [fav]])

@@ -49,7 +49,7 @@ test('nested and empty folders appear in the actual tab list and collapse throug
   await parent.getByRole('button', { name: 'Research', exact: true }).focus()
   await card.keyboard.press('Enter')
   await expect(nested).toHaveCount(0)
-  await expect(card.locator(`[data-tab-id="${tab.id}"]`)).toHaveCount(0)
+  await expect(card.locator(`#list [data-tab-id="${tab.id}"]`)).toHaveCount(0)
   await expect(parent.getByRole('button', { name: 'Research', exact: true })).toBeFocused()
   await card.keyboard.press('Enter')
   await expect(nested).toBeVisible()
@@ -83,7 +83,7 @@ test('Layer trail collapse hides list descendants but keeps their native pages a
     await expect.poll(() => skiff.app.context().pages().filter(matches).length).toBe(1)
     return skiff.app.context().pages().find(matches)
   }
-  const buoy = await layerSurface('buoy.html')
+  await layerSurface('buoy.html')
   const nativeAttachments = () => skiff.app.evaluate(({ BrowserWindow }, { urls, ids }) => {
     const desk = BrowserWindow.getAllWindows().find((window) => window.webContents.getURL().endsWith('/layer/index.html'))
     if (!desk) return []
@@ -99,7 +99,7 @@ test('Layer trail collapse hides list descendants but keeps their native pages a
   await expect.poll(async () => (await nativeAttachments()).length).toBe(6)
   const attached = await nativeAttachments()
   expect(attached.every((view) => view.visible)).toBe(true)
-  await buoy.locator('#buoy-tabs').click()
+  await skiff.rpc('ui.emit', { name: 'buoy', data: { action: 'tabs' }, focus: false })
   const list = await layerSurface('tablist.html')
   const parentRow = list.locator(`[data-tab-id="${parent.id}"]`)
   const childRow = list.locator(`[data-tab-id="${child.id}"]`)
@@ -120,7 +120,7 @@ test('Layer trail collapse hides list descendants but keeps their native pages a
   // Activating the still-live descendant expands every collapsed ancestor.
   await skiff.rpc('tabs.activate', { id: leaf.id })
   await expect.poll(() => list.isClosed()).toBe(true)
-  await buoy.locator('#buoy-tabs').click()
+  await skiff.rpc('ui.emit', { name: 'buoy', data: { action: 'tabs' }, focus: false })
   const reopened = await layerSurface('tablist.html')
   for (const tab of [parent, child, leaf]) await expect(reopened.locator(`[data-tab-id="${tab.id}"]`)).toBeVisible()
   for (const tab of [parent, child]) await expect(reopened.locator(`#trail-toggle-${tab.id}`)).toHaveAttribute('aria-expanded', 'true')

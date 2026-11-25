@@ -191,41 +191,35 @@ html[data-gesture='ne'] *, html[data-gesture='sw'] * { cursor: nesw-resize !impo
 #buoy-row { display: flex; align-items: center; width: max-content; height: 30px; padding: 0 3px 0 0; touch-action: none; }
 html.dragging #buoy, html.dragging #buoy * { cursor: grabbing !important; }
 #buoy.drop { background: var(--accent); color: #fff; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent), 0 4px 10px rgba(0, 0, 0, .2); transform: scale(1.06); }
-#buoy.drop #buoy-notice, #buoy.drop .buoy-ic { color: #fff; }
+#buoy.drop #buoy-notice, #buoy.drop #buoy-more { color: #fff; }
 #buoy-row button { color: inherit; }
 #buoy-row :focus-visible { outline-offset: 2px; }
-#buoy-main { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px 0 11px; border-radius: 999px; }
+#buoy-main { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 9px 0 11px; border-radius: 999px; }
 #buoy-main:hover { background: color-mix(in srgb, var(--buoy-ink) 5%, transparent); }
 #buoy-main[aria-expanded='true'] { background: color-mix(in srgb, var(--buoy-ink) 10%, transparent); }
 #buoy-name { max-width: 200px; overflow: hidden; font-weight: 600; letter-spacing: .005em; text-overflow: ellipsis; }
-#buoy-notice, #buoy-agents { font-size: 11px; color: var(--buoy-soft); }
-#buoy-agents { padding: 3px 7px; border-radius: 999px; background: color-mix(in srgb, var(--buoy-ink) 8%, transparent); }
-#buoy-agents:hover, #buoy-agents[aria-expanded='true'] { background: color-mix(in srgb, var(--buoy-ink) 14%, transparent); }
-/* Any agent tab finished and not yet looked at. */
-#buoy-unseen { position: absolute; top: -4px; right: -3px; width: 12px; height: 12px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 0 2px var(--buoy-bg); pointer-events: none; }
-#buoy.open #buoy-unseen { display: none; }
-#buoy-agents-list { position: fixed; z-index: 3; padding: 6px; border-radius: 14px; background: var(--buoy-bg); color: var(--buoy-ink); box-shadow: inset 0 0 0 1px var(--buoy-rim), 0 8px 24px rgba(0, 0, 0, .22), 0 1px 3px rgba(0, 0, 0, .12); list-style: none; overflow-x: hidden; overflow-y: auto; }
-#buoy-agents-list[hidden] { display: none; }
-.buoy-agent .when { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#buoy-unread { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 10px; font-weight: 600; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums; }
+#buoy-notice { font-size: 11px; color: var(--buoy-soft); }
 #buoy-row .update-pill { flex: none; height: 22px; margin: 0 4px 0 3px; padding: 0 9px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 600; }
 #buoy-row .update-pill[hidden] { display: none; }
 #buoy-row .update-pill:hover { background: color-mix(in srgb, var(--accent) 85%, #000); }
-#buoy-favs { display: flex; align-items: center; gap: 2px; padding: 0 4px 0 2px; }
-#buoy-favs[hidden] { display: none; }
-#buoy-row .buoy-fav { position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center; min-width: 22px; height: 22px; border-radius: 6px; }
-#buoy-row .buoy-fav:hover { background: color-mix(in srgb, var(--buoy-ink) 8%, transparent); }
-#buoy-row .buoy-fav.current { box-shadow: inset 0 0 0 1.5px var(--accent); }
-.buoy-fav .favicon { width: 16px; height: 16px; border-radius: 4px; }
-.buoy-fav .favicon.letter { background: color-mix(in srgb, var(--buoy-ink) 14%, transparent); color: var(--buoy-ink); font-size: 9px; }
+#buoy-dock { display: flex; align-items: center; gap: 2px; padding: 0 3px 0 0; }
+#buoy-dock[hidden] { display: none; }
+#buoy-row .buoy-tab { position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center; min-width: 22px; height: 22px; border-radius: 6px; }
+#buoy-row .buoy-tab:hover { background: color-mix(in srgb, var(--buoy-ink) 8%, transparent); }
+#buoy-row .buoy-tab.current { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.buoy-tab .favicon { width: 16px; height: 16px; border-radius: 4px; }
+.buoy-tab .favicon.letter { background: color-mix(in srgb, var(--buoy-ink) 14%, transparent); color: var(--buoy-ink); font-size: 9px; }
+/* A favorite whose page is not loaded. */
+.buoy-tab.closed .favicon { filter: grayscale(1); opacity: .42; }
 #buoy-row #buoy-more { padding: 0 5px; font-size: 11px; color: var(--buoy-soft); }
-#buoy-row #buoy-more:hover { color: var(--buoy-ink); }
-.buoy-sep { width: 1px; height: 14px; margin: 0 2px; background: var(--buoy-rim); }
-#buoy-row .buoy-ic { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 24px; border-radius: 999px; color: var(--buoy-soft); }
-#buoy-row .buoy-ic:hover { background: color-mix(in srgb, var(--buoy-ink) 5%, transparent); color: var(--buoy-ink); }
-.buoy-ic .icon { width: 16px; height: 16px; stroke-width: 1.7; }
-#buoy-row #buoy-tabs { width: auto; min-width: 26px; padding: 0 7px; font-size: 12px; }
-#buoy-row #buoy-tabs[aria-expanded='true'] { background: color-mix(in srgb, var(--buoy-ink) 10%, transparent); color: var(--buoy-ink); }
+#buoy-row #buoy-more:hover, #buoy-row #buoy-more[aria-expanded='true'] { color: var(--buoy-ink); }
+#buoy-row #buoy-more[aria-expanded='true'] { background: color-mix(in srgb, var(--buoy-ink) 10%, transparent); }
+.buoy-sep { width: 1px; height: 14px; margin: 0 4px; background: var(--buoy-rim); }
+/* Marks: an agent's state (a ring in the pill's colour so it parts from the icon), or the unread dot. */
+#buoy-row .buoy-tab .agent-dot { position: absolute; right: -1px; bottom: -1px; box-shadow: 0 0 0 1.5px var(--buoy-bg); }
+#buoy-row .buoy-tab .agent-dot[data-state='asking'] { background: #e5484d; }
+#buoy-row .buoy-tab .agent-dot[data-unseen] { box-shadow: 0 0 0 1.5px var(--buoy-bg), 0 0 0 3px rgba(47, 158, 91, .4); }
+.buoy-unread { position: absolute; top: 0; right: 0; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1.5px var(--buoy-bg); }
 @media (prefers-color-scheme: dark) {
   #buoy { box-shadow: inset 0 0 0 1px var(--buoy-rim), 0 4px 10px rgba(0, 0, 0, .55), 0 0 0 .5px rgba(0, 0, 0, .8); }
 }
@@ -398,10 +392,10 @@ html.tablist:not(.above) #tablist { --oy: -20px; }
 .set-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; padding: 4px 10px 2px; }
 .speaker { flex: none; display: inline-grid; place-items: center; color: var(--accent); }
 .speaker .icon { width: 14px; height: 14px; }
-.tile .speaker, .buoy-fav .speaker { position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); color: #fff; }
+.tile .speaker, .buoy-tab .speaker { position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); color: #fff; }
 .tile .speaker { left: 5px; bottom: 5px; box-shadow: 0 0 0 1.5px var(--hover); }
-.buoy-fav .speaker { right: -2px; bottom: -2px; box-shadow: 0 0 0 1.5px var(--buoy-bg); }
-.tile .speaker .icon, .buoy-fav .speaker .icon { width: 8px; height: 8px; stroke-width: 3; }
+.buoy-tab .speaker { right: -2px; bottom: -2px; box-shadow: 0 0 0 1.5px var(--buoy-bg); }
+.tile .speaker .icon, .buoy-tab .speaker .icon { width: 8px; height: 8px; stroke-width: 3; }
 .agent-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: color-mix(in srgb, var(--soft) 45%, transparent); }
 .agent-dot[data-status='ready'] { background: #2f9e5b; }
 .agent-dot[data-status='starting'] { background: var(--accent); }
@@ -532,7 +526,7 @@ html.tablist:not(.above) #tablist { --oy: -20px; }
 .palette-field:has(#palette-input:not(:placeholder-shown)) .palette-nav, .palette-field:has(#palette-site:not([hidden])) .palette-nav, .palette-field:has(#palette-ask:not([hidden])) .palette-nav { display: none; }
 
 @media (prefers-reduced-motion: no-preference) {
-  .dot-mark, .tile, .row, .text-btn, .icon-btn, #buoy-main, .buoy-ic { transition: background-color 120ms ease-out, box-shadow 120ms ease-out; }
+  .dot-mark, .tile, .row, .text-btn, .icon-btn, #buoy-main, .buoy-tab { transition: background-color 120ms ease-out, box-shadow 120ms ease-out; }
   .set, .set-btn, .switch { transition: background-color 120ms ease-out; }
   .switch::after, .chev { transition: transform 120ms ease-out; }
   #buoy { transition: transform 120ms ease-out, background-color 120ms ease-out; }
@@ -540,8 +534,8 @@ html.tablist:not(.above) #tablist { --oy: -20px; }
 }
 @keyframes import-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: no-preference) {
-  #buoy-main.swipe-next > :not(.count) { animation: buoy-swipe-next 220ms ease-out; }
-  #buoy-main.swipe-prev > :not(.count) { animation: buoy-swipe-prev 220ms ease-out; }
+  #buoy-main.swipe-next > :not(.count), #buoy-row:has(.swipe-next) #buoy-dock { animation: buoy-swipe-next 220ms ease-out; }
+  #buoy-main.swipe-prev > :not(.count), #buoy-row:has(.swipe-prev) #buoy-dock { animation: buoy-swipe-prev 220ms ease-out; }
 }
 @keyframes buoy-swipe-next { from { opacity: 0; transform: translateX(12px); } }
 @keyframes buoy-swipe-prev { from { opacity: 0; transform: translateX(-12px); } }
