@@ -1045,6 +1045,25 @@ test.describe('layer panel and Buoy', () => {
     expect(two).not.toBe(one)
   })
 
+  test('a real Escape key in the Buoy closes the card and leaves its window, so Cmd+T opens it again', async ({ skiff }) => {
+    const buoy = await shellPage(skiff, '/buoy.html')
+    await expect(buoy.locator('#buoy-name')).not.toBeEmpty()
+    await expect.poll(() => isHome(buoy)).toBe(true)
+    await skiff.shortcut('CmdOrCtrl+T')
+    await expect.poll(() => isOpen(buoy)).toBe(true)
+    await expect(buoy.locator('#palette-input')).toBeFocused()
+    // Playwright's keyboard arrives as rawKeyDown, which the main process ignores; a real key is keyDown.
+    await skiff.app.evaluate(({ webContents }, url) => {
+      const wc = webContents.getAllWebContents().find((c) => c.getURL() === url)
+      wc.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+      wc.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+    }, buoy.url())
+    await expect.poll(() => isHome(buoy)).toBe(true)
+    expect(buoy.isClosed()).toBe(false)
+    await skiff.shortcut('CmdOrCtrl+T')
+    await expect.poll(() => isOpen(buoy)).toBe(true)
+  })
+
   test('the command bar has one Ask row and no duplicate command, and the arrows move the highlight one row at a time, scrolling it into view', async ({ skiff }) => {
     await skiff.rpc('settings.set', { ai: { agents: [{ name: 'Fake', command: `'${process.execPath}' '${path.join(__dirname, 'fake-agent.js')}' '${skiff.root}'` }] } })
     await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })

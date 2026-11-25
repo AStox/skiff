@@ -832,7 +832,7 @@ function guardShell(wc) {
   wc.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown' || input.key !== 'Escape') return
     const entry = [...overlays].find(([, overlay]) => overlay.shown && overlay.host.webContents === wc)
-    if (!entry) return
+    if (!entry || entry[1].float) return
     event.preventDefault()
     const [name, overlay] = entry
     const id = overlay.loadOptions?.query?.id
