@@ -144,7 +144,7 @@ function tabRow(tab, current, depth) {
     onkeydown: (event) => moveTabWithKeyboard(event, tab)
   },
     h('button', { class: 'row-main', title: `${tab.url}\n${MOVE_HINT}${archiveNote(tab)}`, 'aria-keyshortcuts': MOVE_KEYS, 'aria-current': current ? 'true' : null, onclick: () => show(tab) },
-      statusMark(tab.bucket), favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), h('span', { class: 'sr-only' }, `, ${CHIPS.find(([key]) => key === tab.bucket)?.[1].toLowerCase() || tab.bucket}`), rowEnd(tab)),
+      !tab.pinned && statusMark(tab.bucket), favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), h('span', { class: 'sr-only' }, `, ${CHIPS.find(([key]) => key === tab.bucket)?.[1].toLowerCase() || tab.bucket}`), rowEnd(tab)),
     !tab.pinned && eye(tab, shown),
     closeButton(tab))
   if (depth != null) row.style.setProperty('--depth', String(Math.min(depth, 6)))
@@ -206,6 +206,11 @@ function groupHead(space, count) {
   const dot = h('span', { class: 'space-dot', 'aria-hidden': 'true' })
   dot.style.setProperty('background', space.color)
   return h('li', { class: 'list-head space', 'data-static': true, 'data-space-head': space.id }, dot, h('span', { class: 'label' }, space.name), h('span', { class: 'count' }, String(count)))
+}
+
+// The label over the open space's pinned block in the All view; the rows carry no pin of their own.
+function pinnedHead(count) {
+  return h('li', { class: 'list-head space', 'data-static': true, 'data-pinned-head': true }, h('span', { class: 'label' }, 'Pinned'), h('span', { class: 'count' }, String(count)))
 }
 
 // Every other space's open tabs, flat under its head: its loaded favorites and pinned tabs first, then its ordinary tabs in status order.
@@ -1435,7 +1440,7 @@ function renderPanel() {
       const empty = !all && !any(ui.filter === 'later' ? pins : statuses) && CHIPS.find(([key]) => key === ui.filter)[2]
       return [
         statuses,
-        all && any(statuses) && any(pins) && h('li', { class: 'list-gap', 'data-static': true, 'aria-hidden': 'true' }),
+        all && any(pins) && pinnedHead(tabs.filter((t) => t.pinned && !t.userPeek).length),
         pins,
         empty && h('li', { class: 'hint', 'data-static': true }, empty),
         h('li', { class: 'row quiet', 'data-new-tab': true }, h('button', { id: 'new-tab', class: 'row-main', onclick: () => bar.focus() }, icon('plus'), h('span', { class: 'label' }, 'New tab'))),
