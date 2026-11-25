@@ -12,7 +12,7 @@ const WORK = {
   light: { color: '#e4ecfd', colors: ['#4b79f8', '#f7cc35'], overlayColors: [], intensity: 0.37948843149038464 },
   dark: { color: '#001447', colors: ['#4b79f8', '#f7cc35'], overlayColors: [], intensity: 0.37948843149038464 }
 }
-const TEXT = '#space-head h1, #list .label'
+const TEXT = '#list .label'
 
 const hue = ([r, g, b]) => {
   const max = Math.max(r, g, b)

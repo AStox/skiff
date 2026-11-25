@@ -26,6 +26,8 @@
   <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 2.25c.6 4.95 2.85 7.65 8.25 9.75-5.4 2.1-7.65 4.8-8.25 9.75-.6-4.95-2.85-7.65-8.25-9.75C9.15 9.9 11.4 7.2 12 2.25z"/></symbol>
   <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
   <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6a1.4 1.4 0 0 1-1 .4H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5z"/><path d="M16 9a5 5 0 0 1 0 6M19.4 18.4a9 9 0 0 0 0-12.8"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 17v5M9 10.8V4h6v6.8l3 3.2v2H6v-2z"/></symbol>
 </svg>
 
 <div id="buoy" role="group" aria-label="Skiff">
@@ -46,7 +48,11 @@
       <span id="palette-site" hidden></span>
       <span id="palette-ask" hidden></span>
       <input id="palette-input" type="text" role="combobox" aria-label="Search or enter address" placeholder="Search or enter address" spellcheck="false" autocomplete="off" autocapitalize="off" aria-autocomplete="both" aria-expanded="false" aria-controls="palette-results">
-      <span class="palette-hint mono" aria-hidden="true">esc</span>
+      <span class="palette-nav">
+        <button id="back" class="icon-btn" aria-label="Back" title="Back"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg></button>
+        <button id="forward" class="icon-btn" aria-label="Forward" title="Forward"><svg class="icon" aria-hidden="true"><use href="#i-forward"/></svg></button>
+        <button id="reload" class="icon-btn" aria-label="Reload" title="Reload"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg></button>
+      </span>
     </div>
     <div id="palette-tools" hidden>
       <label class="palette-pill"><select id="palette-agent" aria-label="Agent"></select><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg></label>
@@ -58,13 +64,8 @@
     <div id="palette-hair" aria-hidden="true"></div>
     <ul id="palette-results" role="listbox" aria-label="Results" hidden></ul>
     <div id="sidebar">
-      <div id="top">
-        <button id="back" class="icon-btn" aria-label="Back" title="Back"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg></button>
-        <button id="forward" class="icon-btn" aria-label="Forward" title="Forward"><svg class="icon" aria-hidden="true"><use href="#i-forward"/></svg></button>
-        <button id="reload" class="icon-btn" aria-label="Reload" title="Reload"><svg class="icon" aria-hidden="true"><use href="#i-reload"/></svg></button>
-      </div>
-
       <div id="favorites" aria-label="Favorites"></div>
+      <div id="chips" role="group" aria-label="Filter tabs"></div>
       <div id="space-head"></div>
       <ul id="list" aria-label="Tabs"></ul>
       <section id="panel" aria-label="Settings" hidden></section>

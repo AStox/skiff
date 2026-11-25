@@ -36,8 +36,8 @@ async function openCard(buoy) {
   await expect.poll(() => isOpen(buoy)).toBe(true)
 }
 const centre = (locator) => locator.evaluate((el) => { const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })
-// A real pointer drag: the drop areas appear after dragstart, so the target is measured after the first frames.
-async function dragRow(buoy, source, target) {
+// A real pointer drag onto a chip: the chip takes the outline, there is no preview row, and the release sets the status.
+async function dragToChip(buoy, source, target) {
   const from = await centre(source)
   await buoy.mouse.move(from.x, from.y)
   await buoy.mouse.down()
@@ -45,17 +45,19 @@ async function dragRow(buoy, source, target) {
   await buoy.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
   const to = await centre(target)
   await buoy.mouse.move(to.x, to.y)
-  await expect(buoy.locator('.ghost')).toHaveCount(1)
+  await expect(target).toHaveClass(/drop-target/)
+  await expect(buoy.locator('.ghost')).toHaveCount(0)
   await buoy.mouse.up()
 }
 
-test('the Layer card lists tabs and threads in six sections that follow their buckets, and the pill counts what is unread', async ({ skiff }) => {
+test('the Layer card lists tabs and threads in one list that follows their buckets, and the pill counts what is unread', async ({ skiff }) => {
   await skiff.rpc('settings.set', { ai: { agents: [{ name: 'Fake', command: `'${process.execPath}' '${fakeAgent}' '${skiff.root}'` }] } })
   const home = await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
   await skiff.page('/one')
   const buoy = await skiff.bar()
   const row = (id) => buoy.locator(`#list li.row[data-tab-id="${id}"]`)
-  const sections = () => buoy.locator('#list [data-bucket]').evaluateAll((heads) => heads.map((head) => head.dataset.bucket))
+  const chip = (name) => buoy.locator(`#chips .chip[data-filter="${name}"]`)
+  const sections = () => buoy.locator('#list li.row[data-section]').evaluateAll((rows) => rows.map((r) => r.dataset.section))
   const unread = buoy.locator('#buoy-unread')
   await expect(unread).toBeHidden()
 
@@ -65,7 +67,8 @@ test('the Layer card lists tabs and threads in six sections that follow their bu
   await expect(unread).toHaveText('1')
   await openCard(buoy)
   await expect(row(page.id)).toHaveAttribute('data-section', 'unread')
-  await expect(buoy.locator('#list [data-bucket="unread"]')).toHaveText(/Unread\s*1/)
+  await expect(chip('unread')).toHaveText(/Unread\s*1/)
+  await expect(buoy.locator('#list .list-head.section')).toHaveCount(0)
   expect(await sections()).toEqual(['unread', 'active'])
   await expect(row(page.id).locator('.label')).toHaveCSS('font-weight', '600')
 
@@ -76,17 +79,19 @@ test('the Layer card lists tabs and threads in six sections that follow their bu
   await expect(unread).toBeHidden()
   await openCard(buoy)
   await expect(row(page.id)).toHaveAttribute('data-section', 'active')
-  expect(await sections()).toEqual(['active'])
+  expect(await sections()).toEqual(['active', 'active'])
 
-  // A drag to an empty section drops on its dashed area; Pinned and Done need no row of their own first.
-  await dragRow(buoy, row(page.id), buoy.locator('#list [data-zone="later"]'))
+  // A drag onto a chip sets that status, however empty it is; Pinned and Done need no row of their own first.
+  await dragToChip(buoy, row(page.id), chip('later'))
   await expect.poll(() => bucketOf(skiff, page.id)).toBe('later')
   await expect(row(page.id)).toHaveAttribute('data-section', 'later')
+  await expect(row(page.id).locator('.mark svg')).toBeVisible()
   expect(await sections()).toEqual(['active', 'later'])
-  await dragRow(buoy, row(page.id), buoy.locator('#list [data-zone="done"]'))
+  await dragToChip(buoy, row(page.id), chip('done'))
   await expect.poll(() => bucketOf(skiff, page.id)).toBe('done')
   await expect(row(page.id)).toHaveAttribute('data-section', 'done')
-  await expect(row(page.id).locator('.when')).toHaveText('archives in 24 h')
+  await expect(row(page.id).locator('.row-main')).toHaveAttribute('title', /archives in 24 h/)
+  await expect(row(page.id).locator('.when')).toHaveCount(0)
   expect(await sections()).toEqual(['active', 'done'])
 
   // A thread runs in In Progress beside the pages, then lands in Unread among them while the card is open.
@@ -95,10 +100,10 @@ test('the Layer card lists tabs and threads in six sections that follow their bu
   const { tabId } = await skiff.rpc('ai.ask', { text: 'slow reply please', agent: 'Fake' })
   await skiff.rpc('tabs.activate', { id: home.id })
   await expect(row(tabId)).toHaveAttribute('data-section', 'progress')
-  await expect(row(tabId).locator('.spinner')).toBeVisible()
-  await expect(row(tabId).locator('.when')).toHaveText('Fake')
+  await expect(row(tabId).locator('.mark[data-mark="progress"]')).toBeVisible()
+  await expect(row(tabId).locator('.when')).toHaveText('Fake working')
   await expect(row(tabId).locator('.favicon')).toBeVisible()
-  // In Progress is not a drop target: no preview over it, and a release changes nothing.
+  // In Progress is not a drop target: no preview over it, no outline on its chip, and a release changes nothing.
   const from = await centre(row(page.id))
   await buoy.mouse.move(from.x, from.y)
   await buoy.mouse.down()
@@ -108,10 +113,14 @@ test('the Layer card lists tabs and threads in six sections that follow their bu
   await buoy.mouse.move(over.x, over.y)
   await buoy.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
   await expect(buoy.locator('.ghost')).toHaveCount(0)
+  const progress = await centre(chip('progress'))
+  await buoy.mouse.move(progress.x, progress.y)
+  await buoy.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  await expect(chip('progress')).not.toHaveClass(/drop-target/)
   await buoy.mouse.up()
   expect(await bucketOf(skiff, page.id)).toBe('done')
   await expect(row(tabId)).toHaveAttribute('data-section', 'unread', { timeout: 20_000 })
-  await expect(buoy.locator('#list [data-bucket="unread"]')).toHaveText(/Unread\s*2/)
+  await expect(chip('unread')).toHaveText(/Unread\s*2/)
   await expect(unread).toHaveText('2')
   expect(await buoy.locator('#list li.row[data-section="unread"]').evaluateAll((rows) => rows.map((r) => r.dataset.tabId).sort())).toEqual([later.id, tabId].sort())
 
@@ -119,4 +128,78 @@ test('the Layer card lists tabs and threads in six sections that follow their bu
   await row(home.id).locator('.row-main').focus()
   await buoy.keyboard.press('Alt+Shift+ArrowDown')
   await expect.poll(() => bucketOf(skiff, home.id)).toBe('done')
+})
+
+test('a chip filters the list to one status, shows an empty line, and the card opens on All again', async ({ skiff }) => {
+  const home = await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
+  await skiff.page('/one')
+  const other = await skiff.rpc('tabs.create', { url: skiff.origin + '/two', activate: false })
+  await expect.poll(() => bucketOf(skiff, other.id)).toBe('unread')
+  const space = await skiff.rpc('spaces.create', { name: 'Elsewhere', color: '#2f9e5b' })
+  await skiff.rpc('tabs.create', { url: skiff.origin + '/away', spaceId: space.id, activate: false })
+  const buoy = await skiff.bar()
+  await openCard(buoy)
+  const chip = (name) => buoy.locator(`#chips .chip[data-filter="${name}"]`)
+  const rows = () => buoy.locator('#list li.row[data-tab-id]').evaluateAll((els) => els.map((el) => el.dataset.tabId))
+  const pressed = () => buoy.locator('#chips .chip[aria-pressed="true"]').evaluateAll((els) => els.map((el) => el.dataset.filter))
+
+  expect(await pressed()).toEqual(['all'])
+  await expect(buoy.locator('#space-head')).toBeHidden()
+  await expect(chip('all')).toHaveText(/All\s*2/)
+  await expect(chip('later')).toHaveText(/Pinned\s*0/)
+  await expect(buoy.locator('#list .list-head.space')).toHaveCount(1)
+  expect((await rows()).slice(0, 2)).toEqual([other.id, home.id])
+
+  await chip('unread').click()
+  expect(await pressed()).toEqual(['unread'])
+  expect(await rows()).toEqual([other.id])
+  await expect(buoy.locator('#list .list-head.space')).toHaveCount(0)
+
+  await chip('later').click()
+  expect(await pressed()).toEqual(['later'])
+  expect(await rows()).toEqual([])
+  await expect(buoy.locator('#list .hint')).toHaveText('No pinned tabs')
+
+  await chip('all').click()
+  expect(await pressed()).toEqual(['all'])
+  expect(await rows()).toHaveLength(3)
+
+  await chip('active').click()
+  await buoy.keyboard.press('Escape')
+  await expect.poll(() => isOpen(buoy)).toBe(false)
+  await openCard(buoy)
+  expect(await pressed()).toEqual(['all'])
+})
+
+test('dropping a row on a chip sets that status, and All and In progress take no drop', async ({ skiff }) => {
+  await skiff.rpc('tabs.create', { url: skiff.origin + '/one' })
+  await skiff.page('/one')
+  const mover = await skiff.rpc('tabs.create', { url: skiff.origin + '/two', activate: false })
+  await expect.poll(() => bucketOf(skiff, mover.id)).toBe('unread')
+  const buoy = await skiff.bar()
+  await openCard(buoy)
+  const chip = (name) => buoy.locator(`#chips .chip[data-filter="${name}"]`)
+  const row = buoy.locator(`#list li.row[data-tab-id="${mover.id}"]`)
+
+  await dragToChip(buoy, row, chip('done'))
+  await expect.poll(() => bucketOf(skiff, mover.id)).toBe('done')
+  await expect(chip('done')).toHaveText(/Done\s*1/)
+
+  await dragToChip(buoy, buoy.locator(`#list li.row[data-tab-id="${mover.id}"]`), chip('later'))
+  await expect.poll(() => bucketOf(skiff, mover.id)).toBe('later')
+  expect((await skiff.state()).tabs.find((t) => t.id === mover.id).pinned).toBe(true)
+
+  const source = buoy.locator(`#list li.row[data-tab-id="${mover.id}"]`)
+  const from = await centre(source)
+  await buoy.mouse.move(from.x, from.y)
+  await buoy.mouse.down()
+  await buoy.mouse.move(from.x + 4, from.y + 4, { steps: 2 })
+  await buoy.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  const to = await centre(chip('all'))
+  await buoy.mouse.move(to.x, to.y)
+  await buoy.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  await expect(chip('all')).not.toHaveClass(/drop-target/)
+  await buoy.mouse.up()
+  await buoy.waitForTimeout(200)
+  expect(await bucketOf(skiff, mover.id)).toBe('later')
 })

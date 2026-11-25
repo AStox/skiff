@@ -130,7 +130,7 @@ test('an agent tab starts as a hidden desk window with a badge and dot, picking 
   await skiff.card()
   const row = buoy.locator(`#list [data-tab-id="${tab.id}"]`)
   await expect(row.locator('.label')).toHaveText('Agent one')
-  await expect(row.locator('.agent-badge')).toHaveText('omp')
+  await expect(row.locator('.when')).toHaveText('omp working')
   await expect(row.locator('.agent-dot')).toHaveAttribute('data-state', 'working')
   await expect(row).toHaveClass(/hidden-win/)
 

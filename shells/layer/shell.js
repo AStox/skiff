@@ -2,12 +2,8 @@
 
 const SWATCHES = ['#4f6bed', '#7c5ce0', '#d6336c', '#c2700e', '#2f9e5b', '#5f6b7a']
 const relative = new Intl.RelativeTimeFormat(undefined, { style: 'narrow' })
-// Fixed to en-GB so the list reads 13:40, Thu 18:20 and 12 Nov whatever the system locale.
-const clock = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
-const weekday = new Intl.DateTimeFormat('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
-const calendar = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' })
 
-const ui = { archive: false, settings: false, renaming: false, imported: '', filling: false, quick: [], quickKey: '', quickRequest: 0, extensions: [], agents: [], agentForm: null, agentError: '', warmed: '' }
+const ui = { archive: false, settings: false, renaming: false, filter: 'all', imported: '', filling: false, quick: [], quickKey: '', quickRequest: 0, extensions: [], agents: [], agentForm: null, agentError: '', warmed: '' }
 const drawn = {}
 const importDialog = $('arc-import')
 let importer = null
@@ -44,14 +40,6 @@ function ago(time) {
   if (minutes > -60) return relative.format(minutes, 'minute')
   if (minutes > -1440) return relative.format(Math.round(minutes / 60), 'hour')
   return relative.format(Math.round(minutes / 1440), 'day')
-}
-
-// When a tab was opened: the time today, the weekday this week, the date beyond.
-function opened(time) {
-  const date = new Date(time)
-  if (date.toDateString() === new Date().toDateString()) return clock.format(date)
-  if (Date.now() - time < 6 * 864e5) return weekday.format(date)
-  return calendar.format(date)
 }
 
 function section(id, key, build) {
@@ -95,35 +83,52 @@ const MOVE_KEYS = 'Alt+Shift+ArrowUp Alt+Shift+ArrowDown Alt+Shift+ArrowLeft Alt
 // Every ordinary tab is a window: its eye hides it from the desk or shows it again.
 function eye(tab, shown) {
   const title = shown ? 'Hide window' : 'Show window'
-  return h('button', { class: `icon-btn eye${shown ? ' reveal' : ''}`, title, 'aria-label': title, 'aria-pressed': String(!shown), onclick: () => call(shown ? 'desk.hide' : 'desk.show', { id: tab.id }) }, icon(shown ? 'eye' : 'eye-off'))
+  return h('button', { class: 'icon-btn eye reveal', title, 'aria-label': title, 'aria-pressed': String(!shown), onclick: () => call(shown ? 'desk.hide' : 'desk.show', { id: tab.id }) }, icon(shown ? 'eye' : 'eye-off'))
 }
 
-// The card's order: the status sections under Open Tabs, then Pinned.
+// The open space's order: its status sections, then Pinned. Each is a chip of the card and a drop target.
 const SECTIONS = [['unread', 'Unread'], ['active', 'Active'], ['progress', 'In Progress'], ['done', 'Done'], ['later', 'Pinned']]
 const BUCKET_NAMES = Object.fromEntries([['favorites', 'Favorites'], ...SECTIONS])
 const BUCKETS = Object.keys(BUCKET_NAMES)
 // tabs.move orders among the tabs of one kind (and folder and parent), whatever their bucket.
 const kindOf = (bucket) => bucket === 'favorites' || bucket === 'later' ? bucket : 'plain'
 const DONE_MS = 24 * 36e5
+// The filter chips: bucket, label, and the line shown when the filter has no tabs.
+const CHIPS = [['unread', 'Unread', 'No unread tabs'], ['active', 'Active', 'No active tabs'], ['progress', 'In progress', 'No tabs in progress'], ['done', 'Done', 'No done tabs'], ['later', 'Pinned', 'No pinned tabs']]
 
 function archivesIn(doneAt) {
   const minutes = Math.round((doneAt + DONE_MS - Date.now()) / 6e4)
   return minutes < 1 ? 'archives soon' : minutes < 60 ? `archives in ${minutes} min` : `archives in ${Math.round(minutes / 60)} h`
 }
 
-function when(tab) {
-  if (tab.bucket === 'done' && tab.doneAt) return archivesIn(tab.doneAt)
-  if (tab.chat) return tab.chat.agent
-  return !tab.pinned && tab.createdAt ? opened(tab.createdAt) : null
+const archiveNote = (tab) => (tab.bucket === 'done' && tab.doneAt ? `\n${archivesIn(tab.doneAt)}` : '')
+
+// The status of a row of the open space, drawn the same in the chips: a dot, a ring, a broken ring, a check or a pin.
+function statusMark(bucket) {
+  return h('span', { class: 'mark', 'data-mark': bucket, 'aria-hidden': 'true' }, bucket === 'done' ? icon('check') : bucket === 'later' ? icon('pin') : null)
 }
 
 const closeButton = (tab) => h('button', { class: 'icon-btn reveal', title: 'Close tab', 'aria-label': 'Close tab', onclick: () => call('tabs.close', { id: tab.id }) }, icon('x'))
 
+// The end of a row says only who an agent is and what it does; the dot is its state (green when done, a ring while it works).
+// A conversation tab has no agent state of its own: its turn running puts it In Progress, a finished one Unread or Done.
+function agentEnd(tab) {
+  const name = agentNameOf(tab) || tab.chat?.agent
+  if (!name) return null
+  const state = tab.agentRequest ? 'asking' : tab.agentState || { progress: 'working', unread: 'done', done: 'done' }[tab.bucket] || 'idle'
+  const dot = tab.agentState || tab.agentRequest ? agentDot(tab) : h('span', { class: 'agent-dot', 'data-state': state })
+  dot.setAttribute('aria-hidden', 'true')
+  const word = tab.agentRequest ? 'asks' : AGENT_STATES[state] || state
+  return h('span', { class: 'who' }, dot, h('span', { class: 'when' }, `${name} ${word}`))
+}
+
+const rowEnd = (tab) => [speaker(tab), agentEnd(tab)]
+
 // A row of another space: a click goes there, and it can be closed. Moves belong to the open space's rows, so it has no drag, keys or eye.
 function otherRow(tab, depth) {
   const row = h('li', { class: `row${tab.loading ? ' loading' : ''}`, 'data-tab-id': tab.id, 'data-static': true },
-    h('button', { class: 'row-main', title: tab.url, onclick: () => show(tab) },
-      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), speaker(tab), agentBadge(tab), agentDot(tab)),
+    h('button', { class: 'row-main', title: `${tab.url}${archiveNote(tab)}`, onclick: () => show(tab) },
+      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), rowEnd(tab)),
     closeButton(tab))
   if (depth) row.style.setProperty('--depth', String(Math.min(depth, 6)))
   return row
@@ -138,8 +143,8 @@ function tabRow(tab, current, depth) {
     ondragstart: (event) => startDrag(event, 'tab', tab.id),
     onkeydown: (event) => moveTabWithKeyboard(event, tab)
   },
-    h('button', { class: 'row-main', title: `${tab.url}\n${MOVE_HINT}`, 'aria-keyshortcuts': MOVE_KEYS, 'aria-current': current ? 'true' : null, onclick: () => show(tab) },
-      favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), tab.bucket === 'unread' && h('span', { class: 'sr-only' }, ', unread'), tab.bucket === 'progress' && h('span', { class: 'spinner', 'aria-hidden': 'true' }), speaker(tab), agentBadge(tab), agentDot(tab), when(tab) && h('span', { class: 'when' }, when(tab))),
+    h('button', { class: 'row-main', title: `${tab.url}\n${MOVE_HINT}${archiveNote(tab)}`, 'aria-keyshortcuts': MOVE_KEYS, 'aria-current': current ? 'true' : null, onclick: () => show(tab) },
+      statusMark(tab.bucket), favicon(tab), h('span', { class: 'label' }, tab.title || tab.url), h('span', { class: 'sr-only' }, `, ${CHIPS.find(([key]) => key === tab.bucket)?.[1].toLowerCase() || tab.bucket}`), rowEnd(tab)),
     !tab.pinned && eye(tab, shown),
     closeButton(tab))
   if (depth != null) row.style.setProperty('--depth', String(Math.min(depth, 6)))
@@ -166,11 +171,6 @@ function folderRow(space, folder, open, count, toggle = () => call('folders.setC
       icon('folder'), h('span', { class: 'label' }, folder), !open && h('span', { class: 'when' }, String(count)), h('span', { class: 'chevron' }, icon('chevron-down'))))
 }
 
-// Another space's heads are not drop slots, so they carry no bucket.
-function sectionHead(bucket, count, passive) {
-  return h('li', { class: 'list-head section', 'data-bucket': passive ? null : bucket, 'data-static': passive || null }, h('span', { class: 'label' }, BUCKET_NAMES[bucket]), h('span', { class: 'count' }, String(count)))
-}
-
 // Later: folders first, then loose tabs, as the mock lays them out.
 function laterRows(space, pinned, row) {
   const folders = [...new Set(pinned.map((t) => t.folder).filter(Boolean))]
@@ -187,21 +187,28 @@ function laterRows(space, pinned, row) {
   ]
 }
 
-// One space's ordinary tabs by status; Pinned is drawn apart, below Open Tabs.
-function statusRows(tabs, row, passive) {
-  return SECTIONS.filter(([bucket]) => bucket !== 'later').map(([bucket]) => {
-    const inside = tabs.filter((t) => t.bucket === bucket)
-    return inside.length ? [sectionHead(bucket, inside.length, passive), trail(inside).map(([t, depth]) => row(t, depth))] : []
-  })
+// One space's ordinary tabs by status, or only one status.
+function statusRows(tabs, row, only) {
+  return SECTIONS.filter(([bucket]) => bucket !== 'later' && (!only || bucket === only)).map(([bucket]) => trail(tabs.filter((t) => t.bucket === bucket)).map(([t, depth]) => row(t, depth)))
 }
 
+// The browser-tools component replaces this to draw folders, empty ones too.
 function pinnedRows(space, pinned, row) {
-  return pinned.length ? [sectionHead('later', pinned.length), laterRows(space, pinned, row)] : []
+  return pinned.length ? laterRows(space, pinned, row) : []
 }
 
-const groupHead = (space, current) => h('li', { class: 'list-head space', 'data-static': true, 'data-space-head': space.id, 'data-current': current || null }, h('span', { class: 'label' }, `${space.name}${current ? ' · this space' : ''}`))
+const chipRow = (counts) => [...CHIPS.map(([key, label]) => [key, label]), ['all', 'All']].map(([key, label]) => h('button', {
+  class: `chip${key === 'all' ? ' all' : ''}`, type: 'button', 'data-filter': key, 'aria-pressed': String(ui.filter === key),
+  onclick: () => { ui.filter = key; renderPanel() }
+}, key !== 'all' && statusMark(key), label, h('span', { class: 'n' }, String(counts[key]))))
 
-// Every other space's open tabs: its loaded favorites and pinned tabs first, then its ordinary tabs by status.
+function groupHead(space, count) {
+  const dot = h('span', { class: 'space-dot', 'aria-hidden': 'true' })
+  dot.style.setProperty('background', space.color)
+  return h('li', { class: 'list-head space', 'data-static': true, 'data-space-head': space.id }, dot, h('span', { class: 'label' }, space.name), h('span', { class: 'count' }, String(count)))
+}
+
+// Every other space's open tabs, flat under its head: its loaded favorites and pinned tabs first, then its ordinary tabs in status order.
 function otherGroups(space) {
   return state.spaces.filter((s) => s.id !== space.id).map((s) => {
     const mine = state.tabs.filter((t) => t.spaceId === s.id && !t.userPeek)
@@ -858,8 +865,7 @@ function spaceHead(space, count, windows) {
   const dot = !ui.archive && h('span', { class: 'space-dot', 'aria-hidden': 'true' })
   if (!ui.renaming) return [
     dot,
-    h('h1', { title: space.name, ondblclick: () => { if (plain && !space.incognito) { ui.renaming = true; renderPanel() } } }, ui.settings ? 'Settings' : ui.archive ? 'Archive' : space.name),
-    plain && !space.incognito && h('button', { id: 'rename-space', class: 'icon-btn', title: 'Rename space', 'aria-label': 'Rename space', onclick: () => { ui.renaming = true; renderPanel() } }, icon('edit')),
+    h('h1', { title: space.name }, ui.settings ? 'Settings' : ui.archive ? 'Archive' : space.name),
     plain && space.incognito && h('button', { id: 'close-incognito', class: 'icon-btn', title: 'Close Incognito', 'aria-label': 'Close Incognito', onclick: () => call('spaces.remove', { id: space.id }) }, icon('x')),
     plain && h('span', { id: 'space-count', class: 'count' }, `${windowCount(windows)}, ${tabCount(count)}`),
     plain && space.incognito && h('p', { id: 'incognito-hint', class: 'hint' }, 'Nothing here is saved.')
@@ -877,7 +883,6 @@ function spaceHead(space, count, windows) {
     if (e.key === 'Enter' || e.key === 'Escape') {
       e.preventDefault()
       finish(e.key === 'Enter')
-      $('rename-space')?.focus()
     }
   })
   return input
@@ -1020,15 +1025,6 @@ function showDropZones() {
     $('favorites').hidden = false
     drag.shifted = true
   }
-  const head = (name) => $('list').querySelector(`[data-bucket="${name}"]`)
-  SECTIONS.forEach(([bucket], i) => {
-    if (bucket === 'progress' || head(bucket)) return
-    // An empty status section goes before the next one, else before the other spaces' groups, which lie between the status sections and Pinned.
-    const next = SECTIONS.slice(i + 1).map(([name]) => name)
-    const later = (bucket === 'later' ? null : next.filter((name) => name !== 'later').map(head).find(Boolean) || $('list').querySelector('[data-space-head]:not([data-current])') || head('later')) || $('list').querySelector('[data-new-tab]')
-    later.before(h('li', { class: 'drop-zone', 'data-zone': bucket }, BUCKET_NAMES[bucket]))
-    drag.shifted = true
-  })
 }
 
 const isIncognito = (spaceId) => Boolean(state.spaces.find((space) => space.id === spaceId)?.incognito)
@@ -1087,6 +1083,13 @@ function tabTarget(event) {
     const id = dot.dataset.spaceId
     return id === tab.spaceId || isIncognito(id) !== isIncognito(tab.spaceId) ? null : { space: id }
   }
+  const chip = event.target.closest('#chips .chip')
+  if (chip) {
+    const bucket = chip.dataset.filter
+    // All has nothing to set, In progress is set by the work itself, and the tab's own status is no move.
+    if (bucket === 'all' || bucket === 'progress' || (bucket === tab.bucket && !(bucket === 'later' && tab.folder))) return null
+    return { bucket, folder: '', parent: '', chip: true }
+  }
   const box = event.target.closest('#favorites, #list')
   if (!box || box.hidden || ui.archive || ui.settings) return null
   const { clientX: x, clientY: y } = event
@@ -1101,7 +1104,7 @@ function tabTarget(event) {
   // Over its own preview the slot holds, so a still pointer never makes the ghost jump.
   if (!near || near.classList.contains('ghost')) return near ? drag.target : null
   if (near.dataset.tabId === tab.id) return null
-  const group = { bucket: grid ? 'favorites' : near.dataset.zone || near.dataset.bucket || near.dataset.section || 'later', folder: '', parent: '' }
+  const group = { bucket: grid ? 'favorites' : near.dataset.section || 'later', folder: '', parent: '' }
   if ('folderHead' in near.dataset) {
     Object.assign(group, { folder: near.dataset.folderHead, head: true })
     if (state.collapsed[`${tab.spaceId}/${group.folder}`]) return tab.pinned && tab.folder === group.folder ? null : group
@@ -1123,6 +1126,7 @@ function tabTarget(event) {
 }
 
 function dropMessage(tab, target) {
+  if (target.chip) return `Drop to move to ${BUCKET_NAMES[target.bucket]}.`
   if (target.space) return `Drop to move to ${state.spaces.find((space) => space.id === target.space)?.name || 'that space'}.`
   const position = target.index === undefined ? '' : `, position ${target.index + 1}`
   if (target.bucket === tab.bucket && target.folder === (tab.folder || '')) return `Drop to move to position ${target.index + 1}.`
@@ -1137,7 +1141,6 @@ function preview(target) {
   const tab = state.tabs.find((item) => item.id === drag.id)
   const source = sourceOf(drag.id)
   document.querySelector('.ghost')?.remove()
-  $('list').querySelectorAll('.drop-zone').forEach((zone) => { zone.hidden = false })
   clearDropMarker()
   source?.classList.remove('drag-dim', 'drag-hide')
   const message = target && tab ? dropMessage(tab, target) : ''
@@ -1150,6 +1153,7 @@ function preview(target) {
     source?.classList.add('drag-dim')
   }
   if (target.space) return caption(`Move to ${state.spaces.find((space) => space.id === target.space)?.name}`, $('dots').querySelector(`[data-space-id="${CSS.escape(target.space)}"]`))
+  if (target.chip) return caption(`Move to ${BUCKET_NAMES[target.bucket]}`, $('chips').querySelector(`[data-filter="${target.bucket}"]`))
   const folderHead = target.folder && [...$('list').querySelectorAll('[data-folder-head]')].find((el) => el.dataset.folderHead === target.folder)
   if (target.index === undefined) return caption(`Add to ${target.folder}`, folderHead)
   const depth = target.parent ? Number(source?.dataset.depth) : 0
@@ -1161,17 +1165,13 @@ function preview(target) {
   ghost.inert = true
   const peers = groupPeers(drag.id, target)
   const later = [...$('list').querySelectorAll(':scope > [data-section="later"], :scope > [data-folder-head]')]
-  const head = $('list').querySelector(`[data-bucket="${target.bucket}"], [data-zone="${target.bucket}"]`)
   if (peers[target.index]) peers[target.index].before(ghost)
   else if (peers.length) blockEnd(peers.at(-1)).after(ghost)
   else if (target.bucket === 'favorites') $('favorites').append(ghost)
   else if (folderHead) folderHead.after(ghost)
   // Loose Later tabs sit after the folders.
   else if (target.bucket === 'later' && later.length) later.at(-1).after(ghost)
-  else if (head) {
-    if (head.classList.contains('drop-zone')) head.hidden = true
-    head.after(ghost)
-  } else $('list').querySelector('[data-new-tab]').before(ghost)
+  else $('list').querySelector('[data-new-tab]').before(ghost)
   source?.classList.add(target.bucket === tab.bucket ? 'drag-hide' : 'drag-dim')
 }
 
@@ -1292,7 +1292,13 @@ function renderPanel() {
 
   if (!holds) section('favorites', [favorites, tab?.id], () => favorites.map((t) => favoriteTile(t, t.id === tab?.id)))
   const plain = state.tabs.filter((t) => !t.favorite && !t.pinned && t.spaceId === space.id).length
+  // The title row is for Settings, Archive, a rename and Incognito's close button; an ordinary space's name is on the Buoy.
+  $('space-head').hidden = !(ui.settings || ui.archive || ui.renaming || space.incognito)
   section('space-head', [space.id, space.name, plain, windows, ui.renaming, ui.settings, ui.archive], () => spaceHead(space, plain, windows))
+  const counts = { all: tabs.length, ...Object.fromEntries(CHIPS.map(([key]) => [key, tabs.filter((t) => t.bucket === key).length])) }
+  $('chips').hidden = ui.settings || ui.archive
+  if (!holds) section('chips', counts, () => chipRow(counts))
+  for (const chip of $('chips').children) chip.setAttribute('aria-pressed', String(chip.dataset.filter === ui.filter))
   section('dots', state.spaces.map((s) => [s.id, s.name, s.color, s.incognito]), () => state.spaces.map((s) => spaceDot(s, s.id === space.id)))
   if (drawn.activeSpaceId !== space.id) {
     const from = state.spaces.findIndex((s) => s.id === drawn.activeSpaceId)
@@ -1305,7 +1311,7 @@ function renderPanel() {
     $('dots').querySelector('[aria-pressed="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
     if (from >= 0) $('space-status').textContent = `Switched to ${space.name}.`
     const travel = `translateX(${state.spaces.indexOf(space) > from ? 24 : -24}px)`
-    if (from >= 0 && !still.matches) for (const id of ['favorites', 'space-head', 'list']) $(id).animate([{ transform: travel, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 130, easing: 'ease-out' })
+    if (from >= 0 && !still.matches) for (const id of ['favorites', 'chips', 'space-head', 'list']) $(id).animate([{ transform: travel, opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 130, easing: 'ease-out' })
   }
   section('panel', ui.settings && [space, state.spaces.length, ui.quick, state.settings.searchUrl, state.settings.ai, ui.imported, ui.filling, Boolean(tab), ui.extensions, ui.agents, ui.agentError], () => (ui.settings ? panel(space) : []))
   if (ui.settings && ui.quickKey !== JSON.stringify([state.settings, state.update?.status])) refreshQuick()
@@ -1313,17 +1319,23 @@ function renderPanel() {
   if (!holds) {
     let was
     const others = ui.archive ? [] : otherGroups(space)
-    const rebuilt = section('list', ui.archive ? [state.archive] : [tabs, others, state.spaces.map((s) => s.name), tab?.id, state.collapsed, state.deskSize], () => {
+    const rebuilt = section('list', ui.archive ? [state.archive] : [tabs, others, ui.filter, state.spaces.map((s) => [s.name, s.color]), tab?.id, state.collapsed, state.deskSize], () => {
       was = tops()
       const row = (t, depth) => tabRow(t, t.id === tab?.id, depth)
-      const open = tabs.filter((t) => !t.pinned)
-      return ui.archive ? archiveRows() : [
-        open.length || others.length ? h('li', { class: 'list-head section open-head', 'data-static': true }, h('span', { class: 'label' }, 'Open Tabs')) : null,
-        others.length ? groupHead(space, true) : null,
-        statusRows(open, row),
-        others.map((g) => [groupHead(g.space), g.top.map((t) => otherRow(t)), statusRows(g.plain, otherRow, true)]),
-        pinnedRows(space, tabs.filter((t) => t.pinned), row),
-        h('li', { class: 'row quiet', 'data-new-tab': true }, h('button', { id: 'new-tab', class: 'row-main', onclick: () => bar.focus() }, icon('plus'), h('span', { class: 'label' }, 'New tab')))
+      const flat = (g) => [g.top.map((t) => otherRow(t)), SECTIONS.filter(([bucket]) => bucket !== 'later').map(([bucket]) => trail(g.plain.filter((t) => t.bucket === bucket)).map(([t, depth]) => otherRow(t, depth)))]
+      if (ui.archive) return archiveRows()
+      const all = ui.filter === 'all'
+      const statuses = ui.filter === 'later' ? [] : statusRows(tabs.filter((t) => !t.pinned), row, all ? null : ui.filter)
+      const pins = all || ui.filter === 'later' ? pinnedRows(space, tabs.filter((t) => t.pinned), row) : []
+      const any = (rows) => [rows].flat(Infinity).some(Boolean)
+      const empty = !all && !any(ui.filter === 'later' ? pins : statuses) && CHIPS.find(([key]) => key === ui.filter)[2]
+      return [
+        statuses,
+        all && any(statuses) && any(pins) && h('li', { class: 'list-gap', 'data-static': true, 'aria-hidden': 'true' }),
+        pins,
+        empty && h('li', { class: 'hint', 'data-static': true }, empty),
+        h('li', { class: 'row quiet', 'data-new-tab': true }, h('button', { id: 'new-tab', class: 'row-main', onclick: () => bar.focus() }, icon('plus'), h('span', { class: 'label' }, 'New tab'))),
+        all && others.map((g) => [groupHead(g.space, g.top.length + g.plain.length), flat(g)])
       ]
     })
     if (rebuilt && !still.matches) glide(was)
@@ -1395,7 +1407,7 @@ $('confirm-accept').addEventListener('click', async () => {
 function resetPanel() {
   if (importer || confirmation) return
   if (drag) endDrag()
-  Object.assign(ui, { archive: false, settings: false, renaming: false, imported: '' })
+  Object.assign(ui, { archive: false, settings: false, renaming: false, filter: 'all', imported: '' })
   $('shell-error').hidden = true
   renderPanel()
 }

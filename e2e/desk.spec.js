@@ -1403,8 +1403,8 @@ test.describe('layer panel and Buoy', () => {
     await expect(panel.locator('#list .row').nth(20)).toBeAttached()
     const back = () => skiff.rpc('spaces.activate', { id: first })
 
-    // Over the list, the header and the footer: one switch per stream.
-    for (const selector of ['#list .row-main', '#top', '#space-head', 'footer']) {
+    // Over the list, the chips and the footer: one switch per stream.
+    for (const selector of ['#list .row-main', '#chips', 'footer']) {
       const at = await centre(panel, selector)
       expect(await switches(skiff, () => wheel(skiff, panel.url(), at, trackpad(1))), selector).toEqual([['spaces.cycle', 1]])
       await back()

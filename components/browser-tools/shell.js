@@ -34,8 +34,8 @@
       target.append(button('Access', () => open('grants', frameId)), button('Transcripts', () => open('transcripts', frameId)))
     }
   }
-  // The Pinned section: folders (empty ones too) and loose pins, which the shell draws below Open Tabs.
-  if (typeof pinnedRows === 'function' && typeof folderRow === 'function' && typeof sectionHead === 'function') {
+  // The Pinned rows: folders (empty ones too) and loose pins, which the shell draws below the status rows.
+  if (typeof pinnedRows === 'function' && typeof folderRow === 'function') {
     const original = pinnedRows
     pinnedRows = function(space, tabs, rowOrId, now) {
       tabs = tabs.filter((tab) => !tab.userPeek)
@@ -73,7 +73,7 @@
         for(const folder of folders)if((folder.parentId || null)===parentId)rows.push(...folderRows(folder,depth))
         return rows
       }
-      return [sectionHead('later', pinned.length), tree(null,0)]
+      return [typeof sectionHead === 'function' ? sectionHead('later', pinned.length) : null, tree(null,0)]
     }
   }
   if (typeof section === 'function') {
