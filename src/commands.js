@@ -271,6 +271,8 @@ const schemas = {
     ai: shape({ agents: array(shape({ name: { type: 'string', minLength: 1, maxLength: 40 }, command: { type: 'string', minLength: 1, maxLength: 500 } }, ['name', 'command']), { maxItems: 10 }), agent: string, model: { type: 'string', maxLength: 200 }, effort: { type: 'string', maxLength: 200 } })
   }),
   'ai.agents': shape(),
+  'ai.installSkill': shape({ agent: id }, ['agent']),
+  'ai.skillStatus': shape({ command: { type: 'string', minLength: 1, maxLength: 500 } }, ['command']),
   'ai.warm': shape({ agent: id }, ['agent']),
   'ai.ask': shape({ text: string, agent: string, model: string, effort: string, includePage: boolean, tabId: id, intent: boolean }, ['text']),
   'ai.chat': shape({ chatId: id }, ['chatId']),

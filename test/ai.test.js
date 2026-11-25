@@ -81,7 +81,7 @@ test('ask opens a chat tab under the page, sends the page only when asked and st
   assert.equal(tab.chat.sessionId, c.sessionId)
   assert.deepEqual(s.settings.ai, { agents: [{ name: 'Fake', command: AGENT }], agent: 'Fake', model: '', effort: '' })
   const [agent] = ai.agents()
-  assert.deepEqual({ ...agent, models: agent.models.length, efforts: agent.efforts.length }, { name: 'Fake', command: AGENT, status: 'ready', error: '', info: { name: 'Fake agent', version: '1' }, models: 2, model: 'fake-small', efforts: 2, effort: 'low', loadSession: true })
+  assert.deepEqual({ ...agent, models: agent.models.length, efforts: agent.efforts.length }, { name: 'Fake', command: AGENT, status: 'ready', error: '', info: { name: 'Fake agent', version: '1' }, models: 2, model: 'fake-small', efforts: 2, effort: 'low', loadSession: true, skill: null })
   await until(() => pushes.chat.at(-1)?.status === 'ready' && pushes.chat.at(-1).turns.at(-1).done)
   assert.equal(pushes.chat.at(-1).id, chatId)
   assert.ok(pushes.agents.some((list) => list[0].status === 'ready'))

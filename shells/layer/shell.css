@@ -388,6 +388,11 @@ input.setting-input[type='number'] { width: 80px; font-family: var(--data); font
 #panel .agent .text-btn { align-self: center; min-height: 26px; padding: 2px 6px; font-size: 12px; }
 #panel .agent .agent-default + .text-btn { margin-left: 4px; }
 #panel .agent .hint { flex-basis: 100%; padding: 2px 0 0 27px; }
+#agent-teach-row[hidden] { display: none; }
+.agent-skill { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; padding-left: 27px; }
+#panel .agent .agent-skill .text-btn { margin-left: -6px; }
+#panel .agent .agent-skill .hint { flex: 0 1 auto; padding: 0; }
+#panel .agent .agent-skill p.hint { flex-basis: 100%; padding-top: 2px; }
 #panel .hint.error { color: var(--danger); }
 #confirm-box, #shell-error { flex: none; max-height: 45vh; overflow-y: auto; margin-top: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--hover); overflow-wrap: anywhere; }
 #confirm-title { font-size: 13px; font-weight: 600; }

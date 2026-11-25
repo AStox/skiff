@@ -693,12 +693,62 @@ async function saveAgents(ai, done) {
   refreshAgents()
 }
 
-function addAgent() {
-  const name = ui.agentForm.name.trim()
-  const command = ui.agentForm.command.trim()
+async function addAgent() {
+  const form = ui.agentForm
+  const name = form.name.trim()
+  const command = form.command.trim()
   ui.agentError = !command ? 'Enter the command that starts your agent.' : !name ? 'Give the agent a name.' : ''
   if (ui.agentError) return renderPanel()
-  saveAgents({ agents: [...state.settings.ai.agents, { name, command }], agent: defaultAgent() || name }, () => { ui.agentForm = null })
+  await probeSkill(form)
+  const teach = form.teach && form.skill?.command === command && form.skill.status !== 'unsupported'
+  saveAgents({ agents: [...state.settings.ai.agents, { name, command }], agent: defaultAgent() || name }, () => {
+    ui.agentForm = null
+    if (teach) installSkill(name)
+  })
+}
+
+// Writes the Skiff skill into the agent's own harness; the new state comes back with ai-agents.
+function installSkill(name) {
+  ui.skillBusy = name
+  ;(ui.skillErrors ||= {})[name] = ''
+  renderPanel()
+  return skiff.call('ai.installSkill', { agent: name })
+    .catch((error) => { ui.skillErrors[name] = error.message || 'The Skiff skill could not be installed.' })
+    .finally(() => {
+      ui.skillBusy = ''
+      renderPanel()
+      refreshAgents()
+    })
+}
+
+// What the host says about the typed command's harness decides whether the Teach box shows; resolves once it has answered for the current command.
+function probeSkill(form) {
+  const command = form.command.trim()
+  if (!command || form.skill?.command === command) return Promise.resolve()
+  if (form.probing?.command === command) return form.probing.promise
+  const promise = skiff.call('ai.skillStatus', { command }).then((info) => {
+    if (form.command.trim() !== command) return
+    form.skill = { ...info, command }
+    const row = $('agent-teach-row')
+    if (row) row.hidden = info.status === 'unsupported'
+  }).catch(() => {})
+  form.probing = { command, promise }
+  return promise
+}
+
+function skillLine(a, live) {
+  const skill = live?.skill
+  if (!skill || skill.status === 'unsupported') return null
+  const error = ui.skillErrors?.[a.name]
+  const busy = ui.skillBusy === a.name
+  const act = (label) => h('button', { class: 'text-btn', disabled: busy, title: skill.path, onclick: () => installSkill(a.name) }, busy ? 'Installing...' : label)
+  return h('div', { class: 'agent-skill', 'data-skill': skill.status },
+    skill.status === 'missing' && act('Install Skiff skill'),
+    skill.status === 'outdated' && act('Update Skiff skill'),
+    skill.status === 'installed' && h('span', { class: 'hint', title: skill.path }, 'Skiff skill installed'),
+    skill.status === 'modified' && h('span', { class: 'hint', title: skill.path }, 'Skiff skill edited, left as it is'),
+    skill.status === 'error' && h('span', { class: 'hint error' }, `Skiff skill: ${skill.error}`),
+    error && h('p', { class: 'hint error', role: 'alert' }, error))
 }
 
 function removeAgent(name) {
@@ -708,7 +758,7 @@ function removeAgent(name) {
 }
 
 function agentRows() {
-  const form = ui.agentForm ||= { preset: AGENT_PRESETS[0][1], name: uniqueAgentName(AGENT_PRESETS[0][0]), command: AGENT_PRESETS[0][1], auto: true }
+  const form = ui.agentForm ||= { preset: AGENT_PRESETS[0][1], name: uniqueAgentName(AGENT_PRESETS[0][0]), command: AGENT_PRESETS[0][1], auto: true, teach: true }
   const chosen = defaultAgent()
   const entry = ui.agents.find((a) => a.name === chosen)
   const name = h('input', { id: 'agent-name', type: 'text', maxlength: '40', spellcheck: 'false', autocomplete: 'off', value: form.name })
@@ -722,13 +772,18 @@ function agentRows() {
     if (pick) command.value = form.command = pick[1]
     if (pick && form.auto) name.value = form.name = uniqueAgentName(pick[0])
     command.focus()
+    probeSkill(form)
   })
   name.addEventListener('input', () => Object.assign(form, { name: name.value, auto: false }))
   command.addEventListener('input', () => {
     form.command = command.value
     form.preset = preset.value = AGENT_PRESETS.some(([, value]) => value === command.value.trim()) ? command.value.trim() : ''
+    probeSkill(form)
   })
   for (const field of [name, command]) field.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); addAgent() } })
+  const teach = h('input', { id: 'agent-teach', type: 'checkbox', checked: form.teach })
+  teach.addEventListener('change', () => { form.teach = teach.checked })
+  probeSkill(form)
   const picker = (key, list) => {
     const current = state.settings.ai[key] || entry?.[key]
     const select = h('select', { id: `agent-${key}`, disabled: !list },
@@ -747,7 +802,8 @@ function agentRows() {
           h('span', { class: 'agent-text' }, h('span', { class: 'label' }, a.name), h('code', { title: a.command }, a.command))),
         a.name === chosen ? h('span', { class: 'agent-default' }, 'Default') : h('button', { class: 'text-btn', onclick: () => saveAgents({ agent: a.name, model: '', effort: '' }) }, 'Make default'),
         h('button', { class: 'text-btn danger', 'aria-label': `Remove ${a.name}`, onclick: () => removeAgent(a.name) }, 'Remove'),
-        status === 'error' && live.error && h('p', { class: 'hint' }, live.error))
+        status === 'error' && live.error && h('p', { class: 'hint' }, live.error),
+        skillLine(a, live))
     })),
     entry && h('div', { class: 'agent-defaults' },
       h('label', { class: 'field', for: 'agent-model' }, `Default model for ${entry.name}`, picker('model', entry.models)),
@@ -755,6 +811,7 @@ function agentRows() {
     h('label', { class: 'field', for: 'agent-preset' }, 'Add an agent', preset),
     h('label', { class: 'field', for: 'agent-name' }, 'Name', name),
     h('label', { class: 'field', for: 'agent-command' }, 'Command', command),
+    h('label', { class: 'field check', id: 'agent-teach-row', hidden: form.skill?.command !== form.command.trim() || form.skill.status === 'unsupported', title: form.skill?.path || null }, teach, 'Teach it to use Skiff'),
     h('p', { class: 'hint' }, "Runs in your login shell. Any agent that speaks the Agent Client Protocol works, locally or over ssh. Over ssh the agent can chat but cannot reach this browser's tools."),
     h('button', { id: 'agent-add', class: 'text-btn', onclick: addAgent }, 'Add agent'),
     h('p', { class: 'hint error', role: 'alert' }, ui.agentError))
