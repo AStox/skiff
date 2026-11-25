@@ -87,6 +87,12 @@ let deskMode = false
 let desktops = null
 let deskId = null
 const parked = new Map()
+// Sign-in popups a page opened with window.open; plain windows in the page's session.
+const popupWindows = new Set()
+// Set when the quit cleanup starts, whether by before-quit or an update install; Electron then destroys every page itself, which must not close their tabs.
+let quitting = false
+// Desk windows between their close and closed events; their pages may be destroyed with them, which must not close their tabs.
+const closingWindows = new Set()
 let attached = null
 let shown = []
 let pageBounds = null
@@ -283,7 +289,7 @@ function destroyView(id) {
   agentBrowser.release(id)
   destroyControl(id)
   cursors.delete(id)
-  if (!view.webContents.isDestroyed()) view.webContents.close()
+  if (view.webContents && !view.webContents.isDestroyed()) view.webContents.close()
 }
 
 function destroyFrame(id) {
@@ -564,7 +570,11 @@ function createView(tab) {
   wc.on('will-navigate', (e) => {
     if (!/^(https?|chrome-extension):/.test(e.url)) e.preventDefault()
   })
-  wc.setWindowOpenHandler(({ url }) => {
+  const openWindow = ({ url, disposition }) => {
+    // A sign-in popup (window.open with features) is a real child window, so the page keeps its handle and opener; any other new window is a tab.
+    if (disposition === 'new-window' && (/^https?:/i.test(url) || url === 'about:blank')) {
+      return { action: 'allow', overrideBrowserWindowOptions: { autoHideMenuBar: true, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } } }
+    }
     const opener = S.findTab(state, id)
     if (opener?.agent && /^https?:/i.test(url)) {
       S.createTab(state, { url, spaceId: opener.spaceId, agent: opener.agent }, Date.now())
@@ -576,6 +586,19 @@ function createView(tab) {
       changed()
     }
     return { action: 'deny' }
+  }
+  wc.setWindowOpenHandler(openWindow)
+  wc.on('did-create-window', (child) => {
+    popupWindows.add(child)
+    child.once('closed', () => popupWindows.delete(child))
+    child.webContents.setWindowOpenHandler(openWindow)
+  })
+  // A page that closes itself (window.close()) takes its webContents with it; the tab closes as it does when the user closes it.
+  wc.once('destroyed', () => {
+    if (quitting || closingWindows.size || views.get(id) !== view) return
+    if (S.findTab(state, id)) closeTabNow({ id })
+    destroyView(id)
+    changed()
   })
   // The first page of a session waits for its extensions (the built-in blocker has to be filtering), and the incognito space's for its wipe.
   Promise.all([extensions.ready(ses), partition === S.INCOGNITO_PARTITION && incognitoWipe]).then(() => { if (!wc.isDestroyed()) wc.loadURL(tab.url).catch(() => {}) })
@@ -1176,7 +1199,7 @@ function focusLeft() {
   setTimeout(() => {
     const focused = BrowserWindow.getFocusedWindow()
     const was = inFront
-    inFront &&= Boolean(focused && (focused === win || parkedWin(focused) || [...overlays.values()].some((o) => o.float && o.host === focused)))
+    inFront &&= Boolean(focused && (focused === win || parkedWin(focused) || popupWindows.has(focused) || [...overlays.values()].some((o) => o.float && o.host === focused)))
     if (was && !inFront) pressOutside()
   }, 100)
 }
@@ -1310,6 +1333,7 @@ function createWindow(near = state.window, { quiet = false } = {}) {
   })
   for (const name of ['show', 'restore']) win.on(name, watchPointer)
   win.on('close', () => {
+    closingWindows.add(w)
     if (win !== w) return
     // Agent tabs outlive the window, so a peeked one goes back to the hidden window before this one is destroyed.
     for (const view of shown) if (agentViews.has(view)) w.contentView.removeChildView(view)
@@ -1319,6 +1343,7 @@ function createWindow(near = state.window, { quiet = false } = {}) {
     save()
   })
   win.on('closed', () => {
+    closingWindows.delete(w)
     if (win !== w) {
       for (const [key, rec] of parked) if (rec.win === w) parked.delete(key)
       return
@@ -1519,12 +1544,13 @@ def('tabs.reroute', '{id}', "Close a tab opened from the command bar (its intent
   } else await call('ai.ask', { text, tabId: tab.id }, context)
   return call('tabs.close', { id: tab.id }, context)
 })
-def('tabs.close', '{id?}', 'Close a tab into the archive; favorites and pinned tabs are unloaded and kept; incognito tabs are dropped. An archived agent tab restores as a plain tab', (p) => {
+function closeTabNow(p) {
   const result = S.closeTab(state, p, Date.now())
   if (views.has(result.unloaded)) destroyView(result.unloaded)
   changed()
   return result
-})
+}
+def('tabs.close', '{id?}', 'Close a tab into the archive; favorites and pinned tabs are unloaded and kept; incognito tabs are dropped. An archived agent tab restores as a plain tab', closeTabNow)
 def('tabs.activate', '{id}', 'Show a tab, switching to its space; a tab on another macOS desktop moves to the current one; a finished agent tab counts as seen once shown', mutate(S.activateTab))
 def('tabs.read', '{id?}', "A tab's page as {title, url, selection, text}", (p, context) => {
   const tab = S.getTab(state, p.id)
@@ -2537,6 +2563,7 @@ async function start() {
 const quitFlow = createQuit({
   quit: () => app.quit(),
   cleanup: async () => {
+    quitting = true
     const results = await Promise.allSettled([
       async () => { try { await ai?.stop() } finally { transcripts?.stop() } },
       () => browserData?.stop(),
