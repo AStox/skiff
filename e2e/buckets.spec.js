@@ -38,6 +38,7 @@ async function openCard(buoy) {
 const centre = (locator) => locator.evaluate((el) => { const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })
 // A real pointer drag onto a chip: the chip takes the outline, there is no preview row, and the release sets the status.
 async function dragToChip(buoy, source, target) {
+  await buoy.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished)))
   const from = await centre(source)
   await buoy.mouse.move(from.x, from.y)
   await buoy.mouse.down()
@@ -85,7 +86,7 @@ test('the Layer card lists tabs and threads in one list that follows their bucke
   await dragToChip(buoy, row(page.id), chip('later'))
   await expect.poll(() => bucketOf(skiff, page.id)).toBe('later')
   await expect(row(page.id)).toHaveAttribute('data-section', 'later')
-  await expect(row(page.id).locator('.mark svg')).toBeVisible()
+  await expect(row(page.id).locator('.mark')).toHaveCount(0)
   expect(await sections()).toEqual(['active', 'later'])
   await dragToChip(buoy, row(page.id), chip('done'))
   await expect.poll(() => bucketOf(skiff, page.id)).toBe('done')
