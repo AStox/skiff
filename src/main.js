@@ -115,6 +115,7 @@ let soonTimer = null
 // A desk space switch in flight: view -> {from, to, leaving}, stepped from start.
 let slide = null
 let laidOutSpace = null
+let laidOutPrivate = null
 let heading = 0
 let warmTimer = null
 let frameSpec = null
@@ -682,7 +683,7 @@ function deskLayout() {
   })
 }
 
-// The foreground set keeps the windows still on the desk and takes in the active one; it ends with its last window or a space switch.
+// The foreground set keeps the windows still on the desk and takes in the active one; it ends with its last window, a space switch (spaces.activate, spaces.cycle) or the desk swapping to incognito.
 function trimOnly() {
   const ids = S.shownTabs(state).map((t) => t.id)
   const kept = desk.only.filter((id) => ids.includes(id))
@@ -715,13 +716,16 @@ function syncView() {
     delete state.deskTop
     delete state.deskAvoid
   }
-  const switched = deskMode && laidOutSpace !== null && laidOutSpace !== state.activeSpaceId
+  const spaceChanged = deskMode && laidOutSpace !== null && laidOutSpace !== state.activeSpaceId
+  const inIncognito = S.isIncognito(state, state.activeSpaceId)
+  const switched = deskMode && laidOutPrivate !== null && laidOutPrivate !== inIncognito
   const order = (id) => state.spaces.findIndex((x) => x.id === id)
   const dir = heading || Math.sign(order(state.activeSpaceId) - order(laidOutSpace)) || 1
   heading = 0
   laidOutSpace = deskMode ? state.activeSpaceId : null
+  laidOutPrivate = deskMode ? inIncognito : null
   // A drag belongs to the space it started in, so a switch ends it where it is.
-  if (switched && desk.preview) {
+  if (spaceChanged && desk.preview) {
     desk.preview = null
     for (const wc of shellContents()) sendEvent(wc, 'drag-cancel', null)
   }
@@ -874,7 +878,7 @@ function prewarm() {
   clearTimeout(warmTimer)
   warmTimer = null
   if (!win || !deskMode) return
-  const cold = state.spaces.flatMap((space) => S.shownTabs(state, space.id)).filter((t) => runtime.get(t.id)?.lifecycle !== 'sleeping' && (!views.has(t.id) || (frameSpec && !frames.has(t.id))))
+  const cold = [...new Set(state.spaces.flatMap((space) => S.shownTabs(state, space.id)))].filter((t) => runtime.get(t.id)?.lifecycle !== 'sleeping' && (!views.has(t.id) || (frameSpec && !frames.has(t.id))))
   for (const t of cold.slice(0, 3)) {
     if (!views.has(t.id)) createView(t)
     if (frameSpec && !frames.has(t.id)) createFrame(t.id)
@@ -1269,7 +1273,7 @@ function followDesktop() {
   deskId = id
   if (!back) return void createWindow(win.getBounds(), { quiet: true }).catch(console.error)
   ;({ win, shown, attached, ignoring } = back)
-  laidOutSpace = null
+  laidOutSpace = laidOutPrivate = null
   watchPointer()
 }
 
@@ -1278,7 +1282,7 @@ function createWindow(near = state.window, { quiet = false } = {}) {
   readDesktops()
   deskId = state.desktops?.current ?? null
   frameSpec = deskMode ? readFrame(manifest()) : null
-  laidOutSpace = null
+  laidOutSpace = laidOutPrivate = null
   shown = []
   attached = null
   const w = win = new BrowserWindow(deskMode
@@ -1509,8 +1513,13 @@ def('spaces.remove', '{id}', "Remove a space and archive its tabs; the last norm
   }
   return null
 })
-def('spaces.activate', '{id}', 'Switch to a space', mutate(S.activateSpace))
-def('spaces.cycle', '{delta}', 'Switch to the next (1) or previous (-1) space; in a desk window the windows slide the way delta points, even when it wraps around', (p) => {
+const switchSpace = mutate(S.activateSpace)
+def('spaces.activate', '{id}', 'Switch to a space: it becomes the active one and its active tab comes forward; no window moves, and a foreground set of windows ends', (p) => {
+  desk.only = null
+  return switchSpace(p)
+})
+def('spaces.cycle', '{delta}', 'Switch to the next (1) or previous (-1) space, wrapping around; no window moves, except that entering or leaving incognito slides the desk the way delta points', (p) => {
+  desk.only = null
   const result = S.cycleSpace(state, p)
   heading = Math.sign(p.delta)
   changed()
@@ -1697,7 +1706,7 @@ def('ui.setPageBounds', '{x, y, width, height, radius?}', 'Shell only: where the
   syncView()
   return null
 })
-def('ui.setDesk', '{hit?, capture?, preview?, animate?, only?, avoid?}', "Desk shells only, not saved: avoid {x, y, width, height} (null clears it) is the open Buoy card, which a new window is placed clear of (state.deskAvoid); hit lists the shell's own clickable rectangles {x, y, width, height} in shell CSS pixels; capture: true keeps every click in Skiff during a drag or resize; preview {id, x, y, width, height} draws that tab (and its frame) there at once without saving it, null clears it; animate: false switches spaces without sliding the windows, as reduced motion in the system settings does; only [tabIds] shows just those windows of the active space, the active tab joining them, and leaves every other window loaded but off the desk and out of the way of clicks, until null, a space switch or the last of them closing or hiding (state.deskOnly holds the set); each field given replaces its last value", (p) => {
+def('ui.setDesk', '{hit?, capture?, preview?, animate?, only?, avoid?}', "Desk shells only, not saved: avoid {x, y, width, height} (null clears it) is the open Buoy card, which a new window is placed clear of (state.deskAvoid); hit lists the shell's own clickable rectangles {x, y, width, height} in shell CSS pixels; capture: true keeps every click in Skiff during a drag or resize; preview {id, x, y, width, height} draws that tab (and its frame) there at once without saving it, null clears it; animate: false opens and closes incognito without sliding the windows, as reduced motion in the system settings does; only [tabIds] shows just those windows of the desk, the active tab joining them, and leaves every other window loaded but off the desk and out of the way of clicks, until null, a space switch (spaces.activate, spaces.cycle) or the last of them closing or hiding (state.deskOnly holds the set); each field given replaces its last value", (p) => {
   const next = {}
   if (p.hit !== undefined) {
     if (!Array.isArray(p.hit)) throw S.err('bad_params', 'hit must be a list of {x, y, width, height}')

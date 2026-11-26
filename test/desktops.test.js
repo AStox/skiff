@@ -96,7 +96,7 @@ test('a desktop change shows the latest tab of the space on that desktop, or non
   S.activateSpace(s, { id: work.id })
   S.setDesktops(s, TWO(1), 13)
   assert.equal(S.activeTab(s), undefined)
-  assert.deepEqual(S.shownTabs(s), [])
+  assert.deepEqual(ids(S.shownTabs(s)), [c.id, d.id], 'the other space still shows its windows of this desktop')
   assert.equal(S.activeTab({ ...s, activeSpaceId: s.spaces[0].id }).id, d.id)
 })
 
