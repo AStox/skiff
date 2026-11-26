@@ -19,7 +19,7 @@ const { shell } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const { createQuit, createUpdates } = require('./updates')
 const { spawn } = require('node:child_process')
-const { createRegistry, schemaFor } = require('./commands')
+const { createRegistry, schemaFor, validateSchema } = require('./commands')
 const settingsCatalog = require('./settings-catalog')
 const { createComponents } = require('./components')
 const { createBrowserData } = require('./browser-data')
@@ -1485,7 +1485,7 @@ async function fillPassword() {
 
 const toolNames = {
   'tabs.list': 'browser_list_tabs', 'tabs.read': 'browser_read_page', 'tabs.create': 'browser_open_tab', 'tabs.navigate': 'browser_navigate', 'tabs.activate': 'browser_activate_tab', 'tabs.close': 'browser_close_tab',
-  'tabs.snapshot': 'browser_snapshot', 'tabs.click': 'browser_click', 'tabs.type': 'browser_type', 'tabs.press': 'browser_press', 'tabs.scroll': 'browser_scroll', 'tabs.screenshot': 'browser_screenshot', 'tabs.wait': 'browser_wait',
+  'tabs.snapshot': 'browser_snapshot', 'tabs.click': 'browser_click', 'tabs.type': 'browser_type', 'tabs.press': 'browser_press', 'tabs.scroll': 'browser_scroll', 'tabs.screenshot': 'browser_screenshot', 'tabs.wait': 'browser_wait', 'tabs.steps': 'browser_steps',
   'agent.requestTab': 'browser_request_tab', 'agent.finish': 'browser_finish'
 }
 const def = (name, params, description, run) => registry.register('core', { name, description, params, inputSchema: schemaFor(name), tool: toolNames[name] ? { name: toolNames[name] } : false, run })
@@ -1926,18 +1926,19 @@ const requests = new Map()
 const agentProp = { type: 'string', minLength: 1, maxLength: 40 }
 const tabProps = { tabId: string, id: string, agent: agentProp }
 
-function drive(run) {
-  return async (p, context) => {
-    const before = S.findTab(state, p.tabId ?? p.id)
-    const steady = before?.agentState === 'working' && !before.agentUnseen
-    const tab = S.agentCall(state, p, Date.now())
-    const chat = context.accessContext && access.sessionOf(context.accessContext)
-    if (chat) driven.set(chat, (driven.get(chat) || new Set()).add(tab.id))
-    if (!steady) changed()
-    context.signal?.throwIfAborted()
-    return run(tab.id, p)
-  }
+// The guard every agent call passes first; returns the tab, now working.
+function agentGuard(p, context) {
+  const before = S.findTab(state, p.tabId ?? p.id)
+  const steady = before?.agentState === 'working' && !before.agentUnseen
+  const tab = S.agentCall(state, p, Date.now())
+  const chat = context.accessContext && access.sessionOf(context.accessContext)
+  if (chat) driven.set(chat, (driven.get(chat) || new Set()).add(tab.id))
+  if (!steady) changed()
+  context.signal?.throwIfAborted()
+  return tab
 }
+
+const drive = (run) => async (p, context) => run(agentGuard(p, context).id, p)
 
 // A request waiting on the user ends when it is answered, the tab goes, or the agent's call is dropped.
 function answerRequest(id) {
@@ -1968,6 +1969,41 @@ command('tabs.press', 'An agent presses a key or shortcut such as Enter, Tab, Ar
 command('tabs.scroll', 'An agent scrolls the page by dx and dy CSS pixels at x and y (default the middle) or over a ref; returns the scroll position', { ...tabProps, ref: string, x: number, y: number, dx: number, dy: number }, ['agent'], drive((id, p) => agentBrowser.scroll(id, p)))
 command('tabs.screenshot', 'An agent takes a JPEG of the page viewport, at most 1280 pixels wide, as {mime, width, height, data} with base64 data', tabProps, ['agent'], drive((id) => agentBrowser.screenshot(id)))
 command('tabs.wait', 'An agent waits until the page text contains text or its address contains url, for at most timeout ms (10000 by default, 60000 at most)', { ...tabProps, text: string, url: string, timeout: number }, ['agent'], drive((id, p) => agentBrowser.wait(id, p)))
+
+// tabs.steps runs these commands in order on one tab. Each goes through call(), the path the command takes alone, so it passes the same checks.
+const STEPS = { snapshot: 'tabs.snapshot', click: 'tabs.click', type: 'tabs.type', press: 'tabs.press', scroll: 'tabs.scroll', wait: 'tabs.wait', screenshot: 'tabs.screenshot', read: 'tabs.read', navigate: 'tabs.navigate' }
+const ACTS = new Set(['click', 'press', 'type', 'navigate'])
+const LOOKS = new Set(['snapshot', 'read', 'screenshot'])
+command('tabs.steps', 'An agent runs up to 20 steps on a tab in one call, each {do, ...params} where do is snapshot, click, type, press, scroll, wait, screenshot, read or navigate. Stops at the first failure and returns what ran', { ...tabProps, steps: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'object', properties: { do: { enum: Object.keys(STEPS) } }, required: ['do'] } } }, ['agent', 'steps'], async (p, context) => {
+  const tabId = S.getTab(state, p.tabId ?? p.id).id
+  const plan = p.steps.map(({ do: name, ...rest }, i) => {
+    for (const key of ['id', 'tabId', 'agent']) if (key in rest) throw S.err('bad_params', `steps[${i}] takes the tab and agent from the call, not ${key}`)
+    const method = STEPS[name]
+    const schema = registry.get(method).inputSchema
+    const own = 'agent' in schema.properties
+    const params = { ...rest, id: tabId, ...(own && { agent: p.agent }) }
+    validateSchema(schema, params, `steps[${i}]`)
+    return { name, method, params, own }
+  })
+  const results = []
+  let failed
+  for (const [i, step] of plan.entries()) {
+    try {
+      if (ACTS.has(plan[i - 1]?.name) && LOOKS.has(step.name)) await agentBrowser.settle(tabId)
+      // read and navigate have no agent of their own to check: a chain still never drives a tab the agent does not hold or the user took over.
+      if (!step.own) agentGuard({ agent: p.agent, id: tabId }, context)
+      const result = await call(step.method, step.params, context)
+      results.push(S.isObject(result) ? { do: step.name, ...result } : { do: step.name, result })
+    } catch (e) {
+      if (context.signal?.aborted) throw e
+      if (!CODES.includes(e.code)) console.error(e)
+      failed = { step: i + 1, do: step.name, code: CODES.includes(e.code) ? e.code : 'internal', message: String(e.message || e) }
+      break
+    }
+  }
+  const notRun = failed ? plan.slice(failed.step).map((step) => step.name) : []
+  return { ...(failed && { failed }), ...(notRun.length && { notRun }), results }
+})
 command('agent.finish', 'An agent is done with a tab: it shows as done, with an unseen mark until the user looks at it; summary is one line for the user. The tab stays the agent\'s. A Skiff chat finishes the tabs it drove when its turn ends', { ...tabProps, summary: string }, ['agent'], (p) => {
   const tab = S.agentFinish(state, p, Date.now(), looking(p.tabId ?? p.id))
   agentBrowser.release(tab.id)

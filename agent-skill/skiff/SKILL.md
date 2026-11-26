@@ -38,12 +38,23 @@ skiff tabs.wait '{"tabId":"<id>","agent":"<you>","text":"Results"}'
 skiff tabs.screenshot '{"tabId":"<id>","agent":"<you>"}'            # {data: base64 JPEG}
 skiff tabs.read '{"id":"<id>"}'                                     # {title, url, selection, text}
 skiff tabs.navigate '{"id":"<id>","url":"https://example.com/next"}'
+skiff tabs.steps '{"tabId":"<id>","agent":"<you>","steps":[{"do":"type","ref":"e3","text":"select 1","clear":true},{"do":"press","key":"Enter"},{"do":"wait","text":"Results"},{"do":"snapshot"}]}'
 skiff agent.finish '{"tabId":"<id>","agent":"<you>","summary":"Ran the query; 3 rows"}'
 ```
 
 Loop: snapshot, act on a ref, wait or snapshot again, check the result. Refs last only until the next snapshot. After typing into an autocomplete or search-as-you-type field, press `Enter` or snapshot again before clicking: the old refs may be stale.
 
 You can drive only tabs you opened or were handed; any other tab fails with `forbidden`.
+
+## Chain steps in one call
+
+Every call costs you a round trip, so send several steps in one `tabs.steps` call (1 to 20). A step is `{"do": ...}` with `do` one of `snapshot`, `click`, `type`, `press`, `scroll`, `wait`, `screenshot`, `read`, `navigate`, plus the params that command takes, but no `tabId` or `agent`.
+
+- Chain steps whenever the next step does not depend on what the page shows. End the chain with `snapshot` or `read`, so the result comes back in the same call.
+- A chain cannot click a ref from a snapshot taken earlier in the same chain: refs from a snapshot are unknown until the call returns.
+- The chain stops at the first failure and the call still succeeds. Check `failed` (`step`, `do`, `code`, `message`) and `notRun` first; `results` holds the steps that ran.
+- Wait only for text that is sure to appear: a `wait` that times out costs its whole timeout and stops the chain.
+- The confirming click on anything hard to undo is its own call, after the user agrees. Chaining never weakens the rules below.
 
 ## A tab the user already has open
 
@@ -57,7 +68,7 @@ The user sees Allow and Deny on that tab. Wait for the answer; never skip it. If
 
 ## Rules
 
-- If a call fails with `user_has_control`, the user took the tab over. Stop using it, and wait for them to give it back before trying again.
+- If a call fails with `user_has_control`, or a chain's `failed.code` is `user_has_control`, the user took the tab over. Stop using it, and wait for them to give it back before trying again.
 - Call `agent.finish` with a one-line summary when you are done with a tab, so the user knows to look.
 - On a signed-in site, ask the user before any click that is hard to undo: send, buy, delete, post, publish, change settings, or remove access.
 - Never fill in passwords, codes or payment details. If a login page appears, tell the user and let them sign in themselves.

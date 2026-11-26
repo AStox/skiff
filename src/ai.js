@@ -755,12 +755,14 @@ async function handleMcp(message, { tools, version }) {
     const t = Date.now()
     const result = await tool.run(S.isObject(params.arguments) ? params.arguments : {})
     log.debug('mcp tool call', { tool: tool.name, ms: Date.now() - t })
-    // A picture (tabs.screenshot) goes as an image block, not as base64 text.
-    if (S.isObject(result) && typeof result.mime === 'string' && result.mime.startsWith('image/') && typeof result.data === 'string') {
-      const { data, ...rest } = result
-      return ok({ content: [{ type: 'image', data, mimeType: result.mime }, { type: 'text', text: JSON.stringify(rest) }] })
-    }
-    return ok({ content: [{ type: 'text', text: JSON.stringify(result ?? null) }] })
+    // A picture (tabs.screenshot, or a screenshot step of tabs.steps) goes as an image block, not as base64 text.
+    const pictures = []
+    const isPicture = (item) => S.isObject(item) && typeof item.mime === 'string' && item.mime.startsWith('image/') && typeof item.data === 'string'
+    const bare = (item) => { const { data, ...rest } = item; pictures.push({ type: 'image', data, mimeType: item.mime }); return rest }
+    const single = isPicture(result)
+    const shown = single ? bare(result) : Array.isArray(result?.results) ? { ...result, results: result.results.map((item) => (isPicture(item) ? bare(item) : item)) } : result
+    const text = { type: 'text', text: JSON.stringify(shown ?? null) }
+    return ok({ content: single ? [...pictures, text] : [text, ...pictures] })
   } catch (e) {
     log.warn('mcp tool failed', { tool: params.name, err: e.message })
     return ok({ content: [{ type: 'text', text: String(e.message || e) }], isError: true })
