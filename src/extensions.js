@@ -181,9 +181,17 @@ function createExtensions({ dataDir, hooks, builtin = BUILTIN }) {
     const ses = wc.session
     const tab = (extra = {}) => ({ ...hooks.tabInfo(wc.id), ...extra })
     emit(ses, 'tabs.onCreated', tab())
+    // Chrome fires onBeforeNavigate for every frame and again for each redirect target. uBlock Origin builds a host's
+    // scriptlets from it, so a redirect (youtube.com to www.youtube.com) or an iframe would commit with none.
+    const beforeNavigate = (event) => {
+      if (event.isSameDocument) return
+      const frame = event.isMainFrame ? wc.mainFrame : event.frame
+      if (frame) emit(ses, 'webNavigation.onBeforeNavigate', { ...frameDetails(wc, frame), url: event.url })
+    }
+    wc.on('did-redirect-navigation', beforeNavigate)
     wc.on('did-start-navigation', (event) => {
+      beforeNavigate(event)
       if (!event.isMainFrame || event.isSameDocument) return
-      emit(ses, 'webNavigation.onBeforeNavigate', { tabId: wc.id, frameId: 0, parentFrameId: -1, url: event.url, timeStamp: Date.now() })
       emit(ses, 'tabs.onUpdated', wc.id, { status: 'loading', url: event.url }, tab({ status: 'loading', url: event.url }))
     })
     wc.on('did-frame-navigate', (_e, url, _code, _text, isMainFrame, processId, routingId) => {

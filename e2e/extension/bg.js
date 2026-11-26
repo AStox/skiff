@@ -16,6 +16,7 @@ chrome.webRequest.onBeforeRequest.addListener((details) => {
 // A hold.json next to this file ({"ms": n}) delays that, so a spec can watch Skiff hold page loads back.
 fetch(chrome.runtime.getURL('hold.json')).then((response) => response.json()).catch(() => ({ ms: 0 }))
   .then(({ ms }) => setTimeout(() => chrome.webNavigation.onBeforeNavigate.addListener(() => {}), ms))
+chrome.webNavigation.onBeforeNavigate.addListener((details) => events.push({ what: 'before', frameId: details.frameId, parentFrameId: details.parentFrameId, url: details.url }))
 chrome.webNavigation.onCommitted.addListener((details) => {
   events.push({ what: 'committed', tabId: details.tabId, frameId: details.frameId, url: details.url })
   if (details.frameId === 0 && details.url.startsWith('http:')) {
