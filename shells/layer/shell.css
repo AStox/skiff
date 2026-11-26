@@ -225,6 +225,22 @@ html.dragging #buoy, html.dragging #buoy * { cursor: grabbing !important; }
 #buoy-row .buoy-tab .agent-dot { position: absolute; right: -1px; bottom: -1px; box-shadow: 0 0 0 1.5px var(--buoy-bg); }
 #buoy-row .buoy-tab .agent-dot[data-state='asking'] { background: #e5484d; }
 #buoy-row .buoy-tab .agent-dot[data-unseen] { box-shadow: 0 0 0 1.5px var(--buoy-bg), 0 0 0 3px rgba(47, 158, 91, .4); }
+/* An agent acting on a tab: its icon sits in a purple tint ringed by an arc that circles it (a steady ring with reduced motion). */
+@property --ring-turn { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+#buoy-row .buoy-tab.agent-working { background: color-mix(in srgb, #7a5af8 16%, transparent); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, #7a5af8 38%, transparent); }
+#buoy-row .buoy-tab.agent-working::before { content: ''; position: absolute; inset: 0; padding: 1.5px; border-radius: 6px; background: #7a5af8; pointer-events: none; -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); }
+@media (prefers-reduced-motion: no-preference) {
+  #buoy-row .buoy-tab.agent-working::before { background: conic-gradient(from var(--ring-turn), transparent 0deg, #7a5af8 200deg, #b3a1ff 320deg, transparent 360deg); animation: agent-ring 1.3s linear infinite; }
+}
+@keyframes agent-ring { to { --ring-turn: 360deg; } }
+@media (prefers-color-scheme: dark) {
+  #buoy-row .buoy-tab.agent-working { background: color-mix(in srgb, #9b82fb 22%, transparent); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, #9b82fb 45%, transparent); }
+  #buoy-row .buoy-tab.agent-working::before { background: #9b82fb; }
+}
+@media (prefers-color-scheme: dark) and (prefers-reduced-motion: no-preference) {
+  #buoy-row .buoy-tab.agent-working::before { background: conic-gradient(from var(--ring-turn), transparent 0deg, #9b82fb 200deg, #d6cbff 320deg, transparent 360deg); }
+}
+#buoy-row .buoy-tab.agent-working.current { box-shadow: inset 0 0 0 1.5px var(--accent); }
 .buoy-unread { position: absolute; top: 0; right: 0; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1.5px var(--buoy-bg); }
 @media (prefers-color-scheme: dark) {
   #buoy { box-shadow: inset 0 0 0 1px var(--buoy-rim), 0 4px 10px rgba(0, 0, 0, .55), 0 0 0 .5px rgba(0, 0, 0, .8); }

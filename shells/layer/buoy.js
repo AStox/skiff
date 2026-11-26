@@ -126,9 +126,10 @@ function renderDock(space, extra) {
     const rider = riders[0]
     const label = dockLabel(tab, rider)
     const bring = rider && (agentStateOf(rider) !== 'done' || rider.agentUnseen)
+    const working = agentNameOf(rider || tab) && agentStateOf(rider || tab) === 'working'
     const current = tab.id === active || riders.some((r) => r.id === active)
     return h('button', {
-      class: `buoy-tab${group === 0 ? ' buoy-fav' : ''}${group === 0 && !isOpen(tab) && !rider ? ' closed' : ''}${current ? ' current' : ''}`, type: 'button', 'data-tab-id': tab.id, 'data-agent-tab-id': rider?.id, title: label, 'aria-label': label, 'aria-current': current ? 'true' : null,
+      class: `buoy-tab${group === 0 ? ' buoy-fav' : ''}${group === 0 && !isOpen(tab) && !rider ? ' closed' : ''}${current ? ' current' : ''}${working ? ' agent-working' : ''}`, type: 'button', 'data-tab-id': tab.id, 'data-agent-tab-id': rider?.id, title: label, 'aria-label': label, 'aria-current': current ? 'true' : null,
       onclick: () => { if (!press?.moved) buoyAction(group === 0 && !bring ? 'favorite' : 'pick', { id: bring ? rider.id : tab.id }) }
     }, favicon(tab), dockMark(rider || tab))
   }
