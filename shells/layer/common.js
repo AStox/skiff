@@ -265,14 +265,6 @@ function deskWindows(state) {
   if (active) list.push(active)
   return list.map((tab) => ({ tab, active: tab === active, rect: rectOf(state, tab) }))
 }
-// A quiet dot in a window's space colour; none while there is only one ordinary space to tell apart.
-function windowSpace(state, tab) {
-  const space = state.spaces.filter((s) => !s.incognito).length > 1 && state.spaces.find((s) => s.id === tab.spaceId && !s.incognito)
-  if (!space) return null
-  const dot = h('span', { class: 'window-space', title: space.name })
-  dot.style.setProperty('--space', space.color)
-  return dot
-}
 /* ---------- ears: each window's tag on its top edge, clear of whatever is drawn in front of it ---------- */
 
 const EAR_HEIGHT = 26
@@ -371,8 +363,8 @@ function earLayout(windows, fixed = [], deskWidth = Infinity) {
 }
 const windowCount = (n) => `${n} ${n === 1 ? 'window' : 'windows'}`
 
-function paintSpace(state) {
-  const space = state.spaces.find((s) => s.id === state.activeSpaceId)
+function paintSpace(state, id = state.activeSpaceId) {
+  const space = state.spaces.find((s) => s.id === id)
   document.documentElement.style.setProperty('--accent', space.color)
   document.documentElement.classList.toggle('incognito', Boolean(space.incognito))
   return space
