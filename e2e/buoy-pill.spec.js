@@ -119,6 +119,37 @@ test('an unread tab shows a dot on its icon, and an icon carries one mark: the a
   expect(marks).toEqual(['agent-dot', 'agent-dot', 'speaker', 'buoy-unread', undefined])
 })
 
+test('a page whose title starts with an unread count marks its icon, favorites included, and a bracketed number elsewhere does not', async ({ skiff }) => {
+  const buoy = await skiff.bar()
+  const fav = await createTab(skiff, '/one')
+  await skiff.rpc('tabs.setFavorite', { id: fav, favorite: true })
+  const plain = await createTab(skiff, '/two')
+  const favPage = await skiff.page('/one')
+  const plainPage = await skiff.page('/two')
+  await expect(icon(buoy, fav).locator('.buoy-unread')).toHaveCount(0)
+
+  await favPage.evaluate(() => { document.title = '(3) WhatsApp' })
+  await expect(icon(buoy, fav).locator('.buoy-unread')).toBeVisible()
+  await expect(icon(buoy, fav)).toHaveAttribute('aria-label', '(3) WhatsApp, 3 unread')
+  await plainPage.evaluate(() => { document.title = 'Movie (2024) - IMDb' })
+  await expect(icon(buoy, plain)).toHaveAttribute('aria-label', 'Movie (2024) - IMDb')
+  await expect(icon(buoy, plain).locator('.buoy-unread')).toHaveCount(0)
+  await plainPage.evaluate(() => { document.title = 'Inbox (12) - me@example.com - Gmail' })
+  await expect(icon(buoy, plain).locator('.buoy-unread')).toBeVisible()
+
+  await favPage.evaluate(() => { document.title = 'WhatsApp' })
+  await expect(icon(buoy, fav).locator('.buoy-unread')).toHaveCount(0)
+
+  const counts = await buoy.evaluate(() => ['(3) WhatsApp', '(12) Messenger', '(9+) Chat', 'Inbox (3) - a@b.c - Gmail', 'Movie (2024)', 'Movie (2024) - IMDb', 'Docs (3) - notes', '(0) Idle', '(2024) Film', '(3)x', ''].map((title) => siteNotice({ title })))
+  expect(counts).toEqual(['3', '12', '9+', '3', '', '', '', '', '', '', ''])
+  // An icon carries one mark: the agent's dot and the speaker come before the notice.
+  const marks = await buoy.evaluate(() => {
+    const tab = { id: 'x', url: 'https://example.com', title: '(2) Chat', bucket: 'active' }
+    return [dockMark({ ...tab, agent: 'omp', agentState: 'idle' })?.className, dockMark({ ...tab, protections: { audible: true } })?.className, dockMark(tab)?.className]
+  })
+  expect(marks).toEqual(['agent-dot', 'speaker', 'buoy-unread'])
+})
+
 test('agent tabs of other spaces follow after a hairline, picking one switches to its space, and one that is done and seen is not shown', async ({ skiff }) => {
   const first = (await skiff.state()).activeSpaceId
   const agentTab = await createTab(skiff, '/one?far', { agent: 'omp' })

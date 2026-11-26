@@ -77,18 +77,19 @@ function renderPill() {
 const AGENT_WORDS = { working: 'working', idle: 'idle', done: 'done', asking: 'asks for this tab' }
 const agentStateOf = (tab) => (tab.agentRequest ? 'asking' : tab.agentState || 'idle')
 
-// The one mark an icon carries: the agent's state, else the speaker, else the unread dot.
+// The one mark an icon carries: the agent's state, else the speaker, else the unread dot (the page's own notice counts too).
 function dockMark(tab) {
   if (agentNameOf(tab)) {
     const phase = agentStateOf(tab)
     return h('span', { class: 'agent-dot', 'data-state': phase, 'data-unseen': phase === 'done' && tab.agentUnseen, 'aria-hidden': 'true' })
   }
-  return speaker(tab) || (tab.bucket === 'unread' ? h('span', { class: 'buoy-unread', 'aria-hidden': 'true' }) : null)
+  return speaker(tab) || (tab.bucket === 'unread' || siteNotice(tab) ? h('span', { class: 'buoy-unread', 'aria-hidden': 'true' }) : null)
 }
 
 function dockLabel(tab, by = tab) {
   const name = agentNameOf(by)
-  return `${tab.title || tab.url}${name ? `, ${name} ${AGENT_WORDS[agentStateOf(by)]}` : ''}`
+  const notice = siteNotice(tab)
+  return `${tab.title || tab.url}${name ? `, ${name} ${AGENT_WORDS[agentStateOf(by)]}` : ''}${notice ? `, ${notice} unread` : ''}`
 }
 
 // Most urgent first: asking, working, idle, done and unseen, done.
@@ -114,10 +115,10 @@ function renderDock(space, extra) {
     ...tabs.filter((t) => !carrier.has(t)).map(item(1)),
     ...state.spaces.filter((s) => s.id !== space.id).flatMap((s) => visibleTabs(state, s.id)).filter((t) => t.agentRequest || (t.agent && (t.agentState !== 'done' || t.agentUnseen))).map(item(2))
   ]
-  const key = JSON.stringify([items.map(({ tab: t, group, riders }) => [group, t.id, t.title, t.url, t.favicon, isOpen(t), Boolean(t.protections?.audible), agentNameOf(t), agentStateOf(t), t.agentUnseen, t.bucket === 'unread', riders.map((r) => [r.id, agentNameOf(r), agentStateOf(r), r.agentUnseen])]), active, limit, extra])
+  const key = JSON.stringify([items.map(({ tab: t, group, riders }) => [group, t.id, t.title, t.url, t.favicon, isOpen(t), Boolean(t.protections?.audible), agentNameOf(t), agentStateOf(t), t.agentUnseen, t.bucket === 'unread', siteNotice(t), riders.map((r) => [r.id, agentNameOf(r), agentStateOf(r), r.agentUnseen])]), active, limit, extra])
   if (key === dockKey) return
   dockKey = key
-  const quiet = (it) => !agentNameOf(it.tab) && it.tab.id !== active
+  const quiet = (it) => !agentNameOf(it.tab) && it.tab.id !== active && !siteNotice(it.tab)
   const first = items.filter((it) => it.group === 1 && quiet(it))
   const second = items.filter((it) => it.group === 0 && !isOpen(it.tab) && !it.riders.length)
   const folding = [...first.reverse(), ...second.reverse(), ...items.filter((it) => !first.includes(it) && !second.includes(it)).reverse()]
