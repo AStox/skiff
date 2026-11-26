@@ -131,6 +131,20 @@ test('an agent drives only a tab it opened or was handed, for the owner CLI and 
   expect(picture.content.map((c) => c.type)).toEqual(['image', 'text'])
 })
 
+test('a call on a tab another debugger holds is refused with devtools_attached, and works once it lets go', async ({ skiff }) => {
+  const tab = await formTab(skiff)
+  const holder = (action) => skiff.app.evaluate(({ webContents }, [url, action]) => {
+    const wc = webContents.getAllWebContents().find((w) => w.getURL() === url)
+    if (action === 'attach') wc.debugger.attach('1.3')
+    else wc.debugger.detach()
+  }, [href(skiff, FORM), action])
+  await expect.poll(() => skiff.app.evaluate(({ webContents }, url) => webContents.getAllWebContents().some((w) => w.getURL() === url && !w.isLoading()), href(skiff, FORM))).toBe(true)
+  await holder('attach')
+  expect(await refused(agent(skiff, 'tabs.snapshot', tab.id))).toBe('devtools_attached')
+  await holder('detach')
+  expect((await agent(skiff, 'tabs.snapshot', tab.id)).refs).toBeGreaterThan(0)
+})
+
 test('an agent asks for a tab: Allow hands it over, Deny refuses, and the call resolves with the answer', async ({ skiff }) => {
   const user = await skiff.rpc('tabs.create', { url: href(skiff, FORM) })
   await skiff.page(FORM)

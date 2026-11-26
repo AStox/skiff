@@ -145,7 +145,7 @@ function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
     try {
       wc.debugger.attach('1.3')
     } catch (e) {
-      throw S.err('devtools_attached', `Another debugger, probably DevTools, is attached to this tab. ${devtoolsHint}`)
+      throw S.err('devtools_attached', 'Another debugger, probably DevTools, is attached to this tab. Ask the user to close DevTools on it, then try again.')
     }
     c = { wc, refs: new Map() }
     channels.set(id, c)

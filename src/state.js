@@ -51,6 +51,8 @@ const CHAT = /^skiff:\/\/chat\/c[0-9a-f]{12}$/
 const AGENT_RUNTIME = ['agentState', 'agentControl', 'agentAt', 'agentUnseen', 'agentSummary', 'agentRequest']
 const AGENT_IDLE_MS = 120000
 
+// The codes a command fails with; any other error reaches a caller as `internal`.
+const CODES = ['unknown_method', 'bad_params', 'not_found', 'forbidden', 'unauthorized', 'cancelled', 'timeout', 'component_error', 'command_collision', 'bad_schema', 'bad_result', 'user_has_control', 'devtools_attached']
 const err = (code, message) => Object.assign(new Error(message), { code })
 const bad = (message) => err('bad_params', message)
 const newId = (prefix) => prefix + crypto.randomBytes(4).toString('hex')
@@ -1524,7 +1526,7 @@ function setSettings(s, p) {
 }
 
 module.exports = {
-  INCOGNITO_PARTITION, err, isObject, load, resolveInput, webUrl, findTab, activeTab, getTab, visibleTabs, isIncognito, persistable, storedTabs, deskTabs, shownTabs, onDesktop, desktopNumber, setDesktops,
+  INCOGNITO_PARTITION, CODES, err, isObject, load, resolveInput, webUrl, findTab, activeTab, getTab, visibleTabs, isIncognito, persistable, storedTabs, deskTabs, shownTabs, onDesktop, desktopNumber, setDesktops,
   createSpace, updateSpace, moveSpace, removeSpace, activateSpace, cycleSpace, openIncognito,
   createFolder, updateFolder, moveFolder, removeFolder, setTrailCollapsed, refreshFolderLabels,
   createProfile, updateProfile, removeProfile, assignProfile, setLinkRule, removeLinkRule, routeLink,

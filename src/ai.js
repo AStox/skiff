@@ -765,7 +765,8 @@ async function handleMcp(message, { tools, version }) {
     return ok({ content: single ? [...pictures, text] : [text, ...pictures] })
   } catch (e) {
     log.warn('mcp tool failed', { tool: params.name, err: e.message })
-    return ok({ content: [{ type: 'text', text: String(e.message || e) }], isError: true })
+    const text = String(e.message || e)
+    return ok({ content: [{ type: 'text', text: S.CODES.includes(e.code) ? `${e.code}: ${text}` : text }], isError: true })
   }
 }
 
