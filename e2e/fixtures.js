@@ -89,6 +89,7 @@ const test = base.extend({
         // Only the extension's blocking webRequest listener keeps these two scripts away from the page.
         if (route === '/ext/blocked.js' || route === '/ext/redirect-me.js') return script("document.documentElement.dataset.unexpected = 'served'")
         if (route === '/ext/ok.js') return script("document.documentElement.dataset.ok = 'ran'")
+        if (route === '/ext/hop') { response.statusCode = 302; response.setHeader('Location', '/ext/page?hopped'); return response.end() }
         response.setHeader('Content-Type', 'text/html; charset=utf-8')
         response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'")
         if (route === '/ext/frame') return response.end('<!doctype html><p id="in-frame">frame</p>')

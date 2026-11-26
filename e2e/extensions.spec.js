@@ -104,6 +104,22 @@ test('an unpacked extension blocks, redirects, injects, reports tabs, shows its 
   })
 })
 
+// uBlock Origin registers a host's scriptlets on onBeforeNavigate: without the redirect target and the iframe, YouTube opened as youtube.com loads unfiltered.
+test('an extension hears onBeforeNavigate for a redirect target and an iframe', async ({ skiff }) => {
+  const entry = await skiff.rpc('extensions.add', { path: fixture })
+  await backgroundReady(skiff)
+  await skiff.rpc('tabs.create', { url: `${skiff.origin}/ext/hop` })
+  const page = await skiff.page('/ext/page?hopped')
+  await expect.poll(() => page.frames().some((frame) => frame.url().endsWith('/ext/frame'))).toBe(true)
+  expect(await skiff.rpc('extensions.popup', { id: entry.id, bounds: { x: 300, y: 20, width: 400, height: 500 } })).toMatchObject({ name: 'Skiff test extension' })
+  const popup = await pageMatching(skiff, /\/popup\.html(\?|$)/)
+  await expect(popup.locator('#events')).toContainText('"what":"before","frameId":0,"parentFrameId":-1,"url":"' + skiff.origin + '/ext/hop"')
+  await expect(popup.locator('#events')).toContainText('"what":"before","frameId":0,"parentFrameId":-1,"url":"' + skiff.origin + '/ext/page?hopped"')
+  const events = JSON.parse(await popup.locator('#events').textContent())
+  expect(events.find((e) => e.what === 'before' && e.url === `${skiff.origin}/ext/frame`)).toMatchObject({ parentFrameId: 0, frameId: expect.any(Number) })
+  expect(events.find((e) => e.what === 'before' && e.url === `${skiff.origin}/ext/frame`).frameId).toBeGreaterThan(0)
+})
+
 test('extension commands reject bad input with the usual codes', async ({ skiff }) => {
   expect(await callCode(skiff, 'extensions.add', { path: path.join(skiff.root, 'missing') })).toBe('not_found')
   expect(await callCode(skiff, 'extensions.add', { path: skiff.home })).toBe('bad_params')
