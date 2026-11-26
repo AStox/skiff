@@ -12,6 +12,7 @@ const CALL_MS = 15000
 const WAIT_MS = 10000
 const WAIT_MAX_MS = 60000
 const LOAD_MS = 15000
+const SETTLE_MS = 300
 
 const INTERACTIVE = new Set(['button', 'link', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'switch', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'slider', 'spinbutton', 'option', 'listbox', 'treeitem', 'PopUpButton', 'DisclosureTriangle'])
 const SHOWN_PROPS = ['focused', 'checked', 'disabled', 'expanded', 'selected', 'required', 'invalid', 'readonly']
@@ -126,6 +127,13 @@ function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
       const timer = setTimeout(done, LOAD_MS)
       wc.on('did-stop-loading', done)
     })
+  }
+
+  // Inside a chain: after an action that may start loading, give the page 300 ms to begin, then wait until it has stopped.
+  // ponytail: a page that changes later without loading is not caught; the chain needs an explicit wait step.
+  async function settle(id) {
+    await sleep(SETTLE_MS)
+    await ready(contents(id))
   }
 
   async function channel(id) {
@@ -309,7 +317,7 @@ function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
     }
   }
 
-  return { snapshot, click, type, press, scroll, screenshot, wait, release, sent }
+  return { snapshot, click, type, press, scroll, screenshot, wait, settle, release, sent }
 }
 
 module.exports = { createAgentBrowser, parseKey, outline }

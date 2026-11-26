@@ -7,11 +7,11 @@ const aliases = {
   browser_list_tabs: 'tabs.list', browser_read_page: 'tabs.read', browser_open_tab: 'tabs.create',
   browser_navigate: 'tabs.navigate', browser_activate_tab: 'tabs.activate', browser_close_tab: 'tabs.close',
   browser_snapshot: 'tabs.snapshot', browser_click: 'tabs.click', browser_type: 'tabs.type', browser_press: 'tabs.press',
-  browser_scroll: 'tabs.scroll', browser_screenshot: 'tabs.screenshot', browser_wait: 'tabs.wait',
+  browser_scroll: 'tabs.scroll', browser_screenshot: 'tabs.screenshot', browser_wait: 'tabs.wait', browser_steps: 'tabs.steps',
   browser_request_tab: 'agent.requestTab', browser_finish: 'agent.finish'
 }
 // Commands that act as a named agent: a scoped grant always acts as its own agent, never one it names.
-const agentCommands = new Set(['tabs.snapshot', 'tabs.click', 'tabs.type', 'tabs.press', 'tabs.scroll', 'tabs.screenshot', 'tabs.wait', 'agent.requestTab', 'agent.finish'])
+const agentCommands = new Set(['tabs.snapshot', 'tabs.click', 'tabs.type', 'tabs.press', 'tabs.scroll', 'tabs.screenshot', 'tabs.wait', 'tabs.steps', 'agent.requestTab', 'agent.finish'])
 const rules = {
   'tabs.list': 'list', 'tabs.read': 'read', 'tabs.capture': 'read',
   'tabs.create': 'create', 'tabs.navigate': 'mutate', 'tabs.activate': 'mutate',

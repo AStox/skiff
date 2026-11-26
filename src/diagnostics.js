@@ -17,11 +17,17 @@ const SLOW_MS = 150
 const BODY_KEYS = new Set(['content', 'text', 'value', 'html', 'body'])
 const RESULT = { string: 200, depth: 2, keys: 10, items: 5, budget: 600, stack: 1024 }
 
+const redact = (params) => {
+  const out = {}
+  for (const [key, value] of Object.entries(params)) out[key] = typeof value === 'string' && BODY_KEYS.has(key) ? `[string ${value.length}]` : value
+  return out
+}
+
 const shapeParams = (method, params) => {
   if (!params || typeof params !== 'object') return params
   if (SENSITIVE.test(method)) return { keys: Object.keys(params) }
-  const out = {}
-  for (const [key, value] of Object.entries(params)) out[key] = typeof value === 'string' && BODY_KEYS.has(key) ? `[string ${value.length}]` : value
+  const out = redact(params)
+  if (Array.isArray(out.steps)) out.steps = out.steps.map((step) => (step && typeof step === 'object' ? redact(step) : step))
   if (method === 'settings.set' && Array.isArray(out.ai?.agents)) out.ai = { ...out.ai, agents: out.ai.agents.map((agent) => ({ name: agent?.name })) }
   return out
 }

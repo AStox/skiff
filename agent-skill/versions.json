@@ -2,5 +2,9 @@
   {
     "version": 1,
     "sha256": "bf85711e1fe588cd15210518a126350df106ffe7b2057f077181d19f452fc402"
+  },
+  {
+    "version": 2,
+    "sha256": "764ff6cf026f672420ce76d453988ec3820c7bb2de5043d5bcbb5e7ad68ee401"
   }
 ]

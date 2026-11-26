@@ -352,6 +352,20 @@ test('handleMcp answers initialize, ping, tools/list, tools/call and refuses unk
   assert.deepEqual((await mcp([{ jsonrpc: '2.0', id: 8, method: 'ping' }, { jsonrpc: '2.0', method: 'notifications/initialized' }])).map((r) => r.id), [8])
 })
 
+test('handleMcp sends a picture as an image block, also from a screenshot step inside a chain, and keeps the base64 out of the text', async () => {
+  const shot = { do: 'screenshot', tabId: 't1', mime: 'image/jpeg', width: 2, height: 1, data: '/9j/AA==' }
+  const tools = [
+    { name: 'one', inputSchema: { type: 'object' }, run: () => ({ ...shot, do: undefined }) },
+    { name: 'chain', inputSchema: { type: 'object' }, run: () => ({ failed: { step: 3, do: 'click' }, results: [{ do: 'snapshot', text: 'e1' }, shot] }) }
+  ]
+  const call = async (name) => (await handleMcp({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name } }, { tools, version: '0' })).result.content
+  const [single, text] = await call('one')
+  assert.deepEqual([single.type, text.type], ['image', 'text'])
+  const [body, ...images] = await call('chain')
+  assert.deepEqual(images, [{ type: 'image', data: '/9j/AA==', mimeType: 'image/jpeg' }])
+  assert.deepEqual(JSON.parse(body.text), { failed: { step: 3, do: 'click' }, results: [{ do: 'snapshot', text: 'e1' }, { do: 'screenshot', tabId: 't1', mime: 'image/jpeg', width: 2, height: 1 }] })
+})
+
 test('browser tools use the owned registry and selected grant boundary rather than a second dispatcher', async () => {
   const s = S.load()
   const tab = S.createTab(s, { url: 'https://a.example/' }, 0)
