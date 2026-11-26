@@ -167,7 +167,7 @@ function swipeTracker(vertical = false) {
   }
 }
 
-// A space switch by a two finger swipe, as the Buoy, the card and the ears make it: the space comes in front of other apps.
+// A space switch by a two finger swipe, as the Buoy, the card and the ears make it: from the Buoy or an ear the space comes in front of other apps.
 // With expose (the Buoy and the ears), a swipe up pulls exposé open as the fingers travel (expose.js follows 'expose-pull' and decides when it commits) and a swipe down closes it.
 // The momentum tail can land on another view once the windows have slid, so a switch anywhere holds every other view's tracker until its stream goes quiet.
 function spaceSwiper(expose = false) {
@@ -216,7 +216,8 @@ function spaceSwiper(expose = false) {
       }
       if (typeof step !== 'number' || !step) return 0
       claimed = true
-      skiff.call('ui.raise').catch(() => {})
+      // The card and the tab list are already in front, and taking the keyboard from them would close them.
+      if (expose) skiff.call('ui.raise').catch(() => {})
       skiff.call('spaces.cycle', { delta: step }).catch(() => {})
       skiff.call('ui.emit', { name: 'space-swiped', data: { from: me }, focus: false }).catch(() => {})
       return step
