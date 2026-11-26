@@ -87,3 +87,43 @@ test('the Tab layout setting arranges the shown windows without touching their o
   await skiff.rpc('settings.set', { tabLayout: 'free' })
   await expect.poll(async () => rectOf((await tabs(skiff)).find((t) => t.id === created[0].id))).toEqual(own[created[0].id])
 })
+
+test('in the full layout, raising a window leaves every ear where it was; windows that are not aligned still bring the raised ear first', async ({ skiff }) => {
+  const created = []
+  for (const name of ['one', 'two', 'three', 'four']) created.push(await skiff.rpc('tabs.create', { url: `${skiff.origin}/agent/${name}` }))
+  await expect.poll(async () => (await views(skiff)).length).toBe(4)
+  const frames = {}
+  for (const t of created) {
+    await expect.poll(() => skiff.app.context().pages().some((p) => p.url().endsWith(`/frame.html?tab=${t.id}`))).toBe(true)
+    frames[t.id] = skiff.app.context().pages().find((p) => p.url().endsWith(`/frame.html?tab=${t.id}`))
+  }
+  // Left to right by ear.
+  const order = async () => {
+    const lefts = await Promise.all(created.map(async (t) => [t.id, await frames[t.id].locator('#ear').evaluate((el) => (el.closest('html').classList.contains('earless') ? null : el.getBoundingClientRect().left))]))
+    return lefts.filter(([, left]) => left !== null).sort((a, b) => a[1] - b[1]).map(([id]) => id)
+  }
+  const raise = async (id) => {
+    await frames[id].locator('#ear').click({ position: { x: 12, y: 12 } })
+    await expect.poll(async () => Object.values((await skiff.state()).activeTabBySpace)).toContain(id)
+  }
+
+  await skiff.rpc('settings.set', { tabLayout: 'full' })
+  await expect.poll(async () => new Set((await views(skiff)).map((v) => JSON.stringify([v.x, v.y, v.width, v.height]))).size).toBe(1)
+  await expect.poll(async () => (await order()).length).toBe(4)
+  const before = await order()
+  await raise(before[2])
+  await expect(async () => expect(await order()).toEqual(before)).toPass()
+  await raise(before[0])
+  await raise(before[3])
+  await expect(async () => expect(await order()).toEqual(before)).toPass()
+
+  // Off the full layout the windows are at their own rects, and the ear of the raised one goes first again.
+  await skiff.rpc('settings.set', { tabLayout: 'free' })
+  await skiff.rpc('desk.place', { id: created[0].id, x: 100, y: 100, width: 500, height: 300 })
+  await skiff.rpc('desk.place', { id: created[1].id, x: 110, y: 100, width: 500, height: 300 })
+  await skiff.rpc('desk.place', { id: created[2].id, x: 120, y: 100, width: 500, height: 300 })
+  await skiff.rpc('desk.place', { id: created[3].id, x: 130, y: 100, width: 500, height: 300 })
+  await expect.poll(async () => (await order())[0]).toBe(created[3].id)
+  await skiff.rpc('tabs.activate', { id: created[0].id })
+  await expect.poll(async () => (await order())[0]).toBe(created[0].id)
+})
