@@ -517,7 +517,7 @@ test('incognito pages are never offered or sent, the chat tab stays incognito, a
     { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'browser_navigate', arguments: { tabId: tab.id, url: `${skiff.origin}/private-navigation-denied` } } },
     { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'browser_open_tab', arguments: { spaceId: space.id, url: `${skiff.origin}/private-creation-denied` } } }
   ])
-  expect(read.result).toEqual({ content: [{ type: 'text', text: `No tab ${tab.id}` }], isError: true })
+  expect(read.result).toEqual({ content: [{ type: 'text', text: `forbidden: No tab ${tab.id}` }], isError: true })
   expect(JSON.parse(list.result.content[0].text)).toEqual({ activeTabId: null, tabs: [] })
   expect(aliasRead.result).toEqual(read.result)
   expect(navigate.result.isError).toBe(true)

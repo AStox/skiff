@@ -345,11 +345,19 @@ test('handleMcp answers initialize, ping, tools/list, tools/call and refuses unk
   assert.deepEqual(await mcp({ jsonrpc: '2.0', id: 2, method: 'ping' }), { jsonrpc: '2.0', id: 2, result: {} })
   assert.deepEqual((await mcp({ jsonrpc: '2.0', id: 3, method: 'tools/list' })).result.tools, tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })))
   assert.deepEqual((await mcp({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'echo', arguments: { a: 1 } } })).result, { content: [{ type: 'text', text: '{"got":{"a":1}}' }] })
-  assert.deepEqual((await mcp({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'boom' } })).result, { content: [{ type: 'text', text: 'No tab x' }], isError: true })
+  assert.deepEqual((await mcp({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'boom' } })).result, { content: [{ type: 'text', text: 'bad_params: No tab x' }], isError: true })
   assert.equal((await mcp({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'nope' } })).error.code, -32602)
   assert.deepEqual(await mcp({ jsonrpc: '2.0', id: 7, method: 'resources/list' }), { jsonrpc: '2.0', id: 7, error: { code: -32601, message: 'Method not found: resources/list' } })
   assert.equal(await mcp({ jsonrpc: '2.0', method: 'notifications/initialized' }), null)
   assert.deepEqual((await mcp([{ jsonrpc: '2.0', id: 8, method: 'ping' }, { jsonrpc: '2.0', method: 'notifications/initialized' }])).map((r) => r.id), [8])
+})
+
+test('handleMcp puts a known error code in front of the message and shows nothing else of an unexpected error', async () => {
+  const failing = (error) => ({ name: 'x', inputSchema: { type: 'object' }, run: () => { throw error } })
+  const text = async (error) => (await handleMcp({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'x' } }, { tools: [failing(error)], version: '0' })).result.content[0].text
+  for (const code of ['user_has_control', 'forbidden', 'timeout', 'bad_params', 'not_found']) assert.equal(await text(S.err(code, 'why')), `${code}: why`)
+  assert.equal(await text(new Error('plain')), 'plain')
+  assert.equal(await text(Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' })), 'ENOENT: no such file')
 })
 
 test('handleMcp sends a picture as an image block, also from a screenshot step inside a chain, and keeps the base64 out of the text', async () => {

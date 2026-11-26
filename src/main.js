@@ -75,7 +75,7 @@ app.on('open-url', (event, url) => {
   else pendingUrls.push(url)
 })
 const SPARKLE = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#8b5cf6" d="M8 0c.6 4.2 3.8 7.4 8 8-4.2.6-7.4 3.8-8 8-.6-4.2-3.8-7.4-8-8 4.2-.6 7.4-3.8 8-8z"/></svg>'
-const CODES = ['unknown_method', 'bad_params', 'not_found', 'forbidden', 'unauthorized', 'cancelled', 'timeout', 'component_error', 'command_collision', 'bad_schema', 'bad_result', 'user_has_control', 'devtools_attached']
+const { CODES } = S
 
 let state
 let browserIdentity
