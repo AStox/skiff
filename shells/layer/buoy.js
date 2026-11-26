@@ -86,36 +86,50 @@ function dockMark(tab) {
   return speaker(tab) || (tab.bucket === 'unread' ? h('span', { class: 'buoy-unread', 'aria-hidden': 'true' }) : null)
 }
 
-function dockLabel(tab) {
-  const name = agentNameOf(tab)
-  return `${tab.title || tab.url}${name ? `, ${name} ${AGENT_WORDS[agentStateOf(tab)]}` : ''}`
+function dockLabel(tab, by = tab) {
+  const name = agentNameOf(by)
+  return `${tab.title || tab.url}${name ? `, ${name} ${AGENT_WORDS[agentStateOf(by)]}` : ''}`
 }
 
+// Most urgent first: asking, working, idle, done and unseen, done.
+const riderRank = (t) => ({ asking: 0, working: 1, idle: 2 })[agentStateOf(t)] ?? (t.agentUnseen ? 3 : 4)
+
 // The space's favorites, its other open tabs and the agent tabs of other spaces, as icons; what does not fit folds into a +N that opens the tab list.
+// An agent tab on the host of exactly one favorite rides on that favorite's icon instead of having its own.
 // Folded first: open tabs without an agent, then favorites that are not open, then the rest, each from the last backwards.
 function renderDock(space, extra) {
   const active = state.activeTabBySpace[space.id]
   const limit = Math.floor(deskSize(state).width * DOCK_SHARE)
   const mine = visibleTabs(state, space.id)
-  const item = (group) => (tab) => ({ tab, group })
+  const favs = mine.filter((t) => t.favorite)
+  const tabs = mine.filter((t) => !t.favorite && !t.userPeek && (isPlain(t) || isOpen(t)))
+  const carrier = new Map(tabs.flatMap((t) => {
+    const host = hostOf(t.url)
+    const same = t.agent && host ? favs.filter((f) => hostOf(f.url) === host) : []
+    return same.length === 1 ? [[t, same[0]]] : []
+  }))
+  const item = (group) => (tab) => ({ tab, group, riders: group === 0 ? tabs.filter((t) => carrier.get(t) === tab).sort((a, b) => riderRank(a) - riderRank(b)) : [] })
   const items = [
-    ...mine.filter((t) => t.favorite).map(item(0)),
-    ...mine.filter((t) => !t.favorite && !t.userPeek && (isPlain(t) || isOpen(t))).map(item(1)),
+    ...favs.map(item(0)),
+    ...tabs.filter((t) => !carrier.has(t)).map(item(1)),
     ...state.spaces.filter((s) => s.id !== space.id).flatMap((s) => visibleTabs(state, s.id)).filter((t) => t.agentRequest || (t.agent && (t.agentState !== 'done' || t.agentUnseen))).map(item(2))
   ]
-  const key = JSON.stringify([items.map(({ tab: t, group }) => [group, t.id, t.title, t.url, t.favicon, isOpen(t), Boolean(t.protections?.audible), agentNameOf(t), agentStateOf(t), t.agentUnseen, t.bucket === 'unread']), active, limit, extra])
+  const key = JSON.stringify([items.map(({ tab: t, group, riders }) => [group, t.id, t.title, t.url, t.favicon, isOpen(t), Boolean(t.protections?.audible), agentNameOf(t), agentStateOf(t), t.agentUnseen, t.bucket === 'unread', riders.map((r) => [r.id, agentNameOf(r), agentStateOf(r), r.agentUnseen])]), active, limit, extra])
   if (key === dockKey) return
   dockKey = key
   const quiet = (it) => !agentNameOf(it.tab) && it.tab.id !== active
   const first = items.filter((it) => it.group === 1 && quiet(it))
-  const second = items.filter((it) => it.group === 0 && !isOpen(it.tab))
+  const second = items.filter((it) => it.group === 0 && !isOpen(it.tab) && !it.riders.length)
   const folding = [...first.reverse(), ...second.reverse(), ...items.filter((it) => !first.includes(it) && !second.includes(it)).reverse()]
-  const button = ({ tab, group }) => {
-    const label = dockLabel(tab)
+  const button = ({ tab, group, riders }) => {
+    const rider = riders[0]
+    const label = dockLabel(tab, rider)
+    const bring = rider && (agentStateOf(rider) !== 'done' || rider.agentUnseen)
+    const current = tab.id === active || riders.some((r) => r.id === active)
     return h('button', {
-      class: `buoy-tab${group === 0 ? ' buoy-fav' : ''}${group === 0 && !isOpen(tab) ? ' closed' : ''}${tab.id === active ? ' current' : ''}`, type: 'button', 'data-tab-id': tab.id, title: label, 'aria-label': label, 'aria-current': tab.id === active ? 'true' : null,
-      onclick: () => { if (!press?.moved) buoyAction(group === 0 ? 'favorite' : 'pick', { id: tab.id }) }
-    }, favicon(tab), dockMark(tab))
+      class: `buoy-tab${group === 0 ? ' buoy-fav' : ''}${group === 0 && !isOpen(tab) && !rider ? ' closed' : ''}${current ? ' current' : ''}`, type: 'button', 'data-tab-id': tab.id, 'data-agent-tab-id': rider?.id, title: label, 'aria-label': label, 'aria-current': current ? 'true' : null,
+      onclick: () => { if (!press?.moved) buoyAction(group === 0 && !bring ? 'favorite' : 'pick', { id: bring ? rider.id : tab.id }) }
+    }, favicon(tab), dockMark(rider || tab))
   }
   const icons = new Map(items.map((it) => [it, button(it)]))
   const more = (n) => h('button', { id: 'buoy-more', class: 'buoy-tab', type: 'button', title: `${n} more tabs. Show the tab list`, 'aria-label': `${n} more tabs. Show the tab list`, 'aria-haspopup': 'dialog', onclick: () => { if (!press?.moved) buoyAction('tabs') } }, `+${n}`)

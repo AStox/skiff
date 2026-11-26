@@ -206,3 +206,129 @@ test('with more tabs than fit the last quiet tabs fold into +N, which opens the 
   await expect.poll(() => floatOpen(skiff, '/tablist.html')).toBe(false)
   await expect(more).toHaveAttribute('aria-expanded', 'false')
 })
+
+// A favorite whose page is not open: after a restart a favorite hidden from the desk has no page until it is used.
+const closedFavorite = async (skiff, path) => {
+  const id = await createTab(skiff, path)
+  await skiff.rpc('tabs.setFavorite', { id, favorite: true })
+  await skiff.rpc('desk.hide', { id })
+  await skiff.restart()
+  expect((await tabOf(skiff, id)).lifecycle).toBeUndefined()
+  return id
+}
+const dockIds = (buoy) => buoy.locator('.buoy-tab[data-tab-id]').evaluateAll((els) => els.map((el) => el.dataset.tabId))
+const active = async (skiff) => (await skiff.state()).activeTabBySpace[(await skiff.state()).activeSpaceId]
+
+test('an agent tab on the host of one favorite rides on its icon: colour, the agent dot and words, a click that brings the agent tab forward until it is seen', async ({ skiff }) => {
+  const fav = await closedFavorite(skiff, '/one?fav')
+  const other = await createTab(skiff, '/two')
+  const buoy = await skiff.bar()
+  await expect(icon(buoy, fav)).toHaveClass(/closed/)
+
+  const agentTab = await createTab(skiff, '/one?agent', { agent: 'bb' })
+  const site = icon(buoy, fav)
+  const dot = site.locator('.agent-dot')
+  await expect(dot).toHaveAttribute('data-state', 'working')
+  await expect(site).not.toHaveClass(/closed/)
+  await expect(site.locator('.favicon')).toHaveCSS('filter', 'none')
+  await expect(site).toHaveAttribute('data-agent-tab-id', agentTab)
+  await expect(site).toHaveAttribute('aria-label', 'Fixture reading, bb working')
+  await expect(site).toHaveAttribute('title', 'Fixture reading, bb working')
+  await expect(site.locator('.agent-dot, .speaker, .buoy-unread')).toHaveCount(1)
+  await expect(dot).toHaveCSS('background-color', 'rgb(122, 90, 248)')
+  await expect(icon(buoy, agentTab)).toHaveCount(0)
+  expect(await dockIds(buoy)).toEqual([fav, other])
+  expect((await tabOf(skiff, fav)).lifecycle).toBeUndefined()
+
+  await skiff.rpc('tabs.activate', { id: other })
+  await expect.poll(() => active(skiff)).toBe(other)
+  await expect(site).not.toHaveClass(/current/)
+  await site.click()
+  await expect.poll(() => active(skiff)).toBe(agentTab)
+  await expect(site).toHaveClass(/current/)
+  await expect(site).toHaveAttribute('aria-current', 'true')
+  expect((await tabOf(skiff, fav)).lifecycle).toBeUndefined()
+
+  // Finished while another tab is in front: done, unseen, and the click still brings the agent's tab.
+  await skiff.rpc('tabs.activate', { id: other })
+  await skiff.rpc('agent.finish', { tabId: agentTab, agent: 'bb', summary: 'done' })
+  await expect(dot).toHaveAttribute('data-state', 'done')
+  await expect(dot).toHaveAttribute('data-unseen', '')
+  await expect(site).toHaveAttribute('aria-label', 'Fixture reading, bb done')
+  await expect(site).not.toHaveClass(/closed/)
+  await site.click()
+  await expect.poll(() => active(skiff)).toBe(agentTab)
+  await expect(dot).not.toHaveAttribute('data-unseen', '')
+  expect((await tabOf(skiff, fav)).lifecycle).toBeUndefined()
+
+  // Its tab closed, the favorite goes back to its own look.
+  await skiff.rpc('tabs.close', { id: agentTab })
+  await expect(site).toHaveClass(/closed/)
+  await expect(site.locator('.agent-dot')).toHaveCount(0)
+  await expect(site).not.toHaveAttribute('data-agent-tab-id', /.+/)
+  await expect(site).toHaveAttribute('aria-label', 'Fixture reading')
+})
+
+test('when the agent tab is done and seen a click on the favorite goes to the favorite', async ({ skiff }) => {
+  const fav = await closedFavorite(skiff, '/one?fav')
+  const other = await createTab(skiff, '/two')
+  const agentTab = await createTab(skiff, '/one?agent', { agent: 'bb' })
+  const buoy = await skiff.bar()
+  const site = icon(buoy, fav)
+  await skiff.rpc('agent.finish', { tabId: agentTab, agent: 'bb', summary: 'done' })
+  await skiff.rpc('tabs.activate', { id: agentTab })
+  await skiff.rpc('tabs.activate', { id: other })
+  await expect(site.locator('.agent-dot')).toHaveAttribute('data-state', 'done')
+  await expect(site.locator('.agent-dot')).not.toHaveAttribute('data-unseen', '')
+  await site.click()
+  await expect.poll(() => active(skiff)).toBe(fav)
+  await expect.poll(async () => (await tabOf(skiff, fav)).lifecycle).toBe('live')
+  await expect(site).toHaveClass(/current/)
+})
+
+test('with several agent tabs on one favorite the most urgent one is the mark, the words and the click', async ({ skiff }) => {
+  const fav = await closedFavorite(skiff, '/one?fav')
+  const other = await createTab(skiff, '/two')
+  const finished = await createTab(skiff, '/one?a', { agent: 'omp' })
+  const working = await createTab(skiff, '/one?b', { agent: 'bb' })
+  await skiff.rpc('tabs.activate', { id: other })
+  await skiff.rpc('agent.finish', { tabId: finished, agent: 'omp', summary: 'done' })
+  const buoy = await skiff.bar()
+  const site = icon(buoy, fav)
+  await expect(site).toHaveAttribute('data-agent-tab-id', working)
+  await expect(site).toHaveAttribute('aria-label', 'Fixture reading, bb working')
+  await expect(site.locator('.agent-dot')).toHaveAttribute('data-state', 'working')
+  expect(await dockIds(buoy)).toEqual([fav, other])
+  await site.click()
+  await expect.poll(() => active(skiff)).toBe(working)
+
+  await skiff.rpc('tabs.close', { id: working })
+  await expect(site).toHaveAttribute('data-agent-tab-id', finished)
+  await expect(site).toHaveAttribute('aria-label', 'Fixture reading, omp done')
+  await expect(site.locator('.agent-dot')).toHaveAttribute('data-unseen', '')
+})
+
+test('an agent tab keeps its own icon when two favorites share its host or when its host is another', async ({ skiff }) => {
+  const first = await createTab(skiff, '/one?first')
+  await skiff.rpc('tabs.setFavorite', { id: first, favorite: true })
+  const second = await createTab(skiff, '/two?second')
+  await skiff.rpc('tabs.setFavorite', { id: second, favorite: true })
+  const agentTab = await createTab(skiff, '/one?agent', { agent: 'bb' })
+  const buoy = await skiff.bar()
+  await expect(icon(buoy, agentTab).locator('.agent-dot')).toHaveAttribute('data-state', 'working')
+  expect(await dockIds(buoy)).toEqual([first, second, agentTab])
+  for (const fav of [first, second]) {
+    await expect(icon(buoy, fav).locator('.agent-dot')).toHaveCount(0)
+    await expect(icon(buoy, fav)).not.toHaveAttribute('data-agent-tab-id', /.+/)
+  }
+
+  // Down to one favorite on the host, the agent tab rides on it.
+  await skiff.rpc('tabs.setFavorite', { id: second, favorite: false })
+  await expect(icon(buoy, first)).toHaveAttribute('data-agent-tab-id', agentTab)
+  await expect(icon(buoy, agentTab)).toHaveCount(0)
+
+  // An agent tab on another host is its own icon.
+  const far = (await skiff.rpc('tabs.create', { url: `${skiff.origin.replace('127.0.0.1', 'localhost')}/one?far`, agent: 'bb' })).id
+  await expect(icon(buoy, far).locator('.agent-dot')).toHaveAttribute('data-state', 'working')
+  await expect(icon(buoy, first)).toHaveAttribute('data-agent-tab-id', agentTab)
+})
