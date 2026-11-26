@@ -250,3 +250,24 @@ test('the pill marks an agent tab working, then done and unseen, and viewing the
   await expect(dot).not.toHaveAttribute('data-unseen', '')
   expect((await skiff.state()).tabs.find((t) => t.id === tab.id).agentUnseen).toBeUndefined()
 })
+
+test('an agent key press never runs an app menu item', async ({ skiff }) => {
+  const tab = await formTab(skiff)
+  await expect.poll(() => inPage(skiff, FORM, 'document.readyState').catch(() => '')).toBe('complete')
+  await skiff.rpc('tabs.activate', { id: tab.id })
+  await skiff.app.evaluate(({ Menu }) => {
+    global.__menuClicks = []
+    for (const item of Menu.getApplicationMenu().items.flatMap((menu) => menu.submenu?.items || [])) item.click = () => global.__menuClicks.push(item.accelerator || item.label)
+  })
+  for (const key of ['CmdOrCtrl+F', 'CmdOrCtrl+,', 'Meta+Enter', 'Escape', 'Control+Shift+a']) await agent(skiff, 'tabs.press', tab.id, { key })
+  expect(await skiff.app.evaluate(() => global.__menuClicks)).toEqual([])
+  // A person's shortcut in the same tab, once they have taken it over, still runs its item.
+  await skiff.rpc('agent.takeOver', { id: tab.id })
+  await skiff.app.evaluate(({ webContents }, url) => {
+    const wc = webContents.getAllWebContents().find((w) => w.getURL() === url)
+    wc.focus()
+    wc.sendInputEvent({ type: 'keyDown', keyCode: 'F', modifiers: ['control'] })
+    wc.sendInputEvent({ type: 'keyUp', keyCode: 'F', modifiers: ['control'] })
+  }, href(skiff, FORM))
+  await expect.poll(() => skiff.app.evaluate(() => global.__menuClicks)).toEqual(['CmdOrCtrl+F'])
+})
