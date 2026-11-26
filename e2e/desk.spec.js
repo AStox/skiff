@@ -762,7 +762,7 @@ test('an ear sits as far left on its top edge as it can and still be seen, past 
     const win = (id, x, y, width, natural) => ({ id, rect: { x, y, width, height: 400 }, natural })
     const layout = (windows, b, w) => Object.fromEntries(Object.entries(earLayout(windows, b ? [b] : [], w)).map(([id, s]) => [id, at(s)]))
     return {
-      constants: [EAR_RIM, EAR_GAP, EAR_MIN],
+      constants: [EAR_RIM, EAR_GAP, EAR_MIN, EAR_CORNER],
       free: at(earSlot([100, 700], [], 150)),
       // The front window covers the back one's top-left corner, so its ear sits just past the front window and its ear.
       covered: layout([win('back', 100, 100, 600, 150), win('front', 50, 90, 300, 120)], null),
@@ -774,10 +774,14 @@ test('an ear sits as far left on its top edge as it can and still be seen, past 
       buoy: layout([win('w', 100, 100, 600, 150)], { x: 90, y: 70, width: 200, height: 30 }),
       narrow: layout([win('w', 100, 100, 100, 150)], null),
       offDesk: layout([win('w', 1300, 100, 600, 150)], null, 1440),
-      dragged: layout([win('back', 100, 100, 600, 150), { ...win('front', 50, 90, 300, 120), slot: { x: 250, width: 90, room: 90 } }], null)
+      dragged: layout([win('back', 100, 100, 600, 150), { ...win('front', 50, 90, 300, 120), slot: { x: 250, width: 90, room: 90 } }], null),
+      // Windows at one rect (the full layout) share the row: nine of 280 on a span that holds about four, whichever one is in front.
+      stacked: layout(Array.from({ length: 9 }, (_, i) => ({ ...win(`w${i}`, 100, 100, 1200, 280), rank: i })), null),
+      stackedReversed: layout(Array.from({ length: 9 }, (_, i) => ({ ...win(`w${8 - i}`, 100, 100, 1200, 280), rank: 8 - i })), null),
+      mixed: layout([60, 280, 60, 280, 280, 280, 280].map((natural, i) => ({ ...win(`m${i}`, 100, 100, 1200, natural), rank: i })), null)
     }
   })
-  const [RIM, GAP, MIN] = got.constants
+  const [RIM, GAP, MIN, CORNER] = got.constants
   expect(got.free).toEqual([100, 150, 600])
   expect(got.covered.front).toEqual([60, 120, 280])
   expect(got.covered.back).toEqual([50 + 300 + RIM + GAP, 150, 690 - (50 + 300 + RIM + GAP)])
@@ -791,6 +795,19 @@ test('an ear sits as far left on its top edge as it can and still be seen, past 
   expect(got.narrow.w).toEqual([110, 80, 80])
   expect(got.offDesk.w).toEqual([1310, 130, 130])
   expect(got.dragged).toEqual({ front: [250, 90, 90], back: [50 + 300 + RIM + GAP, 150, 690 - 50 - 300 - RIM - GAP] })
+  const [lo, hi] = [100 + CORNER, 100 + 1200 - CORNER]
+  const stacked = Array.from({ length: 9 }, (_, i) => got.stacked[`w${i}`])
+  expect(stacked.every(Boolean)).toBe(true)
+  expect(stacked[0][0]).toBeGreaterThanOrEqual(lo)
+  expect(stacked[8][0] + stacked[8][1]).toBeLessThanOrEqual(hi)
+  stacked.slice(1).forEach(([x], i) => expect(x).toBeGreaterThanOrEqual(stacked[i][0] + stacked[i][1] + GAP))
+  expect(stacked.every(([, width]) => width >= MIN && width < 280)).toBe(true)
+  expect(got.stackedReversed).toEqual(got.stacked)
+  const mixed = Array.from({ length: 7 }, (_, i) => got.mixed[`m${i}`])
+  expect(mixed.map(([, width]) => width).filter((_, i) => i === 0 || i === 2)).toEqual([60, 60])
+  expect(mixed.every(([, width], i) => i === 0 || i === 2 || (width > 60 && width < 280))).toBe(true)
+  mixed.slice(1).forEach(([x], i) => expect(x).toBeGreaterThanOrEqual(mixed[i][0] + mixed[i][1] + GAP))
+  expect(mixed[6][0] + mixed[6][1]).toBeLessThanOrEqual(hi)
 })
 
 // Mouse input to a page view as the pointer would send it: points are page CSS pixels where the view was when the gesture began, so they stay put on the screen while the window moves.
