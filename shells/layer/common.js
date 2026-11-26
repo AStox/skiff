@@ -305,6 +305,8 @@ function earNatural(tab) {
   earWidths.set(key, width)
   return width
 }
+// ponytail: the unread count is read from the title only ("(3) WhatsApp", "Inbox (3) - ..."); the app badge or Notification hooks come when a site needs them.
+const siteNotice = (tab) => (/^\(([1-9]\d{0,2}\+?)\)\s|^Inbox \(([1-9]\d{0,2}\+?)\) - /.exec(tab.title || '') || []).slice(1).find(Boolean) || ''
 const earTitle = (tab) => tab.title || hostOf(tab.url) || 'New tab'
 // Shown after the title for web pages only; a chat tab has no host.
 const earHost = (tab) => (/^https?:/.test(tab.url) ? hostOf(tab.url) : '')
