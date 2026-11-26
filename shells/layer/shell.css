@@ -106,6 +106,9 @@ html.layer, html.layer body, html.frame, html.frame body, html.buoy, html.buoy b
 /* A window's frame: a view as big as its page plus 30px above and 12px around, lying right under the page. Exposé draws the same ring and ear on its cards (.win). */
 html.frame, html.expose { --frame-ring: color-mix(in srgb, #1c1a16 18%, transparent); }
 @media (prefers-color-scheme: dark) { html.frame, html.expose { --frame-ring: rgba(255, 255, 255, .14); } }
+/* An exposé card wears its window's space colour; --ear is worked out again where that --accent is set. */
+.slot { --ear: color-mix(in srgb, var(--accent) 20%, #fbfaf7); }
+@media (prefers-color-scheme: dark) { .slot { --ear: color-mix(in srgb, var(--accent) 34%, #1a1a18); } }
 html.frame.active, .win.active { --frame-ring: var(--accent); }
 /* Tiled windows sit 1px apart, so the ring is that seam: opaque, with no shadow over the neighbour's ear row. */
 html.frame.tiled:not(.active) { --frame-ring: color-mix(in srgb, #1c1a16 32%, #f4f1ea); }
@@ -135,9 +138,6 @@ html.frame.active #ear, .win.active .ear { background: var(--accent); color: #ff
 #ear-fav, .ear-fav { position: relative; flex: none; display: inline-flex; width: 14px; height: 14px; }
 #ear-fav .agent-dot, .win .ear-fav .agent-dot { position: absolute; right: -3px; bottom: -3px; width: 7px; height: 7px; box-shadow: 0 0 0 1.5px var(--ear); }
 html.frame.active #ear-fav .agent-dot, .win.active .ear-fav .agent-dot { box-shadow: 0 0 0 1.5px var(--accent); }
-#ear-fav .window-space, .win .ear-fav .window-space { position: absolute; right: -3px; top: -3px; width: 6px; height: 6px; border-radius: 50%; background: var(--space); box-shadow: 0 0 0 1.5px var(--ear); }
-html.frame.active #ear-fav .window-space, .win.active .ear-fav .window-space { box-shadow: 0 0 0 1.5px #fff; }
-.label .window-space { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--space); }
 #ear-fav .favicon, .ear-fav .favicon { width: 14px; height: 14px; border-radius: 3px; }
 #ear-fav .favicon.letter, .ear-fav .favicon.letter { background: color-mix(in srgb, currentColor 16%, transparent); color: inherit; font-size: 9px; }
 #ear-title, .ear-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }

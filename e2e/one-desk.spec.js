@@ -30,6 +30,9 @@ const click = (skiff, path) => skiff.app.evaluate(async ({ webContents, BrowserW
   }
 }, path)
 
+const GREEN = 'rgb(47, 158, 91)'
+// The colour of a resting ear in a space's colour, light theme.
+const tint = (page, color) => page.evaluate((color) => { const el = document.createElement('span'); el.style.background = `color-mix(in srgb, ${color} 20%, #fbfaf7)`; document.body.append(el); const c = getComputedStyle(el).backgroundColor; el.remove(); return c }, color)
 const RECTS = { a: { x: 40, y: 80, width: 520, height: 420 }, b: { x: 640, y: 120, width: 520, height: 420 } }
 
 // Home holds /a, Dev holds /b, both placed side by side; Home is the active space.
@@ -89,24 +92,23 @@ test('exposé lists the windows of both spaces and marks each with its space', a
   await skiff.rpc('ui.emit', { name: 'expose', focus: false })
   const expose = await shellPage(skiff, '/expose.html')
   await expect(expose.locator('.slot')).toHaveCount(2)
-  await expect(expose.locator(`.slot[data-tab-id="${a}"] .ear .window-space`)).toHaveCount(1)
-  const colors = await expose.locator('.slot .win .ear .window-space').evaluateAll((els) => els.map((el) => el.style.getPropertyValue('--space')))
-  expect(new Set(colors).size).toBe(2)
-  expect(colors).toContain('#2f9e5b')
+  const ear = (id) => expose.locator(`.slot[data-tab-id="${id}"] .ear`).evaluate((el) => getComputedStyle(el).backgroundColor)
+  // The active window's ear is solid in its own space's colour; the other window's is tinted with its own, not the active space's.
+  expect(await ear(a)).not.toBe(GREEN)
+  expect(await ear(b)).toBe(await tint(expose, '#2f9e5b'))
   await expose.locator(`.slot[data-tab-id="${b}"]`).click()
   await expect.poll(async () => (await skiff.state()).activeSpaceId).toBe(dev)
   await expect.poll(() => showing(skiff)).toEqual(['/a', '/b'])
 })
 
-test('a window\'s ear carries its space dot only once there are two ordinary spaces', async ({ skiff }) => {
-  const home = (await skiff.state()).activeSpaceId
-  const a = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/a`, spaceId: home })).id
-  const frame = await shellPage(skiff, `frame.html?tab=${a}`)
-  await expect(frame.locator('#ear-fav')).toBeVisible()
-  await expect(frame.locator('#ear-fav .window-space')).toHaveCount(0)
-  await skiff.rpc('spaces.create', { name: 'Dev', color: '#2f9e5b' })
-  await expect(frame.locator('#ear-fav .window-space')).toHaveCount(1)
-  expect(await frame.locator('#ear-fav .window-space').evaluate((el) => el.style.getPropertyValue('--space'))).not.toBe('#2f9e5b')
+test('each window wears its own space\'s colour, whichever space is active', async ({ skiff }) => {
+  const { a, b } = await twoSpaces(skiff)
+  const earOf = async (id) => (await shellPage(skiff, `frame.html?tab=${id}`)).locator('#ear').evaluate((el) => getComputedStyle(el).backgroundColor)
+  // Home is active, and the Dev window keeps Dev's tint.
+  await expect.poll(() => earOf(b)).toBe(await tint(await shellPage(skiff, `frame.html?tab=${b}`), '#2f9e5b'))
+  await skiff.rpc('tabs.activate', { id: b })
+  await expect.poll(() => earOf(b)).toBe(GREEN)
+  await expect.poll(() => earOf(a)).not.toBe(GREEN)
 })
 
 test('incognito shows only its own windows, and the ordinary windows of every space return with it leaving', async ({ skiff }) => {

@@ -39,18 +39,18 @@ function render() {
   const w = mine()
   const tab = w?.tab || state?.tabs.find((t) => t.id === id)
   if (!tab) return
-  paintSpace(state)
+  // A window wears its own space's colour, whichever space is active.
+  paintSpace(state, tab.spaceId)
   document.documentElement.classList.toggle('active', Boolean(w?.active))
   document.documentElement.classList.toggle('tiled', !['free', 'full', 'cascade'].includes(state.settings.tabLayout))
   const title = earTitle(tab)
   const host = earHost(tab)
-  const space = windowSpace(state, tab)
-  const key = JSON.stringify([title, tab.favicon, tab.url, tab.agent, tab.agentState, space?.title, space?.style.getPropertyValue('--space')])
+  const key = JSON.stringify([title, tab.favicon, tab.url, tab.agent, tab.agentState])
   if (key !== painted) {
     painted = key
     $('ear').title = host ? tab.url : title
     $('ear').setAttribute('aria-label', title)
-    $('ear-fav').replaceChildren(...[favicon(tab), agentDot(tab), space].filter(Boolean))
+    $('ear-fav').replaceChildren(...[favicon(tab), agentDot(tab)].filter(Boolean))
     $('ear-title').textContent = title
     $('ear-host').textContent = host
     $('ear-hide').setAttribute('aria-label', `Hide ${title}`)
