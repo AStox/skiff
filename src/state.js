@@ -80,18 +80,23 @@ const visibleTabs = (s, spaceId = s.activeSpaceId) => {
   return [...tabs.filter((t) => t.favorite), ...tabs.filter((t) => t.pinned && !t.favorite), ...trail(undefined)]
 }
 const isIncognito = (s, spaceId) => !!findSpace(s, spaceId)?.incognito
-const deskTabs = (s, spaceId = s.activeSpaceId) => s.tabs.filter((t) => t.spaceId === spaceId && t.desk).sort((a, b) => a.desk.z - b.desk.z)
+// One desk holds every ordinary space's windows; the incognito space has a desk of its own.
+const sameDesk = (s, a, b) => isIncognito(s, a) === isIncognito(s, b)
+// z is one order across the spaces of a desk; windows saved with equal z from separate spaces fall back to last use.
+const byZ = (a, b) => a.desk.z - b.desk.z || a.lastActiveAt - b.lastActiveAt
+const deskTabs = (s, spaceId = s.activeSpaceId) => s.tabs.filter((t) => t.desk && sameDesk(s, t.spaceId, spaceId)).sort(byZ)
 // An agent's tab is on the desk only once the user showed it, even if it was opened where there was no desk to give it a window.
-const isShown = (s, tab) => s.activeTabBySpace[tab.spaceId] === tab.id || (tab.desk ? !tab.desk.hidden : isPlain(tab) && !tab.agent)
+// A space's active tab is shown, except one an old save left active in a space that is not (it comes back when that space does).
+const isShown = (s, tab) => (s.activeTabBySpace[tab.spaceId] === tab.id && (tab.spaceId === s.activeSpaceId || !tab.desk?.hidden)) || (tab.desk ? !tab.desk.hidden : isPlain(tab) && !tab.agent)
 // s.desktops {current, list: [{id, number}]} is runtime state, set only where macOS desktops are known; without it every tab is on the one desktop.
 const onDesktop = (s, tab) => !s.desktops || tab.desktopId === s.desktops.current
 const here = (s) => (s.desktops ? { desktopId: s.desktops.current } : {})
 const desktopNumber = (s, id) => s.desktops?.list.find((d) => d.id === id)?.number ?? null
-// Back to front: unplaced ordinary tabs in tab order, then placed ones by z, the active tab last.
+// Back to front: unplaced ordinary tabs in tab order, then placed ones by z, the active space's active tab last. Covers every space on the desk spaceId is on.
 function shownTabs(s, spaceId = s.activeSpaceId) {
-  const tabs = s.tabs.filter((t) => t.spaceId === spaceId && !t.userPeek && onDesktop(s, t) && isShown(s, t))
-  const active = tabs.find((t) => s.activeTabBySpace[spaceId] === t.id)
-  return [...tabs.filter((t) => !t.desk), ...tabs.filter((t) => t.desk).sort((a, b) => a.desk.z - b.desk.z)].filter((t) => t !== active).concat(active || [])
+  const tabs = s.tabs.filter((t) => sameDesk(s, t.spaceId, spaceId) && !t.userPeek && onDesktop(s, t) && isShown(s, t))
+  const active = tabs.find((t) => s.activeTabBySpace[s.activeSpaceId] === t.id)
+  return [...tabs.filter((t) => !t.desk), ...tabs.filter((t) => t.desk).sort(byZ)].filter((t) => t !== active).concat(active || [])
 }
 const normalSpace = (s) => [findSpace(s, s.activeSpaceId), ...s.spaces].find((x) => x && !x.incognito)
 const origin = (url) => (URL.canParse(url) ? new URL(url).origin : '')
@@ -222,6 +227,10 @@ function load(raw = {}) {
     if (d && Number.isFinite(tab.desk.z)) tab.desk = { ...d, z: tab.desk.z, ...(tab.desk.hidden === true && { hidden: true }) }
     else delete tab.desk
   }
+  // Windows of other spaces now share the desk: ones never given a window of their own stay off it until shown, so an upgrade does not open every page at once.
+  for (const tab of s.tabs) {
+    if (!tab.desk && isPlain(tab) && !tab.agent && tab.spaceId !== s.activeSpaceId && !isIncognito(s, tab.spaceId)) tab.desk = { ...defaultDesk(s, tab), z: 0, hidden: true }
+  }
   for (const item of [...s.tabs, ...s.archive]) if (!/^\.\.\/favicons\/[0-9a-f]{24}\.\w+$/.test(item.favicon)) item.favicon = ''
   for (const tab of s.tabs) {
     const parent = findTab(s, tab.parentId)
@@ -250,7 +259,7 @@ function release(s, tab) {
   // Closing the tab you are in never lands you on an agent's tab.
   const list = visibleTabs(s, tab.spaceId).filter((t) => (!(t.pinned || t.favorite) || t === tab) && (t === tab || !t.agent) && (!s.desktops || t.desktopId === tab.desktopId))
   // On the desk the window beneath comes forward, the opener first, so no other window changes place.
-  const beneath = tab.desk && shownTabs(s, tab.spaceId).filter((t) => t !== tab && t.desk)
+  const beneath = tab.desk && shownTabs(s, tab.spaceId).filter((t) => t !== tab && t.desk && t.spaceId === tab.spaceId)
   const next = (beneath?.find((t) => t.id === tab.parentId) || beneath?.at(-1)) || list[list.indexOf(tab) + 1] || list[list.indexOf(tab) - 1]
   if (next) s.activeTabBySpace[tab.spaceId] = next.id
   else delete s.activeTabBySpace[tab.spaceId]
@@ -724,7 +733,11 @@ function activateSpace(s, p) {
   const spaceId = getSpace(s, p.id).id
   if (s.userPeek && getTab(s, s.userPeek).spaceId !== spaceId) dismissPeek(s, {})
   s.activeSpaceId = spaceId
-  if (p.show !== false) look(s)
+  if (p.show !== false) {
+    look(s)
+    const top = activeTab(s)
+    if (top?.desk && !top.userPeek && onDesktop(s, top) && isShown(s, top)) front(s, top)
+  }
   return null
 }
 
@@ -1087,7 +1100,7 @@ function front(s, tab) {
 // A window opened in the background goes directly beneath the active one, never above it.
 function behind(s, tab) {
   const order = deskTabs(s, tab.spaceId).filter((t) => t !== tab)
-  const active = order.findIndex((t) => s.activeTabBySpace[tab.spaceId] === t.id)
+  const active = order.findIndex((t) => s.activeTabBySpace[s.activeSpaceId] === t.id)
   order.splice(active < 0 ? order.length : active, 0, tab)
   order.forEach((t, i) => { t.desk.z = i + 1 })
 }
@@ -1206,7 +1219,7 @@ function arrange(s, mode) {
   const rects = Object.fromEntries(tabs.map((t) => [t.id, { x: t.desk.x, y: t.desk.y, width: t.desk.width, height: t.desk.height }]))
   if (!Object.hasOwn(ARRANGEMENTS, mode) || !s.deskSize || !tabs.length) return rects
   const { width: W, height: H, top: T } = deskOf(s)
-  const active = tabs.find((t) => s.activeTabBySpace[t.spaceId] === t.id)
+  const active = tabs.find((t) => s.activeTabBySpace[s.activeSpaceId] === t.id)
   const order = mode === 'main-stack' && active ? [active, ...tabs.filter((t) => t !== active)] : tabs
   const cells = ARRANGEMENTS[mode](order.length, { x: MARGIN, y: MARGIN, w: W - 2 * MARGIN, h: H - 2 * MARGIN })
   order.forEach((t, i) => {
@@ -1284,7 +1297,7 @@ function hideDesk(s, p) {
   tab.desk = { ...(tab.desk || { ...defaultDesk(s, tab), z: 0 }), hidden: true }
   if (s.activeTabBySpace[tab.spaceId] === tab.id) {
     delete s.activeTabBySpace[tab.spaceId]
-    const next = shownTabs(s, tab.spaceId).at(-1)
+    const next = shownTabs(s, tab.spaceId).filter((t) => t.spaceId === tab.spaceId).at(-1)
     if (next) s.activeTabBySpace[tab.spaceId] = next.id
   }
   return tab

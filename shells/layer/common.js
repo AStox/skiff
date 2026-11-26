@@ -246,19 +246,31 @@ function defaultRect(state, tab) {
 }
 const rectOf = (state, tab) => (tab.desk ? { x: tab.desk.x, y: tab.desk.y, width: tab.desk.width, height: tab.desk.height } : defaultRect(state, tab))
 const activeTabOf = (state) => state.tabs.find((t) => t.id === state.activeTabBySpace[state.activeSpaceId])
-const isShown = (state, tab) => tab === activeTabOf(state) || (tab.desk ? !tab.desk.hidden : isPlain(tab) && !tab.agent)
+// A space's active tab is shown, except one an old save left active in a space that is not (it comes back when that space does); the core's isShown says the same.
+const isShown = (state, tab) => (state.activeTabBySpace[tab.spaceId] === tab.id && (tab.spaceId === state.activeSpaceId || !tab.desk?.hidden)) || (tab.desk ? !tab.desk.hidden : isPlain(tab) && !tab.agent)
+const isPrivateSpace = (state, spaceId) => Boolean(state.spaces.find((s) => s.id === spaceId)?.incognito)
 // The core sets state.desktops only where macOS desktops are known; each tab belongs to one, and the desk shows the current desktop's.
 const onDesktop = (state, tab) => !state.desktops || tab.desktopId === state.desktops.current
 // Labels exist only with two or more desktops.
 const desktopOf = (state, tab) => (state.desktops?.list.length > 1 ? state.desktops.list.find((d) => d.id === tab.desktopId) : null)
 // Back to front, as the core stacks them: unplaced windows, placed ones by z, then the active tab; only the foreground set while there is one.
+// Every ordinary space shares the desk; while incognito is active it is the desk's only space.
 function deskWindows(state) {
   const active = activeTabOf(state)
   const only = state.deskOnly
-  const shown = visibleTabs(state, state.activeSpaceId).filter((t) => t !== active && onDesktop(state, t) && isShown(state, t) && (!only || only.includes(t.id)))
-  const list = [...shown.filter((t) => !t.desk), ...shown.filter((t) => t.desk).sort((a, b) => a.desk.z - b.desk.z)]
+  const priv = isPrivateSpace(state, state.activeSpaceId)
+  const shown = state.tabs.filter((t) => t !== active && !t.userPeek && isPrivateSpace(state, t.spaceId) === priv && onDesktop(state, t) && isShown(state, t) && (!only || only.includes(t.id)))
+  const list = [...shown.filter((t) => !t.desk), ...shown.filter((t) => t.desk).sort((a, b) => a.desk.z - b.desk.z || a.lastActiveAt - b.lastActiveAt)]
   if (active) list.push(active)
   return list.map((tab) => ({ tab, active: tab === active, rect: rectOf(state, tab) }))
+}
+// A quiet dot in a window's space colour; none while there is only one ordinary space to tell apart.
+function windowSpace(state, tab) {
+  const space = state.spaces.filter((s) => !s.incognito).length > 1 && state.spaces.find((s) => s.id === tab.spaceId && !s.incognito)
+  if (!space) return null
+  const dot = h('span', { class: 'window-space', title: space.name })
+  dot.style.setProperty('--space', space.color)
+  return dot
 }
 /* ---------- ears: each window's tag on its top edge, clear of whatever is drawn in front of it ---------- */
 

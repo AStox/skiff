@@ -652,7 +652,7 @@ test('desk.place validates the rect, keeps it and brings the tab to the front of
   assert.equal(a.desk.z, 3)
 })
 
-test('activating a desk tab brings it to the front; z is counted per space', () => {
+test('activating a desk tab brings it to the front; z is one order across spaces', () => {
   const s = S.load()
   const home = s.activeSpaceId
   const work = S.createSpace(s, { name: 'Work' })
@@ -661,20 +661,21 @@ test('activating a desk tab brings it to the front; z is counted per space', () 
   const b = S.createTab(s, { url: 'b.example' }, 1)
   const c = S.createTab(s, { url: 'c.example' }, 1)
   const w = S.createTab(s, { url: 'w.example', spaceId: work.id, activate: false }, 1)
+  const homeOrder = () => ids(S.deskTabs(s, home).filter((t) => t.spaceId === home))
   for (const tab of [a, b, c]) S.placeDesk(s, { id: tab.id, ...rect })
   S.placeDesk(s, { id: w.id, ...rect })
-  assert.equal(w.desk.z, 1)
+  assert.equal(w.desk.z, 4)
   S.activateTab(s, { id: a.id }, 2)
-  assert.deepEqual(ids(S.deskTabs(s, home)), [b.id, c.id, a.id])
+  assert.deepEqual(homeOrder(), [b.id, c.id, a.id])
   S.cycleTab(s, { delta: 1 }, 3)
-  assert.deepEqual(ids(S.deskTabs(s, home)), [c.id, a.id, b.id])
+  assert.deepEqual(homeOrder(), [c.id, a.id, b.id])
   S.selectTab(s, { index: 2 }, 4)
-  assert.deepEqual(ids(S.deskTabs(s, home)), [a.id, b.id, c.id])
+  assert.deepEqual(homeOrder(), [a.id, b.id, c.id])
   const plain = S.createTab(s, { url: 'plain.example' }, 5)
   assert.equal(plain.desk, undefined)
-  assert.deepEqual(ids(S.deskTabs(s, home)), [a.id, b.id, c.id])
+  assert.deepEqual(homeOrder(), [a.id, b.id, c.id])
   S.activateTab(s, { id: w.id }, 6)
-  assert.equal(w.desk.z, 1)
+  assert.equal(S.deskTabs(s, home).at(-1), w)
   assert.equal(s.activeSpaceId, work.id)
 })
 
@@ -706,7 +707,63 @@ test('every ordinary tab is a window; favorites and pinned tabs only while activ
   assert.deepEqual(pin.desk, { ...S.defaultDesk(s, pin), z: 2 })
   S.activateTab(s, { id: b.id }, 6)
   assert.deepEqual(ids(S.shownTabs(s)), [c.id, a.id, pin.id, b.id])
-  assert.deepEqual(ids(S.shownTabs(s, 'other')), [])
+})
+
+test('one desk: every ordinary space shows together, switching space moves nothing, incognito stays apart', () => {
+  const s = S.load()
+  s.deskSize = { width: 1000, height: 800 }
+  const home = s.activeSpaceId
+  const work = S.createSpace(s, { name: 'Work' })
+  const a = S.createTab(s, { url: 'a.example' }, 1)
+  const w = S.createTab(s, { url: 'w.example', spaceId: work.id }, 2)
+  assert.equal(s.activeSpaceId, work.id)
+  assert.deepEqual(ids(S.shownTabs(s)), [a.id, w.id])
+  const zs = [a.desk.z, w.desk.z]
+  S.activateSpace(s, { id: home })
+  assert.deepEqual(ids(S.shownTabs(s)), [w.id, a.id], 'the new space\'s active tab comes forward')
+  assert.deepEqual([a.desk.z > w.desk.z, [a.desk.hidden, w.desk.hidden]], [true, [undefined, undefined]])
+  assert.notDeepEqual([a.desk.z, w.desk.z], zs)
+  S.activateTab(s, { id: w.id }, 3)
+  assert.equal(s.activeSpaceId, work.id)
+  assert.deepEqual(ids(S.shownTabs(s)), [a.id, w.id])
+  const secret = S.openIncognito(s)
+  const p = S.createTab(s, { url: 'p.example', spaceId: secret.id }, 4)
+  assert.deepEqual(ids(S.shownTabs(s)), [p.id], 'only incognito while it is active')
+  S.activateSpace(s, { id: home })
+  assert.deepEqual(ids(S.shownTabs(s)), [w.id, a.id], 'ordinary windows come back with it and incognito stays away')
+})
+
+test('closing or hiding the front window of a space never hands that space another space\'s window', () => {
+  const s = S.load()
+  s.deskSize = { width: 1000, height: 800 }
+  const work = S.createSpace(s, { name: 'Work' })
+  const a = S.createTab(s, { url: 'a.example' }, 1)
+  const b = S.createTab(s, { url: 'b.example' }, 2)
+  S.createTab(s, { url: 'w.example', spaceId: work.id, activate: false }, 3)
+  S.activateSpace(s, { id: s.spaces[0].id })
+  S.hideDesk(s, { id: b.id })
+  assert.equal(s.activeTabBySpace[s.activeSpaceId], a.id)
+  S.hideDesk(s, { id: a.id })
+  assert.equal(s.activeTabBySpace[s.activeSpaceId], undefined)
+})
+
+test('a save from before spaces shared the desk keeps other spaces\' unplaced windows off it, and their active tab until that space returns', () => {
+  const raw = S.persistable(S.load())
+  const home = raw.spaces[0].id
+  raw.spaces.push({ id: 'sw', name: 'Work', color: '#123456' })
+  const rect = { x: 5, y: 5, width: 400, height: 300, z: 1 }
+  raw.tabs = [
+    { id: 'h1', spaceId: home, url: 'https://h1.example/', title: '', favicon: '' },
+    { id: 'p1', spaceId: 'sw', url: 'https://p1.example/', title: '', favicon: '', desk: rect },
+    { id: 'u1', spaceId: 'sw', url: 'https://u1.example/', title: '', favicon: '' },
+    { id: 'u2', spaceId: 'sw', url: 'https://u2.example/', title: '', favicon: '' }
+  ]
+  raw.activeSpaceId = home
+  raw.activeTabBySpace = { [home]: 'h1', sw: 'u1' }
+  const s = S.load(raw)
+  assert.deepEqual(ids(S.shownTabs(s)), ['p1', 'h1'])
+  S.activateSpace(s, { id: 'sw' })
+  assert.deepEqual(ids(S.shownTabs(s)), ['h1', 'p1', 'u1'])
 })
 
 test('desk.hide keeps the tab, takes the default rect, and passes the active tab to the frontmost shown one', () => {

@@ -44,12 +44,13 @@ function render() {
   document.documentElement.classList.toggle('tiled', !['free', 'full', 'cascade'].includes(state.settings.tabLayout))
   const title = earTitle(tab)
   const host = earHost(tab)
-  const key = JSON.stringify([title, tab.favicon, tab.url, tab.agent, tab.agentState])
+  const space = windowSpace(state, tab)
+  const key = JSON.stringify([title, tab.favicon, tab.url, tab.agent, tab.agentState, space?.title, space?.style.getPropertyValue('--space')])
   if (key !== painted) {
     painted = key
     $('ear').title = host ? tab.url : title
     $('ear').setAttribute('aria-label', title)
-    $('ear-fav').replaceChildren(...[favicon(tab), agentDot(tab)].filter(Boolean))
+    $('ear-fav').replaceChildren(...[favicon(tab), agentDot(tab), space].filter(Boolean))
     $('ear-title').textContent = title
     $('ear-host').textContent = host
     $('ear-hide').setAttribute('aria-label', `Hide ${title}`)
