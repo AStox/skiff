@@ -50,7 +50,7 @@ const test = base.extend({
         return
       }
       const route = request.url.split('?')[0]
-      if (['/pointer-fixture', '/drag-region-fixture', '/scroll-fixture', '/agent-form', '/tone-fixture'].includes(route)) {
+      if (['/pointer-fixture', '/drag-region-fixture', '/scroll-fixture', '/agent-form', '/tone-fixture', '/fullscreen-fixture'].includes(route)) {
         response.setHeader('Content-Type', 'text/html; charset=utf-8')
         return response.end(fs.readFileSync(path.join(__dirname, route.slice(1) + '.html')))
       }
