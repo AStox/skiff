@@ -538,7 +538,13 @@ function createView(tab) {
     if (mouse.type === 'mouseDown' && views.get(id) === view && S.activeTab(state)?.id !== id) call('tabs.activate', { id }).catch(console.error)
   })
   // The user's keys never reach a page an agent is working in. DevTools key events are reported here as well, so the agent's own are told apart by what it is sending.
-  wc.on('before-input-event', (event, input) => { if (controlMode(S.findTab(state, id)) === 'lock' && !agentBrowser.sent(id, input)) event.preventDefault() })
+  // A key the page leaves unhandled falls through to the app menu: an agent's must not run its items (Find, Tools, and on a Mac About), a person's still do.
+  let ignoringMenu = false
+  wc.on('before-input-event', (event, input) => {
+    const agent = agentBrowser.sent(id, input)
+    if (agent !== ignoringMenu) wc.setIgnoreMenuShortcuts(ignoringMenu = agent)
+    if (!agent && controlMode(S.findTab(state, id)) === 'lock') event.preventDefault()
+  })
   wc.on('did-start-loading', () => update({}, { loading: true }))
   // A navigation after the first load finished leaves the page the bar opened, so its reroute offer ends.
   let loaded = false
