@@ -579,9 +579,10 @@ test('a desk shell gets a transparent window over the work area that shows every
   await expect.poll(async () => (await floats(skiff))[0].bounds).toEqual({ x: refit.content.x + placedFloat.x, y: refit.content.y + refit.size[1] + placedFloat.y, width: placedFloat.width, height: placedFloat.height })
 })
 
-test('a space switch slides the old space out and the new one in, retargets mid-slide, and is instant without animation', async ({ skiff }) => {
+test('opening or leaving incognito slides the desk out and in, retargets mid-slide, and is instant without animation', async ({ skiff }) => {
   const first = (await skiff.state()).activeSpaceId
-  const second = (await skiff.rpc('spaces.create', { name: 'Second' })).id
+  const second = (await skiff.rpc('incognito.open')).id
+  await skiff.rpc('spaces.activate', { id: first })
   const tabs = {}
   for (const name of ['a1', 'a2']) tabs[name] = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/${name}` })).id
   for (const name of ['b1', 'b2']) tabs[name] = (await skiff.rpc('tabs.create', { url: `${skiff.origin}/${name}`, spaceId: second, activate: false })).id

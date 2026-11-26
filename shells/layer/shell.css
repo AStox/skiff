@@ -135,6 +135,9 @@ html.frame.active #ear, .win.active .ear { background: var(--accent); color: #ff
 #ear-fav, .ear-fav { position: relative; flex: none; display: inline-flex; width: 14px; height: 14px; }
 #ear-fav .agent-dot, .win .ear-fav .agent-dot { position: absolute; right: -3px; bottom: -3px; width: 7px; height: 7px; box-shadow: 0 0 0 1.5px var(--ear); }
 html.frame.active #ear-fav .agent-dot, .win.active .ear-fav .agent-dot { box-shadow: 0 0 0 1.5px var(--accent); }
+#ear-fav .window-space, .win .ear-fav .window-space { position: absolute; right: -3px; top: -3px; width: 6px; height: 6px; border-radius: 50%; background: var(--space); box-shadow: 0 0 0 1.5px var(--ear); }
+html.frame.active #ear-fav .window-space, .win.active .ear-fav .window-space { box-shadow: 0 0 0 1.5px #fff; }
+.label .window-space { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--space); }
 #ear-fav .favicon, .ear-fav .favicon { width: 14px; height: 14px; border-radius: 3px; }
 #ear-fav .favicon.letter, .ear-fav .favicon.letter { background: color-mix(in srgb, currentColor 16%, transparent); color: inherit; font-size: 9px; }
 #ear-title, .ear-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
