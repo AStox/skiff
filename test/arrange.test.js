@@ -114,16 +114,24 @@ test('free returns each shown window own rect and leaves hidden windows out', ()
   assert.equal(split[tabs[0].id].width, 492)
 })
 
-test('only the active space and desktop are arranged, and arranging never writes tab.desk', () => {
+test('every ordinary space on the desk is arranged together, and arranging never writes tab.desk', () => {
   const { s, tabs } = desk(2)
   const other = S.createSpace(s, { name: 'Other' })
   S.activateSpace(s, { id: s.spaces[0].id })
   const away = S.createTab(s, { url: 'https://away.example/', spaceId: other.id, activate: false }, 1)
   const before = JSON.stringify(s.tabs)
   const r = S.arrange(s, 'split')
-  assert.equal(away.id in r, false)
-  assert.deepEqual(Object.keys(r).sort(), tabs.map((t) => t.id).sort())
+  assert.deepEqual(Object.keys(r).sort(), [...tabs, away].map((t) => t.id).sort())
   assert.equal(JSON.stringify(s.tabs), before)
+})
+
+test('incognito windows are arranged apart from the ordinary spaces', () => {
+  const { s, tabs } = desk(2)
+  const hidden = S.openIncognito(s)
+  const secret = S.createTab(s, { url: 'https://secret.example/', spaceId: hidden.id }, 1)
+  assert.deepEqual(Object.keys(S.arrange(s, 'split')), [secret.id])
+  S.activateSpace(s, { id: s.spaces[0].id })
+  assert.deepEqual(Object.keys(S.arrange(s, 'split')).sort(), tabs.map((t) => t.id).sort())
 })
 
 test('main-stack gives the active window the main place', () => {
