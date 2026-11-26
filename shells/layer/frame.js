@@ -73,7 +73,7 @@ function placeEar() {
     const own = w.tab.id === id && (gesture?.rect || pinch?.rect)
     const live = own || (moving?.id === w.tab.id && moving)
     const rect = live ? { x: live.x, y: live.y, width: live.width, height: live.height } : w.rect
-    const entry = { id: w.tab.id, rect, natural: earNatural(w.tab), after: offerReserve(w.tab) }
+    const entry = { id: w.tab.id, rect, natural: earNatural(w.tab), after: offerReserve(w.tab), rank: state.tabs.indexOf(w.tab) }
     if (!own && live && 'ear' in live) entry.slot = live.ear && { x: rect.x + live.ear.dx, width: live.ear.width, room: live.ear.room }
     return entry
   })

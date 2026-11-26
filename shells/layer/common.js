@@ -340,14 +340,25 @@ function earSlot(span, occluders, natural, min = EAR_MIN) {
   return { x: widest[0], width, room: width }
 }
 
-// windows: back to front, {id, rect, natural, after?, slot?}, after being room kept free beside the ear for its offer; a given slot (the window being dragged) is kept. fixed: rects always on top (the Buoy).
+// windows: back to front, {id, rect, natural, after?, slot?, rank?}, after being room kept free beside the ear for its offer; a given slot (the window being dragged) is kept. fixed: rects always on top (the Buoy).
+// Windows with exactly the same rect (the full layout) swap their places in the stack by rank, lowest in front, so raising one never moves its ears; a window alone at its rect keeps its place.
 // Front ears are placed first, so each ear dodges the windows, ears, Buoy and panel drawn above it. Returns {id: slot or null}.
 function earLayout(windows, fixed = [], deskWidth = Infinity) {
+  const stack = [...windows]
+  const groups = new Map()
+  for (const w of windows) {
+    const key = `${w.rect.x} ${w.rect.y} ${w.rect.width} ${w.rect.height}`
+    if (w.rank !== undefined) groups.set(key, [...(groups.get(key) || []), w])
+  }
+  for (const group of groups.values()) {
+    const places = group.map((w) => stack.indexOf(w))
+    group.sort((a, b) => b.rank - a.rank).forEach((w, i) => { stack[places[i]] = w })
+  }
   // The ring reaches past a page on three sides, not over its top, where the ears stand: a window stacked exactly on another must not hide its ear.
   const grow = (r, by) => ({ x: r.x - by, y: r.y, width: r.width + 2 * by, height: r.height + by })
   const above = fixed.map((r) => grow(r, EAR_RIM))
   const slots = {}
-  for (const w of [...windows].reverse()) {
+  for (const w of stack.reverse()) {
     const r = w.rect
     const top = r.y - EAR_HEIGHT
     let slot = w.slot
