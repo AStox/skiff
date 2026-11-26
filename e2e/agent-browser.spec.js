@@ -1,4 +1,5 @@
 'use strict'
+const net = require('node:net')
 const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 const { test, expect } = require('./fixtures')
@@ -310,9 +311,10 @@ test('tabs.steps does a form in one call and returns each step\'s result', async
   const seen = await log(skiff, FORM)
   expect(seen.keys).toContain('Meta+Enter')
   expect(seen.clicks).toEqual([{ target: 'run', trusted: true }])
-  // A snapshot step renews the refs like the single command: the new ones work in the next call.
+  // A snapshot step gives the same refs again: a ref names its element for as long as it is on the page.
   const fresh = await steps(skiff, tab.id, [{ do: 'snapshot' }])
   const again = fresh.results[0].text.split('\n').find((l) => /button "Run Query"/.test(l)).split(' ')[0]
+  expect(again).toBe(run)
   expect((await steps(skiff, tab.id, [{ do: 'click', ref: again }])).results[0]).toMatchObject({ do: 'click', clicked: again })
 
   // Looking right after an action that loads a page sees the page it led to.
@@ -449,4 +451,204 @@ test('a scoped grant sees browser_steps, keeps its own rules in a chain, and get
   const cut = JSON.parse((await small('browser_steps', { tabId: theirs.id, steps: [{ do: 'snapshot' }, { do: 'read' }] })).content[0].text)
   expect(cut.failed).toMatchObject({ step: 2, do: 'read', code: 'forbidden' })
   expect(cut.results.map((r) => r.do)).toEqual(['snapshot'])
+})
+
+// Every agent call tells the agent what it needs next: the page after an action, the page it opened, refs that last.
+const refs = (text) => Object.fromEntries(text.split('\n').filter((l) => /^e\d+ /.test(l)).map((l) => [/"([^"]*)"/.exec(l)[1], l.split(' ')[0]]))
+const failure = (promise) => promise.then(() => null, (e) => e.message)
+const closedPort = () => new Promise((resolve) => { const server = net.createServer(); server.listen(0, '127.0.0.1', () => { const { port } = server.address(); server.close(() => resolve(port)) }) })
+
+test('a ref keeps naming its element while others come and go, and a removed element\'s ref fails as stale', async ({ skiff }) => {
+  const tab = await formTab(skiff)
+  const before = refs((await agent(skiff, 'tabs.snapshot', tab.id)).text)
+  for (const name of ['Query', 'Notes', 'Run Query', 'Save', 'Add item', 'Temporary', 'Remove temporary', 'Read the article']) expect(before[name], name).toBeTruthy()
+
+  // Two elements come, one goes: the rest keep their refs and the new ones take numbers never used before.
+  await agent(skiff, 'tabs.click', tab.id, { ref: before['Add item'], look: false })
+  await agent(skiff, 'tabs.click', tab.id, { ref: before['Add item'], look: false })
+  await agent(skiff, 'tabs.click', tab.id, { ref: before['Remove temporary'], look: false })
+  const after = refs((await agent(skiff, 'tabs.snapshot', tab.id)).text)
+  for (const name of ['Query', 'Notes', 'Run Query', 'Save', 'Add item', 'Remove temporary', 'Read the article']) expect(after[name], name).toBe(before[name])
+  expect(after.Temporary).toBeUndefined()
+  const used = Math.max(...Object.values(before).map((r) => Number(r.slice(1))))
+  expect(new Set([after['Item 1'], after['Item 2']]).size).toBe(2)
+  for (const name of ['Item 1', 'Item 2']) expect(Number(after[name].slice(1)), name).toBeGreaterThan(used)
+
+  // The removed element's ref is refused as stale, and its number is not given to another element.
+  expect(await failure(agent(skiff, 'tabs.click', tab.id, { ref: before.Temporary }))).toContain(`Ref ${before.Temporary} is gone`)
+  await agent(skiff, 'tabs.click', tab.id, { ref: after['Add item'], look: false })
+  expect(Object.values(refs((await agent(skiff, 'tabs.snapshot', tab.id)).text)).filter((r) => r === before.Temporary)).toEqual([])
+
+  // An element that is on the page but not in the outline keeps its ref too.
+  await inPage(skiff, FORM, 'document.getElementById("run").setAttribute("aria-hidden", "true")')
+  expect(refs((await agent(skiff, 'tabs.snapshot', tab.id)).text)['Run Query']).toBeUndefined()
+  await agent(skiff, 'tabs.click', tab.id, { ref: before['Run Query'], look: false })
+  await expect.poll(() => inPage(skiff, FORM, 'document.getElementById("out").textContent')).toBe('RAN: ')
+  await inPage(skiff, FORM, 'document.getElementById("run").removeAttribute("aria-hidden")')
+  expect(refs((await agent(skiff, 'tabs.snapshot', tab.id)).text)['Run Query']).toBe(before['Run Query'])
+
+  // Neither an in-page navigation nor the agent finishing (which releases its DevTools channel) ends the document.
+  await inPage(skiff, FORM, 'history.pushState({}, "", "#later")')
+  await agent(skiff, 'agent.finish', tab.id, { summary: 'done' })
+  expect(refs((await agent(skiff, 'tabs.snapshot', tab.id)).text)).toMatchObject({ Query: before.Query, Save: before.Save })
+})
+
+test('an action answers with what changed on the page, a delayed update included, with no snapshot call between', async ({ skiff }) => {
+  const tab = await formTab(skiff)
+  const first = refs(tab.text)
+
+  // The page answers 120 ms after the click, with a status line and a new button. The tab's first outline is the base.
+  const saved = await agent(skiff, 'tabs.click', tab.id, { ref: first.Save })
+  expect(saved).toMatchObject({ clicked: first.Save, url: href(skiff, FORM), title: 'Agent form' })
+  expect(saved.text).toBeUndefined()
+  expect(saved.changed).toContain('+ status "Saved"')
+  expect(saved.changed).toMatch(/^\+ e\d+ button "Undo save"$/m)
+  expect(saved.refs).toBe((await agent(skiff, 'tabs.snapshot', tab.id)).refs)
+
+  // Typing changes one line of the field (and the focus moves off the button); the answer shows lines as they are now.
+  const typed = await agent(skiff, 'tabs.type', tab.id, { ref: first.Query, text: 'abc' })
+  expect(typed).toMatchObject({ typed: 3 })
+  expect(typed.changed).toMatch(new RegExp(`^~ ${first.Query} textbox "Query" value="abc" \\[focused\\]$`, 'm'))
+  expect(typed.changed).not.toContain('+ ')
+
+  // Nothing moved, and a line that went says so.
+  expect((await agent(skiff, 'tabs.scroll', tab.id, {})).changed).toBe('Nothing on the page changed.')
+  const gone = await agent(skiff, 'tabs.click', tab.id, { ref: first['Remove temporary'] })
+  expect(gone.changed).toContain(`- ${first.Temporary} button "Temporary"`)
+
+  // A snapshot is the whole outline and the base of the next answer.
+  const whole = await agent(skiff, 'tabs.snapshot', tab.id)
+  expect(whole.text).toContain('status "Saved"')
+  expect((await agent(skiff, 'tabs.press', tab.id, { key: 'Escape' })).changed).toBe('Nothing on the page changed.')
+})
+
+test('a click that loads another page answers with that page, and its refs start again', async ({ skiff }) => {
+  const tab = await formTab(skiff)
+  const first = refs(tab.text)
+  const moved = await agent(skiff, 'tabs.click', tab.id, { ref: first['Read the article'] })
+  expect(moved.url).toBe(href(skiff, '/article'))
+  expect(moved.title).toBe('Local Reading Article')
+  expect(moved.changed).toBeUndefined()
+  expect(moved.text).toContain('textbox "Draft"')
+  expect(moved.text).toMatch(/^e1 /m)
+  expect(moved.refs).toBe(Object.keys(refs(moved.text)).length)
+  // A ref of the document that left is unknown in the new one.
+  expect(await failure(agent(skiff, 'tabs.click', tab.id, { ref: first['Read the article'] }))).toContain(`Unknown ref ${first['Read the article']}`)
+  // The new document's outline is the base now.
+  expect((await agent(skiff, 'tabs.scroll', tab.id, {})).changed).toBe('Nothing on the page changed.')
+})
+
+test('look: false answers with the short result, no page state and no waiting for the page', async ({ skiff }) => {
+  const tab = await formTab(skiff)
+  const first = refs(tab.text)
+  const keys = async (method, params) => Object.keys(await agent(skiff, method, tab.id, { ...params, look: false }))
+  expect(await keys('tabs.click', { ref: first.Save })).toEqual(['clicked'])
+  expect(await keys('tabs.type', { ref: first.Query, text: 'x' })).toEqual(['typed'])
+  expect(await keys('tabs.press', { key: 'Tab' })).toEqual(['pressed'])
+  expect(await keys('tabs.scroll', { dy: 10 })).toEqual(['scrolled', 'scroll'])
+  // The page's delayed update lands anyway; the next outline shows it, so the base was not touched by the short calls.
+  await expect.poll(() => inPage(skiff, FORM, 'document.getElementById("status").textContent')).toBe('Saved')
+  expect((await agent(skiff, 'tabs.press', tab.id, { key: 'Escape' })).changed).toContain('+ status "Saved"')
+})
+
+test('in tabs.steps an action step followed by another step answers briefly, the last one with the page, and an explicit look wins', async ({ skiff }) => {
+  const tab = await formTab(skiff)
+  const first = refs(tab.text)
+  const reply = await steps(skiff, tab.id, [
+    { do: 'type', ref: first.Query, text: 'abc' },
+    { do: 'press', key: 'Tab' },
+    { do: 'click', ref: first.Save, look: true },
+    { do: 'click', ref: first['Add item'] }
+  ])
+  expect(reply.failed).toBeUndefined()
+  expect(Object.keys(reply.results[0])).toEqual(['do', 'typed'])
+  expect(Object.keys(reply.results[1])).toEqual(['do', 'pressed'])
+  expect(reply.results[2].changed ?? reply.results[2].text).toBeTruthy()
+  expect(reply.results[3]).toMatchObject({ do: 'click', url: href(skiff, FORM) })
+  expect(reply.results[3].changed).toMatch(/^\+ e\d+ button "Item 1"$/m)
+  // The last step may refuse the page too, and a snapshot step is always the whole outline.
+  const short = await steps(skiff, tab.id, [{ do: 'click', ref: first['Add item'], look: false }])
+  expect(Object.keys(short.results[0])).toEqual(['do', 'clicked'])
+  const whole = await steps(skiff, tab.id, [{ do: 'click', ref: first['Add item'], look: false }, { do: 'snapshot' }])
+  expect(whole.results[1].text).toContain('button "Item 3"')
+  expect(whole.results[1].changed).toBeUndefined()
+})
+
+test('tabs.create with an agent waits for the page and answers with its outline; without one it returns at once', async ({ skiff }) => {
+  // The server sends the page 1.2 s after the request, so a tab answered before its load would be a blank one.
+  const slow = (suffix) => href(skiff, `/agent-slow?${suffix}`)
+  const startedPlain = Date.now()
+  const plain = await skiff.rpc('tabs.create', { url: slow('plain') })
+  expect(Date.now() - startedPlain).toBeLessThan(1000)
+  expect(plain.text).toBeUndefined()
+  expect(plain.refs).toBeUndefined()
+
+  const started = Date.now()
+  const opened = await skiff.rpc('tabs.create', { url: slow('agent'), agent: 'bb' })
+  expect(Date.now() - started).toBeGreaterThanOrEqual(1100)
+  expect(opened).toMatchObject({ agent: 'bb', url: slow('agent'), title: 'Agent form' })
+  expect(opened.text).toContain('button "Run Query"')
+  expect(opened.refs).toBe(Object.keys(refs(opened.text)).length)
+  expect(opened.refs).toBeGreaterThan(0)
+})
+
+test('tabs.navigate with an agent answers with the page it went to, for a tab the agent holds; without one it returns at once', async ({ skiff }) => {
+  const tab = await formTab(skiff)
+  const user = await skiff.rpc('tabs.create', { url: href(skiff, '/article') })
+  const moved = await skiff.rpc('tabs.navigate', { id: tab.id, url: href(skiff, '/article?agent'), agent: 'bb' })
+  expect(moved).toMatchObject({ id: tab.id, url: href(skiff, '/article?agent'), title: 'Local Reading Article', agent: 'bb' })
+  expect(moved.text).toContain('textbox "Draft"')
+  expect(moved.refs).toBe(Object.keys(refs(moved.text)).length)
+
+  // The guard of the other agent commands: not the user's tab, not another agent's.
+  expect(await refused(skiff.rpc('tabs.navigate', { id: user.id, url: href(skiff, '/second'), agent: 'bb' }))).toBe('forbidden')
+  expect(await refused(skiff.rpc('tabs.navigate', { id: tab.id, url: href(skiff, '/second'), agent: 'omp' }))).toBe('forbidden')
+  expect(await refused(skiff.rpc('tabs.navigate', { url: href(skiff, '/second'), agent: 'bb' }))).toBe('bad_params')
+
+  // look: false and no agent answer at once with the tab, as before.
+  for (const params of [{ agent: 'bb', look: false }, {}]) {
+    const quick = await skiff.rpc('tabs.navigate', { id: tab.id, url: href(skiff, FORM), ...params })
+    expect(quick.id).toBe(tab.id)
+    expect(quick.text).toBeUndefined()
+  }
+})
+
+test('a load that fails is reported as loadFailed, quickly, by tabs.create and tabs.navigate with an agent', async ({ skiff }) => {
+  const dead = `http://127.0.0.1:${await closedPort()}/`
+  const started = Date.now()
+  const opened = await skiff.rpc('tabs.create', { url: dead, agent: 'bb' })
+  expect(opened.loadFailed).toMatch(/^ERR_/)
+  expect(opened.text).toBeUndefined()
+  const tab = await formTab(skiff)
+  const moved = await skiff.rpc('tabs.navigate', { id: tab.id, url: dead, agent: 'bb' })
+  expect(moved.loadFailed).toMatch(/^ERR_/)
+  expect(moved.text).toBeUndefined()
+  expect(Date.now() - started).toBeLessThan(8000)
+})
+
+test('a scoped grant\'s browser_open_tab and browser_navigate answer with the page, on its own tabs', async ({ skiff }) => {
+  const user = await skiff.rpc('tabs.create', { url: href(skiff, '/article') })
+  const space = (await skiff.state()).activeSpaceId
+  const grant = await skiff.rpc('grants.issue', { owner: 'Scoped', spaceIds: [space], read: true, mutate: true })
+  const mcp = async (method, params) => {
+    const response = await fetch(`http://127.0.0.1:${skiff.api().port}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${grant.token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })
+    return (await response.json()).result
+  }
+  const call = async (name, args) => JSON.parse((await mcp('tools/call', { name, arguments: args })).content[0].text)
+  const listed = (await mcp('tools/list', {})).tools
+  expect(listed.find((t) => t.name === 'browser_navigate').inputSchema.properties.agent).toBeUndefined()
+  expect(listed.find((t) => t.name === 'browser_open_tab').inputSchema.properties.agent).toBeUndefined()
+
+  const opened = await call('browser_open_tab', { url: href(skiff, FORM) })
+  expect(opened).toMatchObject({ agent: 'Scoped', title: 'Agent form' })
+  expect(opened.text).toContain('button "Run Query"')
+  const moved = await call('browser_navigate', { tabId: opened.id, url: href(skiff, '/article?scoped') })
+  expect(moved.text).toContain('textbox "Draft"')
+  expect(moved.url).toBe(href(skiff, '/article?scoped'))
+
+  // A tab of the user's in its space navigates as it always did: at once, whatever agent it names.
+  const plain = await call('browser_navigate', { tabId: user.id, url: href(skiff, '/second'), agent: 'bb' })
+  expect(plain.id).toBe(user.id)
+  expect(plain.text).toBeUndefined()
+  expect(plain.agent).toBeUndefined()
 })

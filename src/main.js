@@ -1591,7 +1591,7 @@ def('incognito.open', '', 'Open the temporary incognito space, creating it if ne
   return space
 })
 
-def('tabs.create', '{url, spaceId?, parentId?, activate?, agent?, intent?}', "Open a tab using the selected search behavior; agent names an agent that opens it as its own tab: an ordinary tab of the space (never activated; saved and archived like any tab, but after a restart it is idle) that only that agent may drive with the browser tools. A scoped grant always opens its own agent tabs. intent: true marks the tab as opened by searching the typed url text from the command bar, so a shell offers tabs.reroute for a short while (kept in memory, never saved, dropped when the tab navigates)", async (p, context) => {
+def('tabs.create', '{url, spaceId?, parentId?, activate?, agent?, intent?}', "Open a tab using the selected search behavior; agent names an agent that opens it as its own tab: an ordinary tab of the space (never activated; saved and archived like any tab, but after a restart it is idle) that only that agent may drive with the browser tools, and the call waits for the first page to load and answers with it: text and refs (the outline), url and title, or loadFailed with the error. A scoped grant always opens its own agent tabs. intent: true marks the tab as opened by searching the typed url text from the command bar, so a shell offers tabs.reroute for a short while (kept in memory, never saved, dropped when the tab navigates)", async (p, context) => {
   // Scoped agents supply explicit HTTP URLs; replaceable search must not acquire their browser authority.
   const url = context.accessContext ? S.webUrl(p.url) : (await call('search.resolve', { text: p.url }, context)).url
   context.signal?.throwIfAborted()
@@ -1600,7 +1600,10 @@ def('tabs.create', '{url, spaceId?, parentId?, activate?, agent?, intent?}', "Op
   const tab = mutate(S.createTab)({ ...p, url, intent })
   const chat = context.accessContext && access.sessionOf(context.accessContext)
   if (tab.agent && chat) driven.set(chat, (driven.get(chat) || new Set()).add(tab.id))
-  return tab
+  if (p.agent === undefined) return tab
+  // The agent gets the page it opened, never a blank one: the view's first load starts after the view exists, and landing() covers that.
+  const loaded = await agentBrowser.landing(tab.id)
+  return { ...tab, ...(loaded.loadFailed ? loaded : await outlineOf(tab.id)) }
 })
 def('tabs.reroute', '{id}', "Close a tab opened from the command bar (its intent) and do the other thing with the same text in its space: a tab that searched asks the default agent (ai.ask), a tab that asked the agent stops that conversation's running turn and searches with settings.searchUrl, even if the text looks like an address; refused for a tab with no intent", async (p, context) => {
   const tab = S.getTab(state, p.id)
@@ -1625,7 +1628,8 @@ def('tabs.read', '{id?}', "A tab's page as {title, url, selection, text}", (p, c
   if (tab.chat) throw S.err('bad_params', 'That tab is a conversation, not a web page.')
   return readTab(tab, { signal: context.signal })
 })
-def('tabs.navigate', '{id?, url, browserIdentity?}', 'Navigate a tab using its existing profile and selected search behavior', async (p, context) => {
+def('tabs.navigate', '{id?, url, browserIdentity?, agent?, look?}', "Navigate a tab using its existing profile and selected search behavior; with agent (a tab that agent holds) the call waits for the page to load and answers with it: text and refs (the outline), url and title, or loadFailed with the error; look: false answers at once", async (p, context) => {
+  if (p.agent !== undefined) agentGuard(p, context)
   const before = S.getTab(state, p.id)
   const wasChat = Boolean(before.chat)
   const previousIdentity = identityForTab(before)
@@ -1637,7 +1641,9 @@ def('tabs.navigate', '{id?, url, browserIdentity?}', 'Navigate a tab using its e
   if ((wasChat || identityChanged) && views.has(tab.id)) destroyView(tab.id)
   else views.get(tab.id)?.webContents.loadURL(tab.url).catch(() => {})
   changed()
-  return tab
+  if (p.agent === undefined || p.look === false) return tab
+  const loaded = await agentBrowser.landing(tab.id)
+  return { ...tab, ...(loaded.loadFailed ? loaded : await outlineOf(tab.id)) }
 })
 def('tabs.back', '{id?}', 'Go back in a tab', page((wc) => wc.navigationHistory.goBack()))
 def('tabs.forward', '{id?}', 'Go forward in a tab', page((wc) => wc.navigationHistory.goForward()))
@@ -1993,6 +1999,12 @@ function agentGuard(p, context) {
 
 const drive = (run) => async (p, context) => run(agentGuard(p, context).id, p)
 
+// The page an agent opened or navigated to, as its first outline (the whole one, and the base of the next answer's comparison).
+async function outlineOf(id) {
+  const { tabId, ...page } = await agentBrowser.snapshot(id)
+  return page
+}
+
 // A request waiting on the user ends when it is answered, the tab goes, or the agent's call is dropped.
 function answerRequest(id) {
   const asked = requests.get(id)
@@ -2015,11 +2027,13 @@ function finishDriven(chatId, agent) {
   if (finished) changed()
 }
 
-command('tabs.snapshot', 'An agent reads the page as an outline: its buttons, links, fields and other controls, each with a short ref like e12 for tabs.click and tabs.type, and its headings. Refs last until the next snapshot. Only a tab the agent opened or was handed', tabProps, ['agent'], drive((id) => agentBrowser.snapshot(id)))
-command('tabs.click', 'An agent clicks a ref from tabs.snapshot, or x and y in the page viewport (CSS pixels), with real mouse events sent to that page only', { ...tabProps, ref: string, x: number, y: number }, ['agent'], drive((id, p) => agentBrowser.click(id, p)))
-command('tabs.type', 'An agent types text whole into a ref from tabs.snapshot (focused first) or into the focused element; clear replaces what was there', { ...tabProps, ref: string, text: string, clear: boolean }, ['agent', 'text'], drive((id, p) => agentBrowser.type(id, p)))
-command('tabs.press', 'An agent presses a key or shortcut such as Enter, Tab, ArrowDown or Meta+Enter in the page', { ...tabProps, key: string }, ['agent', 'key'], drive((id, p) => agentBrowser.press(id, p)))
-command('tabs.scroll', 'An agent scrolls the page by dx and dy CSS pixels at x and y (default the middle) or over a ref; returns the scroll position', { ...tabProps, ref: string, x: number, y: number, dx: number, dy: number }, ['agent'], drive((id, p) => agentBrowser.scroll(id, p)))
+// What an agent's action answers with: the page once it settles, as url, title, refs and changed (the lines that came +, went - or changed ~ since the last outline it was given) or text (the whole outline).
+const looks = 'answers with the page once it settles: url, title, refs and changed (the lines that came +, went - or changed ~ since the last outline given) or text (the whole outline); look: false answers at once without it'
+command('tabs.snapshot', 'An agent reads the page as an outline: its buttons, links, fields and other controls, each with a short ref like e12 for tabs.click and tabs.type, its headings, and what the page says back (status, alert, log). A ref stays valid while its element is on the page. Only a tab the agent opened or was handed', tabProps, ['agent'], drive((id) => agentBrowser.snapshot(id)))
+command('tabs.click', `An agent clicks a ref from tabs.snapshot, or x and y in the page viewport (CSS pixels), with real mouse events sent to that page only; ${looks}`, { ...tabProps, ref: string, x: number, y: number, look: boolean }, ['agent'], drive((id, p) => agentBrowser.click(id, p)))
+command('tabs.type', `An agent types text whole into a ref from tabs.snapshot (focused first) or into the focused element; clear replaces what was there; ${looks}`, { ...tabProps, ref: string, text: string, clear: boolean, look: boolean }, ['agent', 'text'], drive((id, p) => agentBrowser.type(id, p)))
+command('tabs.press', `An agent presses a key or shortcut such as Enter, Tab, ArrowDown or Meta+Enter in the page; ${looks}`, { ...tabProps, key: string, look: boolean }, ['agent', 'key'], drive((id, p) => agentBrowser.press(id, p)))
+command('tabs.scroll', `An agent scrolls the page by dx and dy CSS pixels at x and y (default the middle) or over a ref, and returns the scroll position; ${looks}`, { ...tabProps, ref: string, x: number, y: number, dx: number, dy: number, look: boolean }, ['agent'], drive((id, p) => agentBrowser.scroll(id, p)))
 command('tabs.screenshot', 'An agent takes a JPEG of the page viewport, at most 1280 pixels wide, as {mime, width, height, data} with base64 data', tabProps, ['agent'], drive((id) => agentBrowser.screenshot(id)))
 command('tabs.wait', 'An agent waits until the page text contains text or its address contains url, for at most timeout ms (10000 by default, 60000 at most)', { ...tabProps, text: string, url: string, timeout: number }, ['agent'], drive((id, p) => agentBrowser.wait(id, p)))
 
@@ -2027,14 +2041,16 @@ command('tabs.wait', 'An agent waits until the page text contains text or its ad
 const STEPS = { snapshot: 'tabs.snapshot', click: 'tabs.click', type: 'tabs.type', press: 'tabs.press', scroll: 'tabs.scroll', wait: 'tabs.wait', screenshot: 'tabs.screenshot', read: 'tabs.read', navigate: 'tabs.navigate' }
 const ACTS = new Set(['click', 'press', 'type', 'navigate'])
 const LOOKS = new Set(['snapshot', 'read', 'screenshot'])
-command('tabs.steps', 'An agent runs up to 20 steps on a tab in one call, each {do, ...params} where do is snapshot, click, type, press, scroll, wait, screenshot, read or navigate. Stops at the first failure and returns what ran', { ...tabProps, steps: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'object', properties: { do: { enum: Object.keys(STEPS) } }, required: ['do'] } } }, ['agent', 'steps'], async (p, context) => {
+// An action step answers with the page only as the last step, unless it says look itself.
+const ANSWERS = new Set(['click', 'type', 'press', 'scroll', 'navigate'])
+command('tabs.steps', 'An agent runs up to 20 steps on a tab in one call, each {do, ...params} where do is snapshot, click, type, press, scroll, wait, screenshot, read or navigate. Stops at the first failure and returns what ran. A click, type, press, scroll or navigate step answers with the page only as the last step, unless it sets look', { ...tabProps, steps: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'object', properties: { do: { enum: Object.keys(STEPS) } }, required: ['do'] } } }, ['agent', 'steps'], async (p, context) => {
   const tabId = S.getTab(state, p.tabId ?? p.id).id
   const plan = p.steps.map(({ do: name, ...rest }, i) => {
     for (const key of ['id', 'tabId', 'agent']) if (key in rest) throw S.err('bad_params', `steps[${i}] takes the tab and agent from the call, not ${key}`)
     const method = STEPS[name]
     const schema = registry.get(method).inputSchema
     const own = 'agent' in schema.properties
-    const params = { ...rest, id: tabId, ...(own && { agent: p.agent }) }
+    const params = { ...rest, id: tabId, ...(own && { agent: p.agent }), ...(ANSWERS.has(name) && !('look' in rest) && { look: i === p.steps.length - 1 }) }
     validateSchema(schema, params, `steps[${i}]`)
     return { name, method, params, own }
   })
@@ -2043,7 +2059,7 @@ command('tabs.steps', 'An agent runs up to 20 steps on a tab in one call, each {
   for (const [i, step] of plan.entries()) {
     try {
       if (ACTS.has(plan[i - 1]?.name) && LOOKS.has(step.name)) await agentBrowser.settle(tabId)
-      // read and navigate have no agent of their own to check: a chain still never drives a tab the agent does not hold or the user took over.
+      // read has no agent of its own to check: a chain still never reads a tab the agent does not hold or the user took over.
       if (!step.own) agentGuard({ agent: p.agent, id: tabId }, context)
       const result = await call(step.method, step.params, context)
       results.push(S.isObject(result) ? { do: step.name, ...result } : { do: step.name, result })

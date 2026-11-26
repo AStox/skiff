@@ -12,7 +12,11 @@ const CALL_MS = 15000
 const WAIT_MS = 10000
 const WAIT_MAX_MS = 60000
 const LOAD_MS = 15000
-const SETTLE_MS = 300
+// Settling after an action: a grace for a navigation to start, then the DOM must be quiet for QUIET_MS, for at most QUIET_MAX_MS.
+// ponytail: a page that never stops changing (a ticker, a script-driven animation) costs QUIET_MAX_MS on every action; raise QUIET_MS or skip the watch per site if that matters.
+const SETTLE_GRACE_MS = 50
+const QUIET_MS = 150
+const QUIET_MAX_MS = 1500
 
 const INTERACTIVE = new Set(['button', 'link', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'switch', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'slider', 'spinbutton', 'option', 'listbox', 'treeitem', 'PopUpButton', 'DisclosureTriangle'])
 const SHOWN_PROPS = ['focused', 'checked', 'disabled', 'expanded', 'selected', 'required', 'invalid', 'readonly']
@@ -69,45 +73,115 @@ const quadCenter = (quad) => {
 }
 
 const clip = (text, n) => (text.length > n ? `${text.slice(0, n - 1)}…` : text)
-const quote = (text) => JSON.stringify(clip(String(text).replace(/\s+/g, ' ').trim(), 100))
+const quote = (text, n = 100) => JSON.stringify(clip(String(text).replace(/\s+/g, ' ').trim(), n))
 
-// Interactive nodes of a CDP accessibility tree as lines "e12 button "Run" [disabled]", with page headings (no ref) for orientation.
-// Returns {lines, refs: Map ref -> backendDOMNodeId, truncated}.
-function outline(nodes) {
-  const refs = new Map()
+const LIVE = new Set(['status', 'alert', 'alertdialog', 'log'])
+const LIVE_TEXT = 200
+
+// Refs outlive snapshots: a node keeps the ref it first got for as long as its document is in the tab, and a number is never reused.
+// A document whose root node is new (a real navigation, not an in-page one) starts again from e1.
+const newRefs = () => ({ doc: undefined, nodes: new Map(), byNode: new Map(), next: 1 })
+
+// What a status, alert or log says: the static text under it.
+function said(node, byId) {
+  const parts = []
+  const walk = (parent) => {
+    for (const id of parent.childIds || []) {
+      const child = byId.get(id)
+      if (!child) continue
+      if (child.role?.value !== 'StaticText') walk(child)
+      else if (!child.ignored && child.name?.value) parts.push(child.name.value)
+    }
+  }
+  walk(node)
+  return parts.join(' ') || node.name?.value || ''
+}
+
+// Interactive nodes of a CDP accessibility tree as lines "e12 button "Run" [disabled]", with page headings and what the page says back
+// (status, alert, alertdialog, log) as lines without a ref. `refs` (newRefs()) is updated in place and keeps the numbers across calls.
+// Returns {lines, count: lines with a ref, truncated}.
+function outline(nodes, refs = newRefs()) {
+  const doc = nodes.find((node) => node.role?.value === 'RootWebArea')?.backendDOMNodeId
+  if (doc !== refs.doc) Object.assign(refs, newRefs(), { doc })
+  let byId
   const lines = []
   let size = 0
   let truncated = 0
+  let count = 0
   for (const node of nodes) {
     if (node.ignored) continue
     const role = node.role?.value
     const heading = role === 'heading'
-    if (!INTERACTIVE.has(role) && !heading) continue
+    const live = LIVE.has(role)
+    if (!INTERACTIVE.has(role) && !heading && !live) continue
     const props = new Map((node.properties || []).map((p) => [p.name, p.value?.value]))
-    const name = node.name?.value
-    if (heading && !name) continue
+    const name = live ? said(node, byId ??= new Map(nodes.map((n) => [n.nodeId, n]))) : node.name?.value
+    if ((heading || live) && !name) continue
     let line
+    let ref
     if (heading) line = `heading${props.get('level') ? ` h${props.get('level')}` : ''} ${quote(name)}`
+    else if (live) line = `${role} ${quote(name, LIVE_TEXT)}`
     else {
       if (node.backendDOMNodeId === undefined) continue
       const flags = SHOWN_PROPS.filter((p) => props.get(p) === true || (p === 'checked' && props.get(p) === 'mixed') || (p === 'invalid' && props.get(p) && props.get(p) !== 'false')).map((p) => (props.get(p) === 'mixed' ? 'mixed' : p))
       const value = node.value?.value
       const href = props.get('url')
       line = `ref ${role}${name ? ` ${quote(name)}` : ''}${value !== undefined && value !== '' ? ` value=${quote(value)}` : ''}${href ? ` href=${clip(String(href), 120)}` : ''}${flags.length ? ` [${flags.join(', ')}]` : ''}`
-      if (refs.size >= MAX_REFS || size > MAX_TEXT) { truncated++; continue }
-      const ref = `e${refs.size + 1}`
-      refs.set(ref, node.backendDOMNodeId)
+      if (count >= MAX_REFS || size > MAX_TEXT) { truncated++; continue }
+      ref = refs.byNode.get(node.backendDOMNodeId) ?? `e${refs.next}`
       line = line.replace('ref', ref)
     }
     if (size + line.length > MAX_TEXT) { truncated++; continue }
+    if (ref !== undefined) {
+      count++
+      if (!refs.byNode.has(node.backendDOMNodeId)) {
+        refs.byNode.set(node.backendDOMNodeId, ref)
+        refs.nodes.set(ref, node.backendDOMNodeId)
+        refs.next++
+      }
+    }
     size += line.length + 1
     lines.push(line)
   }
-  return { lines, refs, truncated }
+  return { lines, count, truncated }
+}
+
+const render = (lines, truncated) => lines.join('\n') + (truncated ? `\n(${truncated} more elements not shown; scroll or narrow the page)` : '') || '(no interactive elements)'
+
+const refOf = (line) => /^e\d+(?= )/.exec(line)?.[0]
+// A line is named by its ref, or by its whole text (and which copy of it) when it has none.
+function keysOf(lines) {
+  const seen = new Map()
+  return lines.map((line) => {
+    const ref = refOf(line)
+    if (ref) return ref
+    const n = seen.get(line) || 0
+    seen.set(line, n + 1)
+    return `${line}\n${n}`
+  })
+}
+
+// What an agent is told about the page after an action: `before` is the lines of the last outline it was given (null if none for this document),
+// `after` the lines now, `full` the whole outline as text. Returns {changed} (one line per difference: "- " went, "+ " came, "~ " a ref whose line changed, shown as it is now)
+// or {text: full} when there is nothing to compare with or the difference is longer than the outline.
+function compare(before, after, full) {
+  if (!before) return { text: full }
+  const was = keysOf(before)
+  const now = keysOf(after)
+  const wasLine = new Map(was.map((key, i) => [key, before[i]]))
+  const nowKeys = new Set(now)
+  const diff = [
+    ...was.flatMap((key, i) => (nowKeys.has(key) ? [] : [`- ${before[i]}`])),
+    ...now.flatMap((key, i) => (!wasLine.has(key) ? [`+ ${after[i]}`] : wasLine.get(key) !== after[i] ? [`~ ${after[i]}`] : []))
+  ].join('\n')
+  if (!diff) return { changed: 'Nothing on the page changed.' }
+  return diff.length > full.length ? { text: full } : { changed: diff }
 }
 
 function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
   const channels = new Map()
+  // tab id -> {wc, refs, sent}: the refs handed out for the tab's current document and the last outline delivered for it.
+  const pages = new Map()
   // tab id -> the DevTools events being sent right now, as the page's before-input-event / before-mouse-event will report them.
   const sending = new Map()
   const none = { glide: async () => {}, ripple: () => {}, highlight: () => {} }
@@ -129,11 +203,53 @@ function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
     })
   }
 
-  // Inside a chain: after an action that may start loading, give the page 300 ms to begin, then wait until it has stopped.
-  // ponytail: a page that changes later without loading is not caught; the chain needs an explicit wait step.
+  // After an action: a moment for a navigation to start, then wait while the page loads, until the DOM has been quiet for QUIET_MS (at most QUIET_MAX_MS), and once more for a load that began meanwhile.
   async function settle(id) {
-    await sleep(SETTLE_MS)
-    await ready(contents(id))
+    await sleep(SETTLE_GRACE_MS)
+    const wc = contents(id)
+    for (let tries = 0; tries < 2; tries++) {
+      const c = await channel(id)
+      try { await quiet(c); break } catch { await ready(wc) /* the page navigated under the watcher: it is loading */ }
+    }
+    await ready(wc)
+  }
+
+  // Resolves once no DOM mutation has been seen for QUIET_MS. The host stops waiting a little after the page's own cap, so a frozen page or an open dialog cannot hold the call.
+  async function quiet(c) {
+    const watch = `new Promise((resolve) => {
+      let timer
+      const done = () => { clearTimeout(timer); clearTimeout(cap); observer.disconnect(); resolve(true) }
+      const observer = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(done, ${QUIET_MS}) })
+      observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true })
+      timer = setTimeout(done, ${QUIET_MS})
+      const cap = setTimeout(done, ${QUIET_MAX_MS})
+    })`
+    let timer
+    const cap = new Promise((resolve) => { timer = setTimeout(resolve, QUIET_MAX_MS + 300) })
+    try { await Promise.race([send(c, 'Runtime.evaluate', { expression: watch, awaitPromise: true }), cap]) } finally { clearTimeout(timer) }
+  }
+
+  // Resolves {} once the page the tab is loading has loaded, or {loadFailed} with the error when the main frame fails (an aborted load that a redirect or a second navigation caused is not a failure).
+  // Arm it in the same tick that starts the load: a view's first load starts later than the view exists, and this covers that.
+  function landing(id) {
+    const wc = contents(id)
+    return new Promise((resolve) => {
+      let started = wc.isLoading()
+      const events = {
+        'did-start-loading': () => { started = true },
+        'did-stop-loading': () => { if (started) done({}) },
+        // A same-document navigation never loads; a replaceState while the page loads is not the end of it.
+        'did-navigate-in-page': (_e, _url, main) => { if (main && !wc.isLoading()) done({}) },
+        'did-fail-load': (_e, code, description, _url, main) => { if (main && code !== -3) done({ loadFailed: description }) }
+      }
+      const done = (value) => {
+        clearTimeout(timer)
+        for (const [name, listener] of Object.entries(events)) wc.off(name, listener)
+        resolve(value)
+      }
+      const timer = setTimeout(() => done({}), LOAD_MS)
+      for (const [name, listener] of Object.entries(events)) wc.on(name, listener)
+    })
   }
 
   async function channel(id) {
@@ -147,7 +263,7 @@ function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
     } catch (e) {
       throw S.err('devtools_attached', 'Another debugger, probably DevTools, is attached to this tab. Ask the user to close DevTools on it, then try again.')
     }
-    c = { wc, refs: new Map() }
+    c = { wc, page: pageOf(id, wc) }
     channels.set(id, c)
     wc.debugger.on('detach', () => { if (channels.get(id) === c) channels.delete(id) })
     try {
@@ -159,6 +275,18 @@ function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
       throw e
     }
     return c
+  }
+
+  // What an agent has been told about a tab's page outlives its DevTools channel (agent.finish detaches it) and ends with the page's document:
+  // a real navigation commits a new one (an in-page one does not), and two documents in different processes can both have root node 1.
+  function pageOf(id, wc) {
+    let page = pages.get(id)
+    if (page?.wc === wc) return page
+    page = { wc, refs: newRefs(), sent: null }
+    pages.set(id, page)
+    wc.on('did-navigate', () => { page.refs = newRefs(); page.sent = null })
+    wc.once('destroyed', () => { if (pages.get(id) === page) pages.delete(id) })
+    return page
   }
 
   function send(c, method, params) {
@@ -198,7 +326,7 @@ function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
   }
 
   function node(c, ref) {
-    const backendNodeId = c.refs.get(ref)
+    const backendNodeId = c.page.refs.nodes.get(ref)
     if (backendNodeId === undefined) throw bad(`Unknown ref ${ref}: take a new browser_snapshot and use a ref from it`)
     return backendNodeId
   }
@@ -220,16 +348,36 @@ function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
     }
   }
 
-  async function snapshot(id) {
+  async function outlined(id) {
     const c = await channel(id)
     const { nodes } = await send(c, 'Accessibility.getFullAXTree')
-    const { lines, refs, truncated } = outline(nodes)
-    c.refs = refs
-    const text = lines.join('\n') + (truncated ? `\n(${truncated} more elements not shown; scroll or narrow the page)` : '')
-    return { tabId: id, url: c.wc.getURL(), title: c.wc.getTitle(), refs: refs.size, text: text || '(no interactive elements)' }
+    const { lines, count, truncated } = outline(nodes, c.page.refs)
+    return { c, lines, doc: c.page.refs.doc, refs: count, text: render(lines, truncated) }
   }
 
-  async function click(id, { ref, x, y }) {
+  // The whole outline. It becomes the base of the next answer's comparison.
+  async function snapshot(id) {
+    const { c, lines, doc, refs, text } = await outlined(id)
+    c.page.sent = { doc, lines }
+    return { tabId: id, url: c.wc.getURL(), title: c.wc.getTitle(), refs, text }
+  }
+
+  // The page as an answer: what differs from the last outline delivered for this document, or the whole outline when that is not shorter or there is none.
+  async function see(id) {
+    const { c, lines, doc, refs, text } = await outlined(id)
+    const delta = compare(c.page.sent?.doc === doc ? c.page.sent.lines : null, lines, text)
+    c.page.sent = { doc, lines }
+    return { url: c.wc.getURL(), title: c.wc.getTitle(), refs, ...delta }
+  }
+
+  // An action's short result, with the settled page after it unless look is false.
+  async function answer(id, result, look) {
+    if (look === false) return result
+    await settle(id)
+    return { ...result, ...(await see(id)) }
+  }
+
+  async function click(id, { ref, x, y, look }) {
     const c = await channel(id)
     let point
     if (ref !== undefined) point = await locate(c, ref)
@@ -241,7 +389,7 @@ function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
     await input(id, c, 'Input.dispatchMouseEvent', { type: 'mousePressed', ...base, buttons: 1 })
     draw.ripple(id, point)
     await input(id, c, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...base, buttons: 0 })
-    return { clicked: ref ?? { x: point.x, y: point.y } }
+    return answer(id, { clicked: ref ?? { x: point.x, y: point.y } }, look)
   }
 
   async function chord(id, c, parsed) {
@@ -250,7 +398,7 @@ function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
     await input(id, c, 'Input.dispatchKeyEvent', { type: 'keyUp', ...base })
   }
 
-  async function type(id, { ref, text, clear }) {
+  async function type(id, { ref, text, clear, look }) {
     if (typeof text !== 'string') throw bad('text must be a string')
     const c = await channel(id)
     if (ref !== undefined) {
@@ -264,16 +412,16 @@ function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
       await chord(id, c, parseKey('Backspace'))
     }
     if (text) await send(c, 'Input.insertText', { text })
-    return { typed: [...text].length }
+    return answer(id, { typed: [...text].length }, look)
   }
 
-  async function press(id, { key }) {
+  async function press(id, { key, look }) {
     const c = await channel(id)
     await chord(id, c, parseKey(key))
-    return { pressed: key }
+    return answer(id, { pressed: key }, look)
   }
 
-  async function scroll(id, { ref, x, y, dx = 0, dy = 0 }) {
+  async function scroll(id, { ref, x, y, dx = 0, dy = 0, look }) {
     if (![dx, dy].every(Number.isFinite)) throw bad('dx and dy must be numbers')
     const c = await channel(id)
     let at = { x, y }
@@ -284,7 +432,7 @@ function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
     }
     if (dx || dy) await input(id, c, 'Input.dispatchMouseEvent', { type: 'mouseWheel', x: at.x, y: at.y, deltaX: dx, deltaY: dy })
     const { result } = await send(c, 'Runtime.evaluate', { expression: '({ x: Math.round(scrollX), y: Math.round(scrollY) })', returnByValue: true })
-    return { scrolled: { dx, dy }, scroll: result.value }
+    return answer(id, { scrolled: { dx, dy }, scroll: result.value }, look)
   }
 
   // Electron's own capture, not Page.captureScreenshot: a page parked in the hidden window paints only when asked, and DevTools waits for a frame that never comes once the page has changed.
@@ -317,7 +465,7 @@ function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
     }
   }
 
-  return { snapshot, click, type, press, scroll, screenshot, wait, settle, release, sent }
+  return { snapshot, click, type, press, scroll, screenshot, wait, settle, landing, release, sent }
 }
 
-module.exports = { createAgentBrowser, parseKey, outline }
+module.exports = { createAgentBrowser, parseKey, outline, compare, newRefs }

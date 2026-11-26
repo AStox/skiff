@@ -236,7 +236,7 @@ const schemas = {
   'tabs.close': shape({ id }),
   'tabs.activate': shape({ id }, ['id']),
   'tabs.read': shape({ id }),
-  'tabs.navigate': shape({ id, url: string, browserIdentity: identity }, ['url']),
+  'tabs.navigate': shape({ id, url: string, browserIdentity: identity, agent: { type: 'string', minLength: 1, maxLength: 40 }, look: boolean }, ['url']),
   'tabs.back': shape({ id }),
   'tabs.forward': shape({ id }),
   'tabs.reload': shape({ id, ignoreCache: boolean }),
