@@ -1411,7 +1411,11 @@ test.describe('layer panel and Buoy', () => {
     // Over the list, the chips and the footer: one switch per stream.
     for (const selector of ['#list .row-main', '#chips', 'footer']) {
       const at = await centre(panel, selector)
+      const raises = (await skiff.audit()).calls.filter((c) => c.method === 'ui.raise').length
       expect(await switches(skiff, () => wheel(skiff, panel.url(), at, trackpad(1))), selector).toEqual([['spaces.cycle', 1]])
+      // Raising gives the keyboard to the page, and on a Mac that blur closes the card; Xvfb has no window manager to show it.
+      expect((await skiff.audit()).calls.filter((c) => c.method === 'ui.raise').length, selector).toBe(raises)
+      expect(await isOpen(panel)).toBe(true)
       await back()
       expect(await switches(skiff, () => wheel(skiff, panel.url(), at, trackpad(-1, { tail: 30 }))), selector).toEqual([['spaces.cycle', -1]])
       await back()
