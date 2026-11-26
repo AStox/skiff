@@ -28,8 +28,8 @@ Replies are `{"ok":true,"result":...}` or `{"ok":false,"error":{"code","message"
 Use your own tool's name as your agent name (at most 40 characters, written `<you>` below) and pass it as `agent` on every call.
 
 ```sh
-skiff tabs.create '{"url":"https://example.com","agent":"<you>"}'   # returns the tab; use its id as tabId
-skiff tabs.snapshot '{"tabId":"<id>","agent":"<you>"}'              # lines like: e12 button "Run Query"
+skiff tabs.create '{"url":"https://example.com","agent":"<you>"}'   # returns the tab and its page: text (lines like: e12 button "Run Query"), refs, url, title
+skiff tabs.snapshot '{"tabId":"<id>","agent":"<you>"}'              # the page again, whole
 skiff tabs.click '{"tabId":"<id>","agent":"<you>","ref":"e12"}'
 skiff tabs.type '{"tabId":"<id>","agent":"<you>","ref":"e3","text":"select 1","clear":true}'
 skiff tabs.press '{"tabId":"<id>","agent":"<you>","key":"Enter"}'
@@ -37,21 +37,27 @@ skiff tabs.scroll '{"tabId":"<id>","agent":"<you>","dy":600}'
 skiff tabs.wait '{"tabId":"<id>","agent":"<you>","text":"Results"}'
 skiff tabs.screenshot '{"tabId":"<id>","agent":"<you>"}'            # {data: base64 JPEG}
 skiff tabs.read '{"id":"<id>"}'                                     # {title, url, selection, text}
-skiff tabs.navigate '{"id":"<id>","url":"https://example.com/next"}'
+skiff tabs.navigate '{"id":"<id>","agent":"<you>","url":"https://example.com/next"}'   # answers with the new page like tabs.create
 skiff tabs.steps '{"tabId":"<id>","agent":"<you>","steps":[{"do":"type","ref":"e3","text":"select 1","clear":true},{"do":"press","key":"Enter"},{"do":"wait","text":"Results"},{"do":"snapshot"}]}'
 skiff agent.finish '{"tabId":"<id>","agent":"<you>","summary":"Ran the query; 3 rows"}'
 ```
 
-Loop: snapshot, act on a ref, wait or snapshot again, check the result. Refs last only until the next snapshot. After typing into an autocomplete or search-as-you-type field, press `Enter` or snapshot again before clicking: the old refs may be stale.
+Opening a tab and navigating (with `agent`) wait for the page to load and answer with its outline, so you do not need a snapshot first. Every `click`, `type`, `press` and `scroll` waits for the page to settle and answers with the page as it is now: `url`, `title`, `refs`, and either `changed` or `text`.
+
+- `changed` lists what differs from the last outline you were given, one line each: `+ <line>` came, `- <line>` went, `~ <line>` is a ref whose line changed (shown as it is now). `Nothing on the page changed.` means just that.
+- `text` is the whole outline. You get it when there is no earlier outline of this page, when the action led to a new page, or when the difference would be longer than the outline.
+- Lines without a ref, like `status "Saved"` or `alert "Card declined"`, are what the page says back: read them to see whether an action worked.
+- Pass `"look": false` on an action when you do not need the answer (for example a click you will follow with another click); it returns at once with only the short result.
+
+A ref stays valid for as long as its element is on the page, also after later actions and when the element has scrolled out of the outline. There is no need to take another snapshot, or to read the page again after an action, unless the answer leaves you unsure. A ref whose element is gone fails as stale; refs of a page you left (a new page in the tab) start again from `e1`. After typing into an autocomplete or search-as-you-type field, look at the answer: the suggestions appear in it, with refs.
 
 You can drive only tabs you opened or were handed; any other tab fails with `forbidden`.
 
 ## Chain steps in one call
 
-Every call costs you a round trip, so send several steps in one `tabs.steps` call (1 to 20). A step is `{"do": ...}` with `do` one of `snapshot`, `click`, `type`, `press`, `scroll`, `wait`, `screenshot`, `read`, `navigate`, plus the params that command takes, but no `tabId` or `agent`.
+Every call costs you a round trip, so send several steps in one `tabs.steps` call (1 to 20) when you already know what the next steps are. A step is `{"do": ...}` with `do` one of `snapshot`, `click`, `type`, `press`, `scroll`, `wait`, `screenshot`, `read`, `navigate`, plus the params that command takes, but no `tabId` or `agent`.
 
-- Chain steps whenever the next step does not depend on what the page shows. End the chain with `snapshot` or `read`, so the result comes back in the same call.
-- A chain cannot click a ref from a snapshot taken earlier in the same chain: refs from a snapshot are unknown until the call returns.
+- Chain steps whenever the next step does not depend on what the page shows. An action step that is the last step answers with the page like the single command; one followed by another step answers briefly (as with `"look": false`), and `"look": true` on it asks for the page anyway. A `snapshot` step is always the whole outline.
 - The chain stops at the first failure and the call still succeeds. Check `failed` (`step`, `do`, `code`, `message`) and `notRun` first; `results` holds the steps that ran.
 - Wait only for text that is sure to appear: a `wait` that times out costs its whole timeout and stops the chain.
 - The confirming click on anything hard to undo is its own call, after the user agrees. Chaining never weakens the rules below.

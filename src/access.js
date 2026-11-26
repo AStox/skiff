@@ -24,7 +24,7 @@ const commandOf = (name) => Object.hasOwn(aliases, name) ? aliases[name] : name
 const string = (value) => typeof value === 'string' && value.length > 0 && value.length <= 200
 function scopedSchema(command, schema) {
   if (!schema) return schema
-  if (agentCommands.has(command) || command === 'tabs.create') {
+  if (agentCommands.has(command) || command === 'tabs.create' || command === 'tabs.navigate') {
     const { agent, ...properties } = schema.properties || {}
     return { ...schema, properties, required: (schema.required || []).filter((key) => key !== 'agent') }
   }
@@ -187,6 +187,8 @@ function createAccess({ state, registry, changed = () => {}, emit = () => {} }) 
         const rule = Object.hasOwn(rules, command) ? rules[command] : null
         const params = { ...input }
         if (!grant.ownerBrowser && (agentCommands.has(command) || command === 'tabs.create')) params.agent = grant.owner
+        // Navigating a tab the grant opened (or was handed) acts as that agent, like the other page commands; any other tab in its scope navigates as before.
+        if (!grant.ownerBrowser && command === 'tabs.navigate') delete params.agent
         if (rule && params.tabId !== undefined && params.id !== undefined && params.tabId !== params.id) throw fail('id and tabId must identify the same granted tab')
         if (rule === 'create' && params.spaceId === undefined) {
           const active = current().activeSpaceId
@@ -197,6 +199,7 @@ function createAccess({ state, registry, changed = () => {}, emit = () => {} }) 
           if (tool.name.startsWith('browser_')) params.tabId = id
           else params.id = id
         }
+        if (!grant.ownerBrowser && command === 'tabs.navigate' && normalTab(params.tabId ?? params.id)?.agent === grant.owner) params.agent = grant.owner
         assert(context, { command, params })
         let result
         try { result = await tool.run(params, context) } finally { assert(context, { command, params, after: true }) }

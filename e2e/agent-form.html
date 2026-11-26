@@ -10,11 +10,32 @@
 <label>Query<input id="q" aria-label="Query"></label>
 <label>Notes<textarea id="n" aria-label="Notes"></textarea></label>
 <button id="run" type="button">Run Query</button>
+<button id="save" type="button">Save</button>
+<button id="add" type="button">Add item</button>
+<button id="temp" type="button">Temporary</button>
+<button id="drop" type="button">Remove temporary</button>
+<a id="go" href="/article">Read the article</a>
+<div id="items"></div>
+<div id="status" role="status"></div>
 <div id="out"></div>
 <script>
 window.log = { clicks: [], keys: [] }
 const out = document.getElementById('out')
 document.getElementById('run').addEventListener('click', () => { out.textContent = `RAN: ${document.getElementById('q').value}` })
+// The page answers after a delay: a status line and a new button.
+document.getElementById('save').addEventListener('click', () => setTimeout(() => {
+  document.getElementById('status').textContent = 'Saved'
+  const undo = document.createElement('button')
+  undo.textContent = 'Undo save'
+  document.getElementById('items').append(undo)
+}, 120))
+let items = 0
+document.getElementById('add').addEventListener('click', () => {
+  const item = document.createElement('button')
+  item.textContent = `Item ${++items}`
+  document.getElementById('items').prepend(item)
+})
+document.getElementById('drop').addEventListener('click', () => document.getElementById('temp').remove())
 document.addEventListener('mousedown', (e) => window.log.clicks.push({ target: e.target.id || e.target.tagName, trusted: e.isTrusted }))
 document.addEventListener('keydown', (e) => window.log.keys.push(`${e.metaKey ? 'Meta+' : ''}${e.key}`))
 </script>

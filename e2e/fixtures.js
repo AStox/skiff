@@ -54,6 +54,10 @@ const test = base.extend({
         response.setHeader('Content-Type', 'text/html; charset=utf-8')
         return response.end(fs.readFileSync(path.join(__dirname, route.slice(1) + '.html')))
       }
+      // The form, after its first byte comes late: an agent that opens it must wait for it, not answer with a blank tab.
+      if (route === '/agent-slow') {
+        return setTimeout(() => { response.setHeader('Content-Type', 'text/html; charset=utf-8'); response.end(fs.readFileSync(path.join(__dirname, 'agent-form.html'))) }, 1200)
+      }
       if (route === '/download') {
         response.setHeader('Content-Type', 'text/plain')
         response.setHeader('Content-Disposition', 'attachment; filename="skiff-fixture.txt"')
