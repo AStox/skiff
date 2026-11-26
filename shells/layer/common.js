@@ -285,21 +285,31 @@ const EAR_MIN = 33
 const EAR_MAX = 280
 // The ear's padding, favicon and gap around its title.
 const EAR_CHROME = 40
+// The gap between title and host.
+const EAR_HOST_GAP = 7
 const earWidths = new Map()
-// An ear as wide as its whole title, measured in the page's #ear-measure; clear earWidths once the shell's font arrives.
-function earNatural(title) {
-  let width = earWidths.get(title)
+// An ear as wide as its whole title and host, measured in the page's #ear-measure; clear earWidths once the shell's font arrives.
+function earNatural(tab) {
+  const title = earTitle(tab)
+  const host = earHost(tab)
+  const key = `${title}\n${host}`
+  let width = earWidths.get(key)
   if (width !== undefined) return width
   if (earWidths.size > 500) earWidths.clear()
   const measure = document.getElementById('ear-measure')
-  measure.textContent = title
-  width = Math.min(EAR_MAX, Math.ceil(measure.getBoundingClientRect().width) + EAR_CHROME)
-  earWidths.set(title, width)
+  const textWidth = (text) => {
+    measure.textContent = text
+    return Math.ceil(measure.getBoundingClientRect().width)
+  }
+  width = Math.min(EAR_MAX, textWidth(title) + (host ? EAR_HOST_GAP + textWidth(host) : 0) + EAR_CHROME)
+  earWidths.set(key, width)
   return width
 }
 // ponytail: the unread count is read from the title only ("(3) WhatsApp", "Inbox (3) - ..."); the app badge or Notification hooks come when a site needs them.
 const siteNotice = (tab) => (/^\(([1-9]\d{0,2}\+?)\)\s|^Inbox \(([1-9]\d{0,2}\+?)\) - /.exec(tab.title || '') || []).slice(1).find(Boolean) || ''
 const earTitle = (tab) => tab.title || hostOf(tab.url) || 'New tab'
+// Shown after the title for web pages only; a chat tab has no host.
+const earHost = (tab) => (/^https?:/.test(tab.url) ? hostOf(tab.url) : '')
 
 /* ---------- the offer on a tab the bar just opened: do the other thing with the same text (tabs.reroute) ---------- */
 

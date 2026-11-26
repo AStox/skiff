@@ -115,7 +115,7 @@ function clearOf(box, rects) {
 
 // Each window's ear where its frame draws it, from the windows back to front.
 function placeEars(list) {
-  const slots = earLayout(list.map((c) => ({ id: c.tab.id, rect: c.rect, natural: earNatural(earTitle(c.tab)) })), [buoyRect(state)], deskSize(state).width)
+  const slots = earLayout(list.map((c) => ({ id: c.tab.id, rect: c.rect, natural: earNatural(c.tab) })), [buoyRect(state)], deskSize(state).width)
   for (const c of list) {
     const ear = c.el?.querySelector('.ear')
     if (!ear) continue
@@ -123,7 +123,7 @@ function placeEars(list) {
     ear.hidden = !slot
     if (!slot) continue
     Object.assign(ear.style, { left: px(slot.x - c.rect.x), width: px(slot.width) })
-    ear.classList.toggle('narrow', slot.width < earNatural(earTitle(c.tab)) && slot.width < EAR_MIN + 24)
+    ear.classList.toggle('narrow', slot.width < earNatural(c.tab) && slot.width < EAR_MIN + 24)
   }
   return slots
 }
@@ -134,7 +134,7 @@ function card(c, image) {
   const at = c.rect
   const scale = c.to.width / at.width
   const win = h('span', { class: `win${c.active ? ' active' : ''}` },
-    h('span', { class: 'ear', 'aria-hidden': 'true' }, h('span', { class: 'ear-fav' }, favicon(c.tab), agentDot(c.tab), windowSpace(state, c.tab)), h('span', { class: 'ear-title' }, title)),
+    h('span', { class: 'ear', 'aria-hidden': 'true' }, h('span', { class: 'ear-fav' }, favicon(c.tab), agentDot(c.tab), windowSpace(state, c.tab)), h('span', { class: 'ear-title' }, title), h('span', { class: 'ear-host' }, earHost(c.tab))),
     h('span', { class: 'ring' }),
     h('span', { class: 'glow' }),
     h('span', { class: 'card' }, image ? h('img', { class: 'shot', src: image, alt: '', draggable: 'false' }) : h('span', { class: 'blank' }, favicon(c.tab), h('span', { class: 'blank-title' }, title))))
