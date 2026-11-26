@@ -140,6 +140,8 @@ test('a call on a tab another debugger holds is refused with devtools_attached, 
     else wc.debugger.detach()
   }, [href(skiff, FORM), action])
   await expect.poll(() => skiff.app.evaluate(({ webContents }, url) => webContents.getAllWebContents().some((w) => w.getURL() === url && !w.isLoading()), href(skiff, FORM))).toBe(true)
+  // Opening the tab already attached the agent's own channel (it answered with the outline); agent.finish releases it, so another debugger can come first.
+  await agent(skiff, 'agent.finish', tab.id)
   await holder('attach')
   expect(await refused(agent(skiff, 'tabs.snapshot', tab.id))).toBe('devtools_attached')
   await holder('detach')
