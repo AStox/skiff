@@ -96,6 +96,8 @@ const closingWindows = new Set()
 let attached = null
 let shown = []
 let pageBounds = null
+// The tab whose page asked for element full screen (a video's button): its view covers the whole window until it leaves.
+let htmlFullscreen = null
 let saveTimer = null
 let pageVisible = true
 let importer
@@ -284,6 +286,7 @@ function destroyView(id) {
   if (!view) return
   views.delete(id)
   runtime.delete(id)
+  if (htmlFullscreen === id) setHtmlFullscreen(null)
   unshow(view)
   if (agentViews.has(view)) agentWin?.contentView.removeChildView(view)
   if (attached === view) attached = null
@@ -546,6 +549,8 @@ function createView(tab) {
     if (!agent && controlMode(S.findTab(state, id)) === 'lock') event.preventDefault()
   })
   wc.on('did-start-loading', () => update({}, { loading: true }))
+  wc.on('enter-html-full-screen', () => setHtmlFullscreen(id))
+  wc.on('leave-html-full-screen', () => { if (htmlFullscreen === id) setHtmlFullscreen(null) })
   // A navigation after the first load finished leaves the page the bar opened, so its reroute offer ends.
   let loaded = false
   wc.on('did-stop-loading', () => {
@@ -758,6 +763,13 @@ function syncView() {
     placed = placed.filter((p) => p.tab.id !== peek.id)
     placed.push({ tab: peek, bounds: { x: Math.round(width * .15), y: 72, width: Math.round(width * .7), height: Math.max(160, height - 144) }, radius: 12 })
   }
+  // The page in element full screen, while it is the one in front, is the only thing drawn, over the window's whole content: no frame, ear or neighbour.
+  const covering = htmlFullscreen && tab?.id === htmlFullscreen && placed.find((p) => p.tab.id === htmlFullscreen)
+  if (htmlFullscreen && !covering) exitHtmlFullscreen()
+  if (covering) {
+    const [width, height] = win.getContentSize()
+    placed = [{ tab: covering.tab, bounds: { x: 0, y: 0, width, height }, radius: 0 }]
+  }
   const placedItems = placed.flatMap((p) => {
     const mode = controlMode(p.tab)
     return [
@@ -799,6 +811,36 @@ function syncView() {
   }
   parkAgents()
   syncDivider()
+}
+
+function setHtmlFullscreen(id) {
+  htmlFullscreen = id
+  floatsShown()
+  syncView()
+  focusFullscreenPage()
+}
+
+// Becoming full screen can leave the keyboard with the shell, where the page's own Escape and exit keys never arrive.
+function focusFullscreenPage() {
+  const wc = htmlFullscreen && views.get(htmlFullscreen)?.webContents
+  if (wc && !wc.isDestroyed() && !wc.isFocused()) wc.focus()
+}
+
+// A page that is not in front cannot keep the window full screen.
+function exitHtmlFullscreen() {
+  const wc = views.get(htmlFullscreen)?.webContents
+  htmlFullscreen = null
+  floatsShown()
+  if (wc && !wc.isDestroyed()) wc.executeJavaScript('document.fullscreenElement && document.exitFullscreen()', true).catch(() => {})
+}
+
+// A float overlay is a window above the others, full-screen ones too, so it hides while a page covers the screen.
+function floatsShown() {
+  for (const o of overlays.values()) {
+    if (!o.float || !o.shown || o.host.isDestroyed()) continue
+    if (htmlFullscreen) o.host.hide()
+    else o.host.showInactive()
+  }
 }
 
 // A page an agent drives is never left without a window: off screen it sits in a hidden one, painting, so DevTools screenshots and timers keep working.
@@ -1226,7 +1268,7 @@ function deskFocused() {
 const deskArea = (near) => (['x', 'y', 'width', 'height'].every((key) => Number.isFinite(near?.[key])) ? screen.getDisplayMatching(near) : screen.getPrimaryDisplay()).workArea
 
 function refitDesk() {
-  for (const w of [win, ...[...parked.values()].map((rec) => rec.win)]) if (w && deskMode) w.setBounds(deskArea(w.getBounds()))
+  for (const w of [win, ...[...parked.values()].map((rec) => rec.win)]) if (w && deskMode && !w.isFullScreen()) w.setBounds(deskArea(w.getBounds()))
 }
 
 // Whether the desk window feature is on: a desk shell on a Mac whose desktops can be read; reports whether anything it keeps changed.
@@ -1296,6 +1338,13 @@ function createWindow(near = state.window, { quiet = false } = {}) {
     : { ...state.window, minWidth: 560, minHeight: 360, titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default', webPreferences: shellWebPreferences })
   ignoring = false
   guardShell(win.webContents)
+  // Escape ends element full screen wherever the keyboard is, as the page's own would.
+  win.webContents.on('before-input-event', (event, input) => {
+    if (!htmlFullscreen || input.type !== 'keyDown' || input.key !== 'Escape') return
+    event.preventDefault()
+    exitHtmlFullscreen()
+    syncView()
+  })
   win.webContents.on('before-mouse-event', (_e, mouse) => { if (mouse.type === 'mouseDown') pressOutside() })
   if (quiet) w.showInactive()
   // A desktop's first window loads beside the live Buoy and tab list, which stay.
@@ -1325,14 +1374,18 @@ function createWindow(near = state.window, { quiet = false } = {}) {
     fitOverlays()
     const popup = extensions.popupView()
     if (popup) popup.setBounds(edgeBounds(popupBounds))
+    if (htmlFullscreen && !deskMode) syncView()
     if (deskMode) {
       syncView()
       if (state.settings.tabLayout !== 'free') soonTimer ??= setTimeout(pushState, 16)
     }
   })
+  win.on('enter-full-screen', () => { if (win === w) focusFullscreenPage() })
+  win.on('leave-full-screen', () => { if (deskMode) refitDesk() })
   win.on('focus', () => {
     if (win !== w && !parkedWin(w)) return
     deskFocused()
+    focusFullscreenPage()
     if (deskMode) desktopsChanged()
     if (S.look(state)) changed()
   })
@@ -1791,7 +1844,7 @@ def('ui.showOverlay', '{file, bounds?, name?, focus?, float?, hit?, under?}', 'S
   }
   o.shown = true
   fitOverlay(o)
-  if (float && !wasShown) o.host.showInactive()
+  if (float && !wasShown && !htmlFullscreen) o.host.showInactive()
   if (p.focus ?? (!wasShown || !same)) focusShell(o)
   return null
 })
