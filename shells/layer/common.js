@@ -321,10 +321,8 @@ function offerLabel(state, tab) {
 // Milliseconds the offer has left; paused is how long hovering held it.
 const offerLeft = (tab, paused = 0) => OFFER_LIFE - (Date.now() - tab.intent.at - paused)
 
-// span: [left, right] of the top edge; occluders: [left, right] of whatever covers the ear's row. The leftmost free stretch that takes the
-// whole ear wins, else the widest one, the ear shrunk to it, else none. Returns {x, width, room}, room being the free stretch from x.
-function earSlot(span, occluders, natural, min = EAR_MIN) {
-  const [lo, hi] = span
+// span: [left, right] of the top edge; occluders: [left, right] of whatever covers the ear's row. Returns the free stretches, left to right.
+function earFree([lo, hi], occluders) {
   const free = []
   let at = lo
   for (const [a, b] of occluders.map(([a, b]) => [a - EAR_GAP, b + EAR_GAP]).sort((p, q) => p[0] - q[0])) {
@@ -332,12 +330,31 @@ function earSlot(span, occluders, natural, min = EAR_MIN) {
     at = Math.max(at, b)
   }
   if (at < hi) free.push([at, hi])
+  return free
+}
+// The leftmost free stretch that takes the whole ear wins, else the widest one, the ear shrunk to it, else none. Returns {x, width, room}, room being the free stretch from x.
+function earSlot(span, occluders, natural, min = EAR_MIN) {
+  const free = earFree(span, occluders)
   const whole = free.find(([a, b]) => b - a >= natural)
   if (whole) return { x: whole[0], width: natural, room: Math.floor(whole[1] - whole[0]) }
   const widest = free.reduce((best, f) => (!best || f[1] - f[0] > best[1] - best[0] ? f : best), null)
   if (!widest || widest[1] - widest[0] < min) return null
   const width = Math.floor(widest[1] - widest[0])
   return { x: widest[0], width, room: width }
+}
+// Widths for ears sharing room: the widest give way first, to an equal share of what the narrower ones leave.
+// ponytail: past about 40 windows even icon-only ears do not fit, and the last ones stay earless.
+function earShares(members, room) {
+  const widths = new Map()
+  let left = room
+  let cap = Infinity
+  for (const [i, w] of [...members].sort((a, b) => a.natural - b.natural).entries()) {
+    const share = left / (members.length - i)
+    if (cap === Infinity && w.natural > share) cap = share
+    if (cap === Infinity) left -= w.natural
+    widths.set(w, Math.max(EAR_MIN, Math.floor(Math.min(w.natural, cap))))
+  }
+  return widths
 }
 
 // windows: back to front, {id, rect, natural, after?, slot?, rank?}, after being room kept free beside the ear for its offer; a given slot (the window being dragged) is kept. fixed: rects always on top (the Buoy).
@@ -358,13 +375,20 @@ function earLayout(windows, fixed = [], deskWidth = Infinity) {
   const grow = (r, by) => ({ x: r.x - by, y: r.y, width: r.width + 2 * by, height: r.height + by })
   const above = fixed.map((r) => grow(r, EAR_RIM))
   const slots = {}
+  const widths = new Map()
   for (const w of stack.reverse()) {
     const r = w.rect
     const top = r.y - EAR_HEIGHT
     let slot = w.slot
     if (slot === undefined) {
       const row = above.filter((o) => o.y < r.y && o.y + o.height > top).map((o) => [o.x, o.x + o.width])
-      slot = earSlot([Math.max(0, r.x + EAR_CORNER), Math.min(deskWidth, r.x + r.width - EAR_CORNER)], row, w.natural)
+      const span = [Math.max(0, r.x + EAR_CORNER), Math.min(deskWidth, r.x + r.width - EAR_CORNER)]
+      const group = w.rank === undefined ? [] : groups.get(`${r.x} ${r.y} ${r.width} ${r.height}`).filter((m) => m.slot === undefined)
+      if (group.length > 1 && !widths.has(w)) {
+        const room = earFree(span, row).reduce((sum, [a, b]) => sum + b - a, 0) - (group.length - 1) * EAR_GAP - group.reduce((sum, m) => sum + (m.after || 0), 0)
+        for (const [m, width] of earShares(group, room)) widths.set(m, width)
+      }
+      slot = earSlot(span, row, widths.get(w) ?? w.natural)
     }
     slots[w.id] = slot
     above.push(grow(r, EAR_RIM))
