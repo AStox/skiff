@@ -70,7 +70,7 @@ test('Escape ends full screen when the keyboard is with the shell', async ({ ski
   await enter(skiff, page)
   await escape(skiff, 'shell')
   await expect.poll(() => state(skiff)).toEqual({ ...before, full: false })
-  expect(await page.evaluate(() => window.events.join())).toBe('enter,leave')
+  await expect.poll(() => page.evaluate(() => window.events.join())).toBe('enter,leave')
 })
 
 test('an element inside the page covers the window as well, and bringing another tab forward ends it', async ({ skiff }) => {
