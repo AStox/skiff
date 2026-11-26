@@ -43,13 +43,15 @@ function render() {
   document.documentElement.classList.toggle('active', Boolean(w?.active))
   document.documentElement.classList.toggle('tiled', !['free', 'full', 'cascade'].includes(state.settings.tabLayout))
   const title = earTitle(tab)
+  const host = earHost(tab)
   const key = JSON.stringify([title, tab.favicon, tab.url, tab.agent, tab.agentState])
   if (key !== painted) {
     painted = key
-    $('ear').title = hostOf(tab.url) || title
+    $('ear').title = host ? tab.url : title
     $('ear').setAttribute('aria-label', title)
     $('ear-fav').replaceChildren(...[favicon(tab), agentDot(tab)].filter(Boolean))
     $('ear-title').textContent = title
+    $('ear-host').textContent = host
     $('ear-hide').setAttribute('aria-label', `Hide ${title}`)
     $('ear-close').setAttribute('aria-label', `Close ${title}`)
   }
@@ -70,7 +72,7 @@ function placeEar() {
     const own = w.tab.id === id && (gesture?.rect || pinch?.rect)
     const live = own || (moving?.id === w.tab.id && moving)
     const rect = live ? { x: live.x, y: live.y, width: live.width, height: live.height } : w.rect
-    const entry = { id: w.tab.id, rect, natural: earNatural(earTitle(w.tab)), after: offerReserve(w.tab) }
+    const entry = { id: w.tab.id, rect, natural: earNatural(w.tab), after: offerReserve(w.tab) }
     if (!own && live && 'ear' in live) entry.slot = live.ear && { x: rect.x + live.ear.dx, width: live.ear.width, room: live.ear.room }
     return entry
   })
