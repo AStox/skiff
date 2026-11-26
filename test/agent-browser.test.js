@@ -44,6 +44,36 @@ test('the per-outline limits count each outline, not the life of the document', 
   assert.equal(refsOf(second.lines)[0], 'e301')
 })
 
+test('an element pushed past the limit is not reported as gone, one removed from the tree is, and one that fits again shows as new once', () => {
+  const refs = newRefs()
+  const many = (from, n) => Array.from({ length: n }, (_, i) => node(from + i, 'button', `b${from + i}`))
+  const page = many(10, 300)
+  const first = outline([root(1), ...page], refs)
+  assert.equal(first.truncated, 0)
+  assert.equal(first.cut.size, 0)
+  // Three suggestions at the top push the last three known buttons (e298 to e300) past the cut.
+  const second = outline([root(1), ...many(400, 3), ...page], refs)
+  assert.deepEqual([...second.cut], ['e298', 'e299', 'e300'])
+  const full = second.lines.join('\n')
+  assert.deepEqual(compare(first.lines, second.lines, full, second.cut), { changed: ['+ e301 button "b400"', '+ e302 button "b401"', '+ e303 button "b402"'].join('\n') })
+  // b100 (e91) really leaves the tree: only it is gone, and e299 and e300 stay cut.
+  const rest = page.filter((n) => n.backendDOMNodeId !== 100)
+  const third = outline([root(1), ...many(400, 3), ...rest], refs)
+  assert.deepEqual([...third.cut], ['e299', 'e300'])
+  assert.deepEqual(compare(second.lines, third.lines, third.lines.join('\n'), third.cut), { changed: '- e91 button "b100"\n+ e298 button "b307"' })
+  // The suggestions go; the two cut elements fit again and show as new, once.
+  const fourth = outline([root(1), ...rest], refs)
+  assert.equal(fourth.cut.size, 0)
+  assert.deepEqual(compare(third.lines, fourth.lines, fourth.lines.join('\n'), fourth.cut), {
+    changed: ['- e301 button "b400"', '- e302 button "b401"', '- e303 button "b402"', '+ e299 button "b308"', '+ e300 button "b309"'].join('\n')
+  })
+})
+
+test('nothing changed is the answer when the only difference is elements pushed past the limit', () => {
+  const lines = ['e1 button "A"', 'e2 button "B"']
+  assert.deepEqual(compare(lines, [lines[0]], 'e1 button "A"', new Set(['e2'])), { changed: 'Nothing on the page changed.' })
+})
+
 test('status, alert, alertdialog and log show with their text and no ref; empty ones are left out and a long text is cut', () => {
   // A live region and the static text under it, as the accessibility tree has them.
   const live = (id, role, ...texts) => [

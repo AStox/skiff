@@ -99,7 +99,7 @@ function said(node, byId) {
 
 // Interactive nodes of a CDP accessibility tree as lines "e12 button "Run" [disabled]", with page headings and what the page says back
 // (status, alert, alertdialog, log) as lines without a ref. `refs` (newRefs()) is updated in place and keeps the numbers across calls.
-// Returns {lines, count: lines with a ref, truncated}.
+// Returns {lines, count: lines with a ref, truncated, cut: refs of known elements met in the tree but left out by the limits}.
 function outline(nodes, refs = newRefs()) {
   const doc = nodes.find((node) => node.role?.value === 'RootWebArea')?.backendDOMNodeId
   if (doc !== refs.doc) Object.assign(refs, newRefs(), { doc })
@@ -108,6 +108,7 @@ function outline(nodes, refs = newRefs()) {
   let size = 0
   let truncated = 0
   let count = 0
+  const cut = new Set()
   for (const node of nodes) {
     if (node.ignored) continue
     const role = node.role?.value
@@ -127,11 +128,19 @@ function outline(nodes, refs = newRefs()) {
       const value = node.value?.value
       const href = props.get('url')
       line = `ref ${role}${name ? ` ${quote(name)}` : ''}${value !== undefined && value !== '' ? ` value=${quote(value)}` : ''}${href ? ` href=${clip(String(href), 120)}` : ''}${flags.length ? ` [${flags.join(', ')}]` : ''}`
-      if (count >= MAX_REFS || size > MAX_TEXT) { truncated++; continue }
+      if (count >= MAX_REFS || size > MAX_TEXT) {
+        truncated++
+        if (refs.byNode.has(node.backendDOMNodeId)) cut.add(refs.byNode.get(node.backendDOMNodeId))
+        continue
+      }
       ref = refs.byNode.get(node.backendDOMNodeId) ?? `e${refs.next}`
       line = line.replace('ref', ref)
     }
-    if (size + line.length > MAX_TEXT) { truncated++; continue }
+    if (size + line.length > MAX_TEXT) {
+      truncated++
+      if (ref !== undefined && refs.byNode.has(node.backendDOMNodeId)) cut.add(ref)
+      continue
+    }
     if (ref !== undefined) {
       count++
       if (!refs.byNode.has(node.backendDOMNodeId)) {
@@ -143,7 +152,7 @@ function outline(nodes, refs = newRefs()) {
     size += line.length + 1
     lines.push(line)
   }
-  return { lines, count, truncated }
+  return { lines, count, truncated, cut }
 }
 
 const render = (lines, truncated) => lines.join('\n') + (truncated ? `\n(${truncated} more elements not shown; scroll or narrow the page)` : '') || '(no interactive elements)'
@@ -162,16 +171,17 @@ function keysOf(lines) {
 }
 
 // What an agent is told about the page after an action: `before` is the lines of the last outline it was given (null if none for this document),
-// `after` the lines now, `full` the whole outline as text. Returns {changed} (one line per difference: "- " went, "+ " came, "~ " a ref whose line changed, shown as it is now)
+// `after` the lines now, `full` the whole outline as text, `cut` the refs still in the tree that `after` left out for its limits (not gone, so no "- " line).
+// Returns {changed} (one line per difference: "- " went, "+ " came, "~ " a ref whose line changed, shown as it is now)
 // or {text: full} when there is nothing to compare with or the difference is longer than the outline.
-function compare(before, after, full) {
+function compare(before, after, full, cut = new Set()) {
   if (!before) return { text: full }
   const was = keysOf(before)
   const now = keysOf(after)
   const wasLine = new Map(was.map((key, i) => [key, before[i]]))
   const nowKeys = new Set(now)
   const diff = [
-    ...was.flatMap((key, i) => (nowKeys.has(key) ? [] : [`- ${before[i]}`])),
+    ...was.flatMap((key, i) => (nowKeys.has(key) || cut.has(key) ? [] : [`- ${before[i]}`])),
     ...now.flatMap((key, i) => (!wasLine.has(key) ? [`+ ${after[i]}`] : wasLine.get(key) !== after[i] ? [`~ ${after[i]}`] : []))
   ].join('\n')
   if (!diff) return { changed: 'Nothing on the page changed.' }
@@ -351,8 +361,8 @@ function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
   async function outlined(id) {
     const c = await channel(id)
     const { nodes } = await send(c, 'Accessibility.getFullAXTree')
-    const { lines, count, truncated } = outline(nodes, c.page.refs)
-    return { c, lines, doc: c.page.refs.doc, refs: count, text: render(lines, truncated) }
+    const { lines, count, truncated, cut } = outline(nodes, c.page.refs)
+    return { c, lines, cut, doc: c.page.refs.doc, refs: count, text: render(lines, truncated) }
   }
 
   // The whole outline. It becomes the base of the next answer's comparison.
@@ -364,8 +374,8 @@ function createAgentBrowser({ contentsOf, awake = () => {}, visual = {} }) {
 
   // The page as an answer: what differs from the last outline delivered for this document, or the whole outline when that is not shorter or there is none.
   async function see(id) {
-    const { c, lines, doc, refs, text } = await outlined(id)
-    const delta = compare(c.page.sent?.doc === doc ? c.page.sent.lines : null, lines, text)
+    const { c, lines, cut, doc, refs, text } = await outlined(id)
+    const delta = compare(c.page.sent?.doc === doc ? c.page.sent.lines : null, lines, text, cut)
     c.page.sent = { doc, lines }
     return { url: c.wc.getURL(), title: c.wc.getTitle(), refs, ...delta }
   }
