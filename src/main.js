@@ -71,7 +71,7 @@ const pendingUrls = process.argv.filter((arg) => /^https?:\/\//i.test(arg))
 app.on('open-url', (event, url) => {
   event.preventDefault()
   if (!/^https?:\/\//i.test(url)) return
-  if (state && win) rpc('links.open', { url })
+  if (state && win) openExternalUrl(url)
   else pendingUrls.push(url)
 })
 const SPARKLE = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#8b5cf6" d="M8 0c.6 4.2 3.8 7.4 8 8-4.2.6-7.4 3.8-8 8-.6-4.2-3.8-7.4-8-8 4.2-.6 7.4-3.8 8-8z"/></svg>'
@@ -2270,6 +2270,12 @@ function updateMenuItems() {
   ]
 }
 
+// A link another app opens is the user's own action, so Skiff comes in front of that app; agent tabs (tabs.create) never come here and stay behind.
+async function openExternalUrl(url) {
+  await rpc('links.open', { url })
+  await rpc('ui.raise')
+}
+
 async function runGlobalShortcut(method, params) {
   logger.info('global shortcut', { method })
   if (!win) await createWindow()
@@ -2554,12 +2560,12 @@ async function start() {
   desktops?.subscribe(desktopsChanged)
   prefetchIcons()
   app.on('activate', () => { if (!win) createWindow().catch(console.error) })
-  for (const url of pendingUrls.splice(0)) rpc('links.open', { url })
-  app.on('second-instance', (_event, argv) => {
-    if (!win) createWindow().catch(console.error)
-    for (const url of argv.filter((arg) => /^https?:\/\//i.test(arg))) rpc('links.open', { url })
-    if (win.isMinimized()) win.restore()
-    win.focus()
+  for (const url of pendingUrls.splice(0)) openExternalUrl(url)
+  app.on('second-instance', async (_event, argv) => {
+    if (!win) await createWindow().catch(console.error)
+    const urls = argv.filter((arg) => /^https?:\/\//i.test(arg))
+    for (const url of urls) await rpc('links.open', { url })
+    await rpc('ui.raise')
   })
   rpc('archive.sweep')
   setInterval(() => rpc('archive.sweep'), 60e3)
